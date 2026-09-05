@@ -1,0 +1,267 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RoleCode {
+  ADMIN
+  USER
+}
+
+model User {
+  id           String     @id @default(uuid()) @db.Uuid
+  username     String     @unique
+  email        String?    @unique
+  passwordHash String     @map("password_hash")
+  fullName     String     @map("full_name")
+  roleCode     RoleCode   @map("role_code")
+  extraRoles   RoleCode[] @default([]) @map("extra_roles")
+  department   String?
+  isActive     Boolean    @default(true) @map("is_active")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  refreshTokens RefreshToken[]
+
+  @@index([roleCode, isActive])
+  @@map("users")
+}
+
+enum MaterialClass {
+  RAW_MATERIAL
+  CONSUMABLE
+  SEMI_FINISHED
+}
+
+/// Kho vật lý. Kho bạc / kho đá là con của NVL chính.
+model Warehouse {
+  id          String  @id @default(uuid()) @db.Uuid
+  code        String  @unique
+  name        String
+  shortName   String  @map("short_name")
+  description String?
+  parentId    String? @map("parent_id") @db.Uuid
+  sortOrder   Int     @default(0) @map("sort_order")
+  isActive    Boolean @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  parent    Warehouse?      @relation("WarehouseTree", fields: [parentId], references: [id])
+  children  Warehouse[]     @relation("WarehouseTree")
+  materials Material[]
+  balances  StockBalance[]
+  inbounds  StockInbound[]
+  outbounds StockOutbound[]
+
+  @@index([parentId, sortOrder])
+  @@map("warehouses")
+}
+
+model Unit {
+  id        String @id @default(uuid()) @db.Uuid
+  code      String @unique
+  name      String
+  sortOrder Int    @default(0) @map("sort_order")
+
+  materials Material[]
+  inbounds  StockInbound[]
+  outbounds StockOutbound[]
+
+  @@map("units")
+}
+
+/// Loại đá / nhóm NVL — cột Phân loại (Đá Moiss, Đá CZ, ...)
+model MaterialType {
+  id        String @id @default(uuid()) @db.Uuid
+  code      String @unique
+  name      String
+  sortOrder Int    @default(0) @map("sort_order")
+
+  materials Material[]
+
+  @@map("material_types")
+}
+
+model Shape {
+  id        String @id @default(uuid()) @db.Uuid
+  code      String @unique
+  name      String
+  sortOrder Int    @default(0) @map("sort_order")
+
+  materials Material[]
+
+  @@map("shapes")
+}
+
+model Color {
+  id        String  @id @default(uuid()) @db.Uuid
+  code      String  @unique
+  name      String
+  skuLetter String? @map("sku_letter")
+  sortOrder Int     @default(0) @map("sort_order")
+
+  materials Material[]
+
+  @@map("colors")
+}
+
+/// Master NVL — một dòng trên tab Tồn kho đá.
+model Material {
+  id             String        @id @default(uuid()) @db.Uuid
+  warehouseId    String        @map("warehouse_id") @db.Uuid
+  sku            String?
+  name           String
+  locationCode   String?       @map("location_code")
+  unitId         String        @map("unit_id") @db.Uuid
+  materialTypeId String?       @map("material_type_id") @db.Uuid
+  shapeId        String?       @map("shape_id") @db.Uuid
+  colorId        String?       @map("color_id") @db.Uuid
+  sizeLabel      String?       @map("size_label")
+  quality        String?
+  note           String?
+  classification MaterialClass @default(RAW_MATERIAL)
+  sortOrder      Int           @default(0) @map("sort_order")
+  /// Tồn kho SL < ngưỡng này → Trạng thái "Sắp hết hàng". Mặc định 5.
+  reorderPoint   Decimal       @default(5) @map("reorder_point") @db.Decimal(18, 4)
+  isLocked       Boolean       @default(false) @map("is_locked")
+  isActive       Boolean       @default(true) @map("is_active")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  warehouse    Warehouse      @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  unit         Unit           @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  materialType MaterialType?  @relation(fields: [materialTypeId], references: [id], onDelete: SetNull)
+  shape        Shape?         @relation(fields: [shapeId], references: [id], onDelete: SetNull)
+  color        Color?         @relation(fields: [colorId], references: [id], onDelete: SetNull)
+  balance      StockBalance?
+  inbounds     StockInbound[]
+  outbounds    StockOutbound[]
+
+  @@unique([warehouseId, sku])
+  @@index([warehouseId, isActive, sortOrder])
+  @@index([materialTypeId])
+  @@map("materials")
+}
+
+/// Số liệu NXT của 1 NVL trong 1 kho. Tồn = đầu kỳ + nhập − xuất.
+model StockBalance {
+  id            String  @id @default(uuid()) @db.Uuid
+  warehouseId   String  @map("warehouse_id") @db.Uuid
+  materialId    String  @unique @map("material_id") @db.Uuid
+  openingQty    Decimal @default(0) @map("opening_qty") @db.Decimal(18, 4)
+  openingAmount Decimal @default(0) @map("opening_amount") @db.Decimal(18, 2)
+  /// Đơn giá tồn — cấu hình tại Kho đơn giá. TT đầu kỳ = SL đầu kỳ × giá này.
+  stockUnitPrice Decimal @default(0) @map("stock_unit_price") @db.Decimal(18, 2)
+  inQty         Decimal @default(0) @map("in_qty") @db.Decimal(18, 4)
+  inAmount      Decimal @default(0) @map("in_amount") @db.Decimal(18, 2)
+  outQty        Decimal @default(0) @map("out_qty") @db.Decimal(18, 4)
+  outAmount     Decimal @default(0) @map("out_amount") @db.Decimal(18, 2)
+  qty           Decimal @default(0) @db.Decimal(18, 4)
+  amount        Decimal @default(0) @db.Decimal(18, 2)
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  material  Material  @relation(fields: [materialId], references: [id], onDelete: Cascade)
+
+  @@unique([warehouseId, materialId])
+  @@index([warehouseId])
+  @@map("stock_balances")
+}
+
+/// Nhà cung cấp đá / NVL — cột NCC trên sheet Nhập kho đá (Hongkong, Hagems, ...).
+model Supplier {
+  id        String @id @default(uuid()) @db.Uuid
+  code      String @unique
+  name      String
+  sortOrder Int    @default(0) @map("sort_order")
+
+  inbounds StockInbound[]
+
+  @@map("suppliers")
+}
+
+/// Một dòng trên tab Nhập kho đá.
+model StockInbound {
+  id           String   @id @default(uuid()) @db.Uuid
+  warehouseId  String   @map("warehouse_id") @db.Uuid
+  materialId   String?  @map("material_id") @db.Uuid
+  sortOrder    Int      @default(0) @map("sort_order")
+  receivedAt   DateTime @map("received_at") @db.Date
+  name         String
+  sku          String?
+  unitId       String?  @map("unit_id") @db.Uuid
+  unitName     String   @map("unit_name")
+  qty          Decimal  @db.Decimal(18, 4)
+  stockUnitPrice Decimal @default(0) @map("stock_unit_price") @db.Decimal(18, 2)
+  unitPrice    Decimal  @default(0) @map("unit_price") @db.Decimal(18, 2)
+  amount       Decimal  @default(0) @db.Decimal(18, 2)
+  note         String?
+  supplierSku  String?  @map("supplier_sku")
+  supplierId   String?  @map("supplier_id") @db.Uuid
+  supplierName String?  @map("supplier_name")
+  /// Seed lịch sử = false (tồn kho đá đã gồm số nhập). Phiếu mới từ UI = true.
+  applyToStock Boolean  @default(false) @map("apply_to_stock")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  material  Material? @relation(fields: [materialId], references: [id], onDelete: SetNull)
+  unit      Unit?     @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  supplier  Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+
+  @@index([warehouseId, receivedAt])
+  @@index([warehouseId, sortOrder])
+  @@unique([warehouseId, sortOrder])
+  @@map("stock_inbounds")
+}
+
+/// Một dòng trên tab Xuất NVL đá.
+model StockOutbound {
+  id               String   @id @default(uuid()) @db.Uuid
+  warehouseId      String   @map("warehouse_id") @db.Uuid
+  materialId       String?  @map("material_id") @db.Uuid
+  sortOrder        Int      @default(0) @map("sort_order")
+  issuedAt         DateTime @map("issued_at") @db.Date
+  name             String
+  sku              String?
+  unitId           String?  @map("unit_id") @db.Uuid
+  unitName         String   @map("unit_name")
+  qty              Decimal  @db.Decimal(18, 4)
+  stockUnitPrice   Decimal  @default(0) @map("stock_unit_price") @db.Decimal(18, 2)
+  inboundUnitPrice Decimal  @default(0) @map("inbound_unit_price") @db.Decimal(18, 2)
+  amount           Decimal  @default(0) @db.Decimal(18, 2)
+  note             String?
+  issuedBy         String?  @map("issued_by")
+  receivedBy       String?  @map("received_by")
+  /// Seed lịch sử = false (tồn kho đá đã gồm số xuất). Phiếu mới từ UI = true.
+  applyToStock     Boolean  @default(false) @map("apply_to_stock")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  material  Material? @relation(fields: [materialId], references: [id], onDelete: SetNull)
+  unit      Unit?     @relation(fields: [unitId], references: [id], onDelete: SetNull)
+
+  @@index([warehouseId, issuedAt])
+  @@index([warehouseId, sortOrder])
+  @@unique([warehouseId, sortOrder])
+  @@map("stock_outbounds")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  userId    String    @map("user_id") @db.Uuid
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
