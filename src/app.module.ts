@@ -13,6 +13,8 @@ import { PrismaModule } from './prisma/prisma.module';
 import { CookieModule } from './cookie/cookie.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { UsersModule } from './users/users.module';
+import { BtpModule } from './btp/btp.module';
+import { LocationsModule } from './locations/locations.module';
 import { WarehousesModule } from './warehouses/warehouses.module';
 
 @Module({
@@ -33,6 +35,8 @@ import { WarehousesModule } from './warehouses/warehouses.module';
     UsersModule,
     InventoryModule,
     WarehousesModule,
+    BtpModule,
+    LocationsModule,
   ],
   controllers: [AppController],
   providers: [

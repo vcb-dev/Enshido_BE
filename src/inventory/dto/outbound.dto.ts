@@ -63,6 +63,11 @@ export class CreateOutboundDto {
   receivedBy?: string;
 
   @IsOptional()
+  @Transform(({ value }) => (value === '' ? null : value))
+  @IsUUID()
+  receivedByUserId?: string | null;
+
+  @IsOptional()
   @Type(() => Boolean)
   @IsBoolean()
   applyToStock?: boolean;

@@ -8,7 +8,7 @@ import {
   Matches,
   Min,
 } from 'class-validator';
-import { MaterialClass } from '@prisma/client';
+import { MaterialClass, MetalKind } from '@prisma/client';
 
 const DECIMAL = /^-?\d+(\.\d+)?$/;
 
@@ -53,6 +53,11 @@ export class UpdateStockDto {
   @IsOptional()
   @IsEnum(MaterialClass)
   classification?: MaterialClass;
+
+  @IsOptional()
+  @Transform(({ value }) => (value === '' ? null : value))
+  @IsEnum(MetalKind)
+  metalKind?: MetalKind | null;
 
   @IsOptional()
   @IsString()
@@ -124,6 +129,11 @@ export class CreateStockDto {
   @Transform(({ value }) => (value === '' ? null : value))
   @IsUUID()
   materialTypeId?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => (value === '' ? null : value))
+  @IsEnum(MetalKind)
+  metalKind?: MetalKind | null;
 
   @IsOptional()
   @IsString()

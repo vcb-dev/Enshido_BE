@@ -37,7 +37,16 @@ enum MaterialClass {
   SEMI_FINISHED
 }
 
-/// Kho vật lý. Kho bạc / kho đá là con của NVL chính.
+/// Phân loại trên kho NVL chính: Bạc, Vàng, Đá, Hội pha, Đồng.
+enum MetalKind {
+  SILVER
+  GOLD
+  STONE
+  ALLOY
+  COPPER
+}
+
+/// Kho vật lý. Kho NVL chính chứa nhập / xuất / tồn.
 model Warehouse {
   id          String  @id @default(uuid()) @db.Uuid
   code        String  @unique
@@ -56,9 +65,31 @@ model Warehouse {
   balances  StockBalance[]
   inbounds  StockInbound[]
   outbounds StockOutbound[]
+  btpItems  BtpWaitingItem[]
+  locations WarehouseLocation[]
 
   @@index([parentId, sortOrder])
   @@map("warehouses")
+}
+
+/// Ô kệ cấu hình sẵn. Mã = Zone + Dãy + Tầng + Số (vd A1C12).
+model WarehouseLocation {
+  id          String  @id @default(uuid()) @db.Uuid
+  warehouseId String  @map("warehouse_id") @db.Uuid
+  zone        String
+  aisle       Int
+  level       String
+  position    Int
+  code        String
+  sortOrder   Int     @default(0) @map("sort_order")
+  isActive    Boolean @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+
+  @@unique([warehouseId, code])
+  @@index([warehouseId, isActive, sortOrder])
+  @@map("warehouse_locations")
 }
 
 model Unit {
@@ -70,11 +101,12 @@ model Unit {
   materials Material[]
   inbounds  StockInbound[]
   outbounds StockOutbound[]
+  btpItems  BtpWaitingItem[]
 
   @@map("units")
 }
 
-/// Loại đá / nhóm NVL — cột Phân loại (Đá Moiss, Đá CZ, ...)
+/// Loại đá / nhóm NVL — cột Loại đá (Đá Moiss, Đá CZ, Đá DZ, Bạc, ...)
 model MaterialType {
   id        String @id @default(uuid()) @db.Uuid
   code      String @unique
@@ -109,7 +141,7 @@ model Color {
   @@map("colors")
 }
 
-/// Master NVL — một dòng trên tab Tồn kho đá.
+/// Master NVL — một dòng trên tab Tồn kho.
 model Material {
   id             String        @id @default(uuid()) @db.Uuid
   warehouseId    String        @map("warehouse_id") @db.Uuid
@@ -124,6 +156,7 @@ model Material {
   quality        String?
   note           String?
   classification MaterialClass @default(RAW_MATERIAL)
+  metalKind      MetalKind?    @map("metal_kind")
   sortOrder      Int           @default(0) @map("sort_order")
   /// Tồn kho SL < ngưỡng này → Trạng thái "Sắp hết hàng". Mặc định 5.
   reorderPoint   Decimal       @default(5) @map("reorder_point") @db.Decimal(18, 4)
@@ -200,6 +233,7 @@ model StockInbound {
   unitPrice    Decimal  @default(0) @map("unit_price") @db.Decimal(18, 2)
   amount       Decimal  @default(0) @db.Decimal(18, 2)
   note         String?
+  enteredBy    String?  @map("entered_by")
   supplierSku  String?  @map("supplier_sku")
   supplierId   String?  @map("supplier_id") @db.Uuid
   supplierName String?  @map("supplier_name")
@@ -237,6 +271,7 @@ model StockOutbound {
   note             String?
   issuedBy         String?  @map("issued_by")
   receivedBy       String?  @map("received_by")
+  receivedByUserId String?  @map("received_by_user_id") @db.Uuid
   /// Seed lịch sử = false (tồn kho đá đã gồm số xuất). Phiếu mới từ UI = true.
   applyToStock     Boolean  @default(false) @map("apply_to_stock")
   createdAt        DateTime @default(now()) @map("created_at")
@@ -250,6 +285,33 @@ model StockOutbound {
   @@index([warehouseId, sortOrder])
   @@unique([warehouseId, sortOrder])
   @@map("stock_outbounds")
+}
+
+/// Sổ Kho BTP chờ vào đá — theo dõi dòng, không nhập / xuất / tồn.
+model BtpWaitingItem {
+  id              String   @id @default(uuid()) @db.Uuid
+  warehouseId     String   @map("warehouse_id") @db.Uuid
+  sortOrder       Int      @default(0) @map("sort_order")
+  receivedAt      DateTime @map("received_at") @db.Date
+  craftsmanUserId String?  @map("craftsman_user_id") @db.Uuid
+  craftsmanName   String   @map("craftsman_name")
+  name            String
+  unitId          String?  @map("unit_id") @db.Uuid
+  unitName        String   @map("unit_name")
+  qty             Decimal  @db.Decimal(18, 4)
+  weight          Decimal  @default(0) @db.Decimal(18, 4)
+  note            String?
+  enteredBy       String?  @map("entered_by")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  unit      Unit?     @relation(fields: [unitId], references: [id], onDelete: SetNull)
+
+  @@index([warehouseId, receivedAt])
+  @@index([warehouseId, sortOrder])
+  @@unique([warehouseId, sortOrder])
+  @@map("btp_waiting_items")
 }
 
 model RefreshToken {
