@@ -377,6 +377,16 @@ export class InventoryService {
     const dec = (value?: string) =>
       value == null ? undefined : new Prisma.Decimal(value);
 
+    // Chỉ ghi khi client gửi field; null = xoá kết quả kiểm kê.
+    const counted = {
+      ...(dto.countedQty !== undefined
+        ? { countedQty: dto.countedQty == null ? null : new Prisma.Decimal(dto.countedQty) }
+        : {}),
+      ...(dto.countedAt !== undefined
+        ? { countedAt: dto.countedAt ? new Date(dto.countedAt) : null }
+        : {}),
+    };
+
     await this.prisma.$transaction(async (tx) => {
       await tx.material.update({
         where: { id: material.id },
@@ -426,11 +436,13 @@ export class InventoryService {
           stockUnitPrice,
           qty: openingQty,
           amount: openingAmount,
+          ...counted,
         },
         update: {
           openingQty,
           openingAmount,
           stockUnitPrice,
+          ...counted,
         },
       });
       await this.recomputeStockBalance(tx, warehouse.id, material.id);
@@ -1307,6 +1319,11 @@ export class InventoryService {
       openingQty: decStr(b?.openingQty),
       openingAmount: decStr(b?.openingAmount),
       stockUnitPrice: decStr(b?.stockUnitPrice),
+      countedQty: b?.countedQty == null ? null : decStr(b.countedQty),
+      countedAt: b?.countedAt ? b.countedAt.toISOString().slice(0, 10) : null,
+      // Chênh lệch kiểm kê = tồn thực tế − tồn sổ sách. Null khi chưa kiểm kê.
+      countedVariance:
+        b?.countedQty == null ? null : decStr(b.countedQty.sub(nxt.qty)),
       stockedAt,
       inQty: decStr(nxt.inQty),
       inAmount: decStr(nxt.inAmount),

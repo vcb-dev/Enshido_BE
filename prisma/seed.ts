@@ -2,6 +2,7 @@ import { MaterialClass, PrismaClient, RoleCode } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { seedTieuHao } from './seed-tieu-hao';
 
 const prisma = new PrismaClient();
 const DEMO_PASSWORD = 'Admin@123';
@@ -795,6 +796,7 @@ async function main() {
   await seedDaStock();
   await seedDaInbounds();
   await seedDaOutbounds();
+  await seedTieuHao(prisma);
 
   console.log('Seed OK — password:', DEMO_PASSWORD);
   console.log('  admin  ADMIN');
@@ -803,6 +805,7 @@ async function main() {
   console.log('  sample stock: 10 NVL kho đá + NVL tạo từ phiếu nhập/xuất');
   console.log('  kho nhập đá: 97 dòng từ sheet Nhập kho đá (gắn NVL, hiện Nhập trên kho tồn)');
   console.log('  kho xuất đá: 97 dòng từ sheet Xuất NVL đá (gắn NVL, hiện Xuất trên kho tồn)');
+  console.log('  kho NVL tiêu hao: 6 NVL mẫu + 6 phiếu nhập + 6 phiếu xuất');
 }
 
 main()
