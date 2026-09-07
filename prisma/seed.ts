@@ -1,4 +1,4 @@
-import { MaterialClass, PrismaClient, RoleCode } from '@prisma/client';
+import { MaterialClass, MetalKind, PrismaClient, RoleCode } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -61,6 +61,7 @@ async function seedLookups() {
     { code: 'chai', name: 'chai', sortOrder: 7 },
     { code: 'to', name: 'tờ', sortOrder: 8 },
     { code: 'thoi', name: 'thỏi', sortOrder: 9 },
+    { code: 'chiec', name: 'chiếc', sortOrder: 10 },
   ]) {
     await prisma.unit.upsert({
       where: { code: row.code },
@@ -72,8 +73,11 @@ async function seedLookups() {
   for (const row of [
     { code: 'da-moiss', name: 'Đá Moiss', sortOrder: 1 },
     { code: 'da-cz', name: 'Đá CZ', sortOrder: 2 },
-    { code: 'da-quy-khac', name: 'Đá quý khác', sortOrder: 3 },
-    { code: 'da-thuong', name: 'Đá thường', sortOrder: 4 },
+    { code: 'da-dz', name: 'Đá DZ', sortOrder: 3 },
+    { code: 'da-quy-khac', name: 'Đá quý khác', sortOrder: 4 },
+    { code: 'da-thuong', name: 'Đá thường', sortOrder: 5 },
+    { code: 'bac', name: 'Bạc', sortOrder: 6 },
+    { code: 'vang', name: 'Vàng', sortOrder: 7 },
   ]) {
     await prisma.materialType.upsert({
       where: { code: row.code },
@@ -159,7 +163,7 @@ async function seedWarehouses() {
     update: {
       name: 'Kho nguyên vật liệu chính',
       shortName: 'Kho NVL chính',
-      description: 'Gồm kho bạc (kèm BTP chờ vào đá) và kho đá.',
+      description: 'Nhập, xuất và tồn nguyên vật liệu chính.',
       sortOrder: 1,
       isActive: true,
     },
@@ -167,7 +171,7 @@ async function seedWarehouses() {
       code: 'nvl-chinh',
       name: 'Kho nguyên vật liệu chính',
       shortName: 'Kho NVL chính',
-      description: 'Gồm kho bạc (kèm BTP chờ vào đá) và kho đá.',
+      description: 'Nhập, xuất và tồn nguyên vật liệu chính.',
       sortOrder: 1,
     },
   });
@@ -177,21 +181,21 @@ async function seedWarehouses() {
       code: 'bac',
       name: 'Kho bạc',
       shortName: 'Kho bạc',
-      description: 'Nguyên liệu bạc.',
+      description: 'Đã gộp vào Kho NVL chính.',
       sortOrder: 1,
     },
     {
       code: 'da',
       name: 'Kho đá',
       shortName: 'Kho đá',
-      description: 'Tồn kho NVL đá xưởng.',
+      description: 'Đã gộp vào Kho NVL chính.',
       sortOrder: 2,
     },
   ]) {
     await prisma.warehouse.upsert({
       where: { code: child.code },
-      update: { ...child, parentId: nvlChinh.id, isActive: true },
-      create: { ...child, parentId: nvlChinh.id },
+      update: { ...child, parentId: nvlChinh.id, isActive: false },
+      create: { ...child, parentId: nvlChinh.id, isActive: false },
     });
   }
 
@@ -201,7 +205,7 @@ async function seedWarehouses() {
       name: 'Kho nguyên vật liệu tiêu hao',
       shortName: 'Kho NVL tiêu hao',
       description: 'Vật tư tiêu hao phục vụ sản xuất.',
-      sortOrder: 2,
+      sortOrder: 3,
       isActive: true,
     },
     create: {
@@ -209,32 +213,26 @@ async function seedWarehouses() {
       name: 'Kho nguyên vật liệu tiêu hao',
       shortName: 'Kho NVL tiêu hao',
       description: 'Vật tư tiêu hao phục vụ sản xuất.',
-      sortOrder: 2,
+      sortOrder: 3,
     },
   });
 
-  const bac = await mustCode(
-    await prisma.warehouse.findUnique({ where: { code: 'bac' } }),
-    'kho bac',
-  );
-
   await prisma.warehouse.upsert({
-    where: { code: 'ban-thanh-pham' },
+    where: { code: 'btp-cho-vao-da' },
     update: {
-      name: 'Kho bán thành phẩm chờ vào đá',
+      name: 'Kho BTP chờ vào đá',
       shortName: 'Kho BTP chờ vào đá',
       description: 'Bán thành phẩm đã gia công, chờ gắn đá.',
-      sortOrder: 3,
-      parentId: bac.id,
+      parentId: null,
+      sortOrder: 2,
       isActive: true,
     },
     create: {
-      code: 'ban-thanh-pham',
-      name: 'Kho bán thành phẩm chờ vào đá',
+      code: 'btp-cho-vao-da',
+      name: 'Kho BTP chờ vào đá',
       shortName: 'Kho BTP chờ vào đá',
       description: 'Bán thành phẩm đã gia công, chờ gắn đá.',
-      sortOrder: 3,
-      parentId: bac.id,
+      sortOrder: 2,
     },
   });
 }
@@ -249,8 +247,8 @@ async function mustCode<T extends { id: string }>(
 
 async function seedDaStock() {
   const warehouse = await mustCode(
-    await prisma.warehouse.findUnique({ where: { code: 'da' } }),
-    'kho da',
+    await prisma.warehouse.findUnique({ where: { code: 'nvl-chinh' } }),
+    'kho nvl-chinh',
   );
 
   const unit = {
@@ -505,6 +503,7 @@ async function seedDaStock() {
         quality: row.quality ?? null,
         sortOrder: row.sortOrder,
         isActive: true,
+        metalKind: MetalKind.SILVER,
       },
       create: {
         warehouseId: warehouse.id,
@@ -518,6 +517,7 @@ async function seedDaStock() {
         sizeLabel: row.sizeLabel,
         quality: row.quality ?? null,
         sortOrder: row.sortOrder,
+        metalKind: MetalKind.SILVER,
       },
     });
 
@@ -576,8 +576,8 @@ function parseSheetDate(value: string) {
 
 async function seedDaInbounds() {
   const warehouse = await mustCode(
-    await prisma.warehouse.findUnique({ where: { code: 'da' } }),
-    'kho da',
+    await prisma.warehouse.findUnique({ where: { code: 'nvl-chinh' } }),
+    'kho nvl-chinh',
   );
   const units = await prisma.unit.findMany({ select: { id: true, code: true, name: true } });
   const unitByName = new Map(units.map((u) => [u.name.toLowerCase(), u]));
@@ -617,6 +617,7 @@ async function seedDaInbounds() {
           name: row.name,
           unitId: unit.id,
           classification: MaterialClass.RAW_MATERIAL,
+          metalKind: MetalKind.SILVER,
           sortOrder: nextSort++,
         },
         select: { id: true, name: true, sku: true },
@@ -704,8 +705,8 @@ type SheetOutbound = {
 
 async function seedDaOutbounds() {
   const warehouse = await mustCode(
-    await prisma.warehouse.findUnique({ where: { code: 'da' } }),
-    'kho da',
+    await prisma.warehouse.findUnique({ where: { code: 'nvl-chinh' } }),
+    'kho nvl-chinh',
   );
   const units = await prisma.unit.findMany({ select: { id: true, code: true, name: true } });
   const unitByName = new Map(units.map((u) => [u.name.toLowerCase(), u]));
@@ -737,6 +738,7 @@ async function seedDaOutbounds() {
           sku: row.sku,
           unitId: unit.id,
           classification: MaterialClass.RAW_MATERIAL,
+          metalKind: MetalKind.SILVER,
           sortOrder: nextSort++,
         },
         select: { id: true, name: true, sku: true },
@@ -799,10 +801,10 @@ async function main() {
   console.log('Seed OK — password:', DEMO_PASSWORD);
   console.log('  admin  ADMIN');
   console.log('  user   USER');
-  console.log('  warehouses: nvl-chinh (bac + BTP, da), nvl-tieu-hao');
-  console.log('  sample stock: 10 NVL kho đá + NVL tạo từ phiếu nhập/xuất');
-  console.log('  kho nhập đá: 97 dòng từ sheet Nhập kho đá (gắn NVL, hiện Nhập trên kho tồn)');
-  console.log('  kho xuất đá: 97 dòng từ sheet Xuất NVL đá (gắn NVL, hiện Xuất trên kho tồn)');
+  console.log('  warehouses: nvl-chinh, btp-cho-vao-da (tồn / nhập / xuất), nvl-tieu-hao');
+  console.log('  sample stock: NVL kho chính + NVL tạo từ phiếu nhập/xuất');
+  console.log('  kho nhập: 97 dòng từ sheet nhập (gắn NVL, hiện Nhập trên kho tồn)');
+  console.log('  kho xuất: 97 dòng từ sheet xuất (gắn NVL, hiện Xuất trên kho tồn)');
 }
 
 main()

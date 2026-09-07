@@ -1,3 +1,18 @@
+/** Share one in-flight promise so concurrent callers hit the DB once. */
+export class InflightMap {
+  private readonly map = new Map<string, Promise<unknown>>();
+
+  run<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const existing = this.map.get(key);
+    if (existing) return existing as Promise<T>;
+    const pending = fn().finally(() => {
+      if (this.map.get(key) === pending) this.map.delete(key);
+    });
+    this.map.set(key, pending);
+    return pending;
+  }
+}
+
 export class TtlCache {
   private readonly store = new Map<string, { exp: number; value: unknown }>();
 

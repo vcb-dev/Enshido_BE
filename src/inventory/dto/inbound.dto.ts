@@ -71,4 +71,8 @@ export class CreateInboundDto {
   @Type(() => Boolean)
   @IsBoolean()
   applyToStock?: boolean;
+
+  @IsOptional()
+  @IsString()
+  locationCode?: string | null;
 }

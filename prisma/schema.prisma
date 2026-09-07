@@ -48,7 +48,7 @@ enum MaterialClass {
   SEMI_FINISHED
 }
 
-/// Kho vật lý. Kho bạc / kho đá là con của NVL chính.
+/// Kho vật lý. Kho NVL chính chứa nhập / xuất / tồn.
 model Warehouse {
   id          String   @id @default(uuid()) @db.Uuid
   code        String   @unique
@@ -61,17 +61,37 @@ model Warehouse {
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
-  parent          Warehouse?          @relation("WarehouseTree", fields: [parentId], references: [id])
-  children        Warehouse[]         @relation("WarehouseTree")
-  materials       Material[]
-  balances        StockBalance[]
-  inbounds        StockInbound[]
-  outbounds       StockOutbound[]
-  locations       WarehouseLocation[]
-  btpWaitingItems BtpWaitingItem[]
+  parent    Warehouse?      @relation("WarehouseTree", fields: [parentId], references: [id])
+  children  Warehouse[]     @relation("WarehouseTree")
+  materials Material[]
+  balances  StockBalance[]
+  inbounds  StockInbound[]
+  outbounds StockOutbound[]
+  btpItems  BtpWaitingItem[]
+  locations WarehouseLocation[]
 
   @@index([parentId, sortOrder])
   @@map("warehouses")
+}
+
+/// Ô kệ cấu hình sẵn. Mã = Zone + Dãy + Tầng + Số (vd A1C12).
+model WarehouseLocation {
+  id          String  @id @default(uuid()) @db.Uuid
+  warehouseId String  @map("warehouse_id") @db.Uuid
+  zone        String
+  aisle       Int
+  level       String
+  position    Int
+  code        String
+  sortOrder   Int     @default(0) @map("sort_order")
+  isActive    Boolean @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+
+  @@unique([warehouseId, code])
+  @@index([warehouseId, isActive, sortOrder])
+  @@map("warehouse_locations")
 }
 
 model Unit {
@@ -80,15 +100,15 @@ model Unit {
   name      String
   sortOrder Int    @default(0) @map("sort_order")
 
-  materials       Material[]
-  inbounds        StockInbound[]
-  outbounds       StockOutbound[]
-  btpWaitingItems BtpWaitingItem[]
+  materials Material[]
+  inbounds  StockInbound[]
+  outbounds StockOutbound[]
+  btpItems  BtpWaitingItem[]
 
   @@map("units")
 }
 
-/// Loại đá / nhóm NVL — cột Phân loại (Đá Moiss, Đá CZ, ...)
+/// Loại đá / nhóm NVL — cột Loại đá (Đá Moiss, Đá CZ, Đá DZ, Bạc, ...)
 model MaterialType {
   id        String @id @default(uuid()) @db.Uuid
   code      String @unique
@@ -123,7 +143,7 @@ model Color {
   @@map("colors")
 }
 
-/// Master NVL — một dòng trên tab Tồn kho đá.
+/// Master NVL — một dòng trên tab Tồn kho.
 model Material {
   id             String        @id @default(uuid()) @db.Uuid
   warehouseId    String        @map("warehouse_id") @db.Uuid
@@ -219,11 +239,11 @@ model StockInbound {
   unitPrice      Decimal  @default(0) @map("unit_price") @db.Decimal(18, 2)
   amount         Decimal  @default(0) @db.Decimal(18, 2)
   note           String?
+  /// Người lập phiếu — cột đã có sẵn trên DB.
+  enteredBy      String?  @map("entered_by")
   supplierSku    String?  @map("supplier_sku")
   supplierId     String?  @map("supplier_id") @db.Uuid
   supplierName   String?  @map("supplier_name")
-  /// Người lập phiếu — cột đã có sẵn trên DB.
-  enteredBy      String?  @map("entered_by")
   /// Seed lịch sử = false (tồn kho đá đã gồm số nhập). Phiếu mới từ UI = true.
   applyToStock   Boolean  @default(false) @map("apply_to_stock")
   createdAt      DateTime @default(now()) @map("created_at")
@@ -275,43 +295,9 @@ model StockOutbound {
   @@map("stock_outbounds")
 }
 
-model RefreshToken {
-  id        String    @id @default(uuid()) @db.Uuid
-  tokenHash String    @unique @map("token_hash")
-  userId    String    @map("user_id") @db.Uuid
-  expiresAt DateTime  @map("expires_at")
-  revokedAt DateTime? @map("revoked_at")
-  createdAt DateTime  @default(now()) @map("created_at")
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
-  @@map("refresh_tokens")
-}
-
-/// Vị trí lưu trữ trong kho (zone/aisle/level/position). Đã có sẵn trên DB.
-model WarehouseLocation {
-  id          String   @id @db.Uuid
-  warehouseId String   @map("warehouse_id") @db.Uuid
-  zone        String
-  aisle       Int
-  level       String
-  position    Int
-  code        String
-  sortOrder   Int      @default(0) @map("sort_order")
-  isActive    Boolean  @default(true) @map("is_active")
-  createdAt   DateTime @default(now()) @map("created_at")
-
-  warehouse Warehouse @relation(fields: [warehouseId], references: [id])
-
-  @@unique([warehouseId, code])
-  @@index([warehouseId, isActive, sortOrder])
-  @@map("warehouse_locations")
-}
-
-/// Bán thành phẩm chờ vào đá, theo từng thợ. Đã có sẵn trên DB.
+/// Sổ Kho BTP chờ vào đá — theo dõi dòng, không nhập / xuất / tồn.
 model BtpWaitingItem {
-  id              String   @id @db.Uuid
+  id              String   @id @default(uuid()) @db.Uuid
   warehouseId     String   @map("warehouse_id") @db.Uuid
   sortOrder       Int      @default(0) @map("sort_order")
   receivedAt      DateTime @map("received_at") @db.Date
@@ -325,13 +311,27 @@ model BtpWaitingItem {
   note            String?
   enteredBy       String?  @map("entered_by")
   createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @map("updated_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
 
-  warehouse Warehouse @relation(fields: [warehouseId], references: [id])
-  unit      Unit?     @relation(fields: [unitId], references: [id])
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  unit      Unit?     @relation(fields: [unitId], references: [id], onDelete: SetNull)
 
-  @@unique([warehouseId, sortOrder])
   @@index([warehouseId, receivedAt])
   @@index([warehouseId, sortOrder])
+  @@unique([warehouseId, sortOrder])
   @@map("btp_waiting_items")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  userId    String    @map("user_id") @db.Uuid
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
 }

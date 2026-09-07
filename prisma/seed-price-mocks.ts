@@ -18,7 +18,7 @@ const PRICE_MOCKS: Array<{
   }>;
 }> = [
   {
-    warehouseCode: 'da',
+    warehouseCode: 'nvl-chinh',
     classification: MaterialClass.RAW_MATERIAL,
     items: [
       {
@@ -51,7 +51,7 @@ const PRICE_MOCKS: Array<{
     ],
   },
   {
-    warehouseCode: 'bac',
+    warehouseCode: 'nvl-chinh',
     classification: MaterialClass.RAW_MATERIAL,
     items: [
       {
@@ -189,7 +189,7 @@ async function upsertPriceItem(
 }
 
 async function priceExistingDaMois() {
-  const warehouse = await prisma.warehouse.findUnique({ where: { code: 'da' } });
+  const warehouse = await prisma.warehouse.findUnique({ where: { code: 'nvl-chinh' } });
   if (!warehouse) return;
   const mois = await prisma.material.findFirst({
     where: { warehouseId: warehouse.id, isActive: true, name: { contains: 'mois', mode: 'insensitive' } },

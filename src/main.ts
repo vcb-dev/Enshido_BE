@@ -40,6 +40,8 @@ async function bootstrap() {
     app.getHttpAdapter().getInstance().disable('x-powered-by');
   }
 
+  app.enableShutdownHooks();
+
   const port = config.get<number>('PORT', 3000);
   await app.listen(port);
   console.log(`Enshido_BE listening on http://localhost:${port}/api`);

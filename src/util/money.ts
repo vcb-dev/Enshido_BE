@@ -24,3 +24,11 @@ export const CLASS_LABEL: Record<string, string> = {
   CONSUMABLE: 'Tiêu hao',
   SEMI_FINISHED: 'Bán thành phẩm',
 };
+
+export const METAL_KIND_LABEL: Record<string, string> = {
+  SILVER: 'Bạc',
+  GOLD: 'Vàng',
+  STONE: 'Đá',
+  ALLOY: 'Hội pha',
+  COPPER: 'Đồng',
+};

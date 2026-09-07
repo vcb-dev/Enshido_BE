@@ -9,6 +9,8 @@ import {
   Patch,
   Post,
 } from '@nestjs/common';
+import { CurrentUser } from '../auth/decorators';
+import type { AuthUserPayload } from '../auth/types';
 import { CreateInboundDto } from '../inventory/dto/inbound.dto';
 import { CreateOutboundDto } from '../inventory/dto/outbound.dto';
 import { CreateStockDto, UpdateStockDto } from '../inventory/dto/update-stock.dto';
@@ -30,8 +32,12 @@ export class WarehousesController {
   }
 
   @Post(':code/inbounds')
-  createInbound(@Param('code') code: string, @Body() dto: CreateInboundDto) {
-    return this.inventory.createInbound(code, dto);
+  createInbound(
+    @Param('code') code: string,
+    @Body() dto: CreateInboundDto,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.inventory.createInbound(code, dto, user);
   }
 
   @Patch(':code/inbounds/:inboundId')
@@ -57,8 +63,12 @@ export class WarehousesController {
   }
 
   @Post(':code/outbounds')
-  createOutbound(@Param('code') code: string, @Body() dto: CreateOutboundDto) {
-    return this.inventory.createOutbound(code, dto);
+  createOutbound(
+    @Param('code') code: string,
+    @Body() dto: CreateOutboundDto,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.inventory.createOutbound(code, dto, user);
   }
 
   @Patch(':code/outbounds/:outboundId')
