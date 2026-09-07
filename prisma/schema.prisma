@@ -3,8 +3,10 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  // Runtime đi qua pgbouncer (6543); migration phải đi kết nối trực tiếp (5432).
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 enum RoleCode {
@@ -31,13 +33,7 @@ model User {
   @@map("users")
 }
 
-enum MaterialClass {
-  RAW_MATERIAL
-  CONSUMABLE
-  SEMI_FINISHED
-}
-
-/// Phân loại trên kho NVL chính: Bạc, Vàng, Đá, Hội pha, Đồng.
+/// Chất liệu NVL — đã có sẵn trên DB, dùng cho cột materials.metal_kind.
 enum MetalKind {
   SILVER
   GOLD
@@ -46,16 +42,22 @@ enum MetalKind {
   COPPER
 }
 
+enum MaterialClass {
+  RAW_MATERIAL
+  CONSUMABLE
+  SEMI_FINISHED
+}
+
 /// Kho vật lý. Kho NVL chính chứa nhập / xuất / tồn.
 model Warehouse {
-  id          String  @id @default(uuid()) @db.Uuid
-  code        String  @unique
+  id          String   @id @default(uuid()) @db.Uuid
+  code        String   @unique
   name        String
-  shortName   String  @map("short_name")
+  shortName   String   @map("short_name")
   description String?
-  parentId    String? @map("parent_id") @db.Uuid
-  sortOrder   Int     @default(0) @map("sort_order")
-  isActive    Boolean @default(true) @map("is_active")
+  parentId    String?  @map("parent_id") @db.Uuid
+  sortOrder   Int      @default(0) @map("sort_order")
+  isActive    Boolean  @default(true) @map("is_active")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
@@ -165,11 +167,11 @@ model Material {
   createdAt      DateTime      @default(now()) @map("created_at")
   updatedAt      DateTime      @updatedAt @map("updated_at")
 
-  warehouse    Warehouse      @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
-  unit         Unit           @relation(fields: [unitId], references: [id], onDelete: Restrict)
-  materialType MaterialType?  @relation(fields: [materialTypeId], references: [id], onDelete: SetNull)
-  shape        Shape?         @relation(fields: [shapeId], references: [id], onDelete: SetNull)
-  color        Color?         @relation(fields: [colorId], references: [id], onDelete: SetNull)
+  warehouse    Warehouse       @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  unit         Unit            @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  materialType MaterialType?   @relation(fields: [materialTypeId], references: [id], onDelete: SetNull)
+  shape        Shape?          @relation(fields: [shapeId], references: [id], onDelete: SetNull)
+  color        Color?          @relation(fields: [colorId], references: [id], onDelete: SetNull)
   balance      StockBalance?
   inbounds     StockInbound[]
   outbounds    StockOutbound[]
@@ -182,20 +184,24 @@ model Material {
 
 /// Số liệu NXT của 1 NVL trong 1 kho. Tồn = đầu kỳ + nhập − xuất.
 model StockBalance {
-  id            String  @id @default(uuid()) @db.Uuid
-  warehouseId   String  @map("warehouse_id") @db.Uuid
-  materialId    String  @unique @map("material_id") @db.Uuid
-  openingQty    Decimal @default(0) @map("opening_qty") @db.Decimal(18, 4)
-  openingAmount Decimal @default(0) @map("opening_amount") @db.Decimal(18, 2)
+  id             String    @id @default(uuid()) @db.Uuid
+  warehouseId    String    @map("warehouse_id") @db.Uuid
+  materialId     String    @unique @map("material_id") @db.Uuid
+  openingQty     Decimal   @default(0) @map("opening_qty") @db.Decimal(18, 4)
+  openingAmount  Decimal   @default(0) @map("opening_amount") @db.Decimal(18, 2)
   /// Đơn giá tồn — cấu hình tại Kho đơn giá. TT đầu kỳ = SL đầu kỳ × giá này.
-  stockUnitPrice Decimal @default(0) @map("stock_unit_price") @db.Decimal(18, 2)
-  inQty         Decimal @default(0) @map("in_qty") @db.Decimal(18, 4)
-  inAmount      Decimal @default(0) @map("in_amount") @db.Decimal(18, 2)
-  outQty        Decimal @default(0) @map("out_qty") @db.Decimal(18, 4)
-  outAmount     Decimal @default(0) @map("out_amount") @db.Decimal(18, 2)
-  qty           Decimal @default(0) @db.Decimal(18, 4)
-  amount        Decimal @default(0) @db.Decimal(18, 2)
-  updatedAt     DateTime @updatedAt @map("updated_at")
+  stockUnitPrice Decimal   @default(0) @map("stock_unit_price") @db.Decimal(18, 2)
+  inQty          Decimal   @default(0) @map("in_qty") @db.Decimal(18, 4)
+  inAmount       Decimal   @default(0) @map("in_amount") @db.Decimal(18, 2)
+  outQty         Decimal   @default(0) @map("out_qty") @db.Decimal(18, 4)
+  outAmount      Decimal   @default(0) @map("out_amount") @db.Decimal(18, 2)
+  qty            Decimal   @default(0) @db.Decimal(18, 4)
+  amount         Decimal   @default(0) @db.Decimal(18, 2)
+  /// Số kiểm kê thực tế tại kho — cột "Tồn thực tế" trên sheet Excel.
+  /// Null = chưa kiểm kê. Chênh lệch = countedQty − qty, tính động chứ không lưu.
+  countedQty     Decimal?  @map("counted_qty") @db.Decimal(18, 4)
+  countedAt      DateTime? @map("counted_at") @db.Date
+  updatedAt      DateTime  @updatedAt @map("updated_at")
 
   warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
   material  Material  @relation(fields: [materialId], references: [id], onDelete: Cascade)
@@ -219,37 +225,38 @@ model Supplier {
 
 /// Một dòng trên tab Nhập kho đá.
 model StockInbound {
-  id           String   @id @default(uuid()) @db.Uuid
-  warehouseId  String   @map("warehouse_id") @db.Uuid
-  materialId   String?  @map("material_id") @db.Uuid
-  sortOrder    Int      @default(0) @map("sort_order")
-  receivedAt   DateTime @map("received_at") @db.Date
-  name         String
-  sku          String?
-  unitId       String?  @map("unit_id") @db.Uuid
-  unitName     String   @map("unit_name")
-  qty          Decimal  @db.Decimal(18, 4)
-  stockUnitPrice Decimal @default(0) @map("stock_unit_price") @db.Decimal(18, 2)
-  unitPrice    Decimal  @default(0) @map("unit_price") @db.Decimal(18, 2)
-  amount       Decimal  @default(0) @db.Decimal(18, 2)
-  note         String?
-  enteredBy    String?  @map("entered_by")
-  supplierSku  String?  @map("supplier_sku")
-  supplierId   String?  @map("supplier_id") @db.Uuid
-  supplierName String?  @map("supplier_name")
+  id             String   @id @default(uuid()) @db.Uuid
+  warehouseId    String   @map("warehouse_id") @db.Uuid
+  materialId     String?  @map("material_id") @db.Uuid
+  sortOrder      Int      @default(0) @map("sort_order")
+  receivedAt     DateTime @map("received_at") @db.Date
+  name           String
+  sku            String?
+  unitId         String?  @map("unit_id") @db.Uuid
+  unitName       String   @map("unit_name")
+  qty            Decimal  @db.Decimal(18, 4)
+  stockUnitPrice Decimal  @default(0) @map("stock_unit_price") @db.Decimal(18, 2)
+  unitPrice      Decimal  @default(0) @map("unit_price") @db.Decimal(18, 2)
+  amount         Decimal  @default(0) @db.Decimal(18, 2)
+  note           String?
+  /// Người lập phiếu — cột đã có sẵn trên DB.
+  enteredBy      String?  @map("entered_by")
+  supplierSku    String?  @map("supplier_sku")
+  supplierId     String?  @map("supplier_id") @db.Uuid
+  supplierName   String?  @map("supplier_name")
   /// Seed lịch sử = false (tồn kho đá đã gồm số nhập). Phiếu mới từ UI = true.
-  applyToStock Boolean  @default(false) @map("apply_to_stock")
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
+  applyToStock   Boolean  @default(false) @map("apply_to_stock")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
   warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
   material  Material? @relation(fields: [materialId], references: [id], onDelete: SetNull)
   unit      Unit?     @relation(fields: [unitId], references: [id], onDelete: SetNull)
   supplier  Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
 
+  @@unique([warehouseId, sortOrder])
   @@index([warehouseId, receivedAt])
   @@index([warehouseId, sortOrder])
-  @@unique([warehouseId, sortOrder])
   @@map("stock_inbounds")
 }
 
@@ -271,6 +278,7 @@ model StockOutbound {
   note             String?
   issuedBy         String?  @map("issued_by")
   receivedBy       String?  @map("received_by")
+  /// Liên kết người nhận tới tài khoản — cột đã có sẵn trên DB.
   receivedByUserId String?  @map("received_by_user_id") @db.Uuid
   /// Seed lịch sử = false (tồn kho đá đã gồm số xuất). Phiếu mới từ UI = true.
   applyToStock     Boolean  @default(false) @map("apply_to_stock")
@@ -281,9 +289,9 @@ model StockOutbound {
   material  Material? @relation(fields: [materialId], references: [id], onDelete: SetNull)
   unit      Unit?     @relation(fields: [unitId], references: [id], onDelete: SetNull)
 
+  @@unique([warehouseId, sortOrder])
   @@index([warehouseId, issuedAt])
   @@index([warehouseId, sortOrder])
-  @@unique([warehouseId, sortOrder])
   @@map("stock_outbounds")
 }
 
