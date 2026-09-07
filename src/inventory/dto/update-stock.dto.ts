@@ -100,16 +100,6 @@ export class UpdateStockDto {
   @Matches(DECIMAL, { message: 'Tồn kho TT không hợp lệ' })
   amount?: string;
 
-  /// Số kiểm kê thực tế. Gửi null để xoá kết quả kiểm kê.
-  @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
-  @Matches(DECIMAL, { message: 'Tồn thực tế không hợp lệ' })
-  countedQty?: string | null;
-
-  @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
-  @IsDateString()
-  countedAt?: string | null;
 }
 
 export class CreateStockDto {
