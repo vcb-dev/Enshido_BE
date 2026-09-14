@@ -6,6 +6,7 @@ import {
   IsString,
   IsUUID,
   Matches,
+  MaxLength,
 } from 'class-validator';
 
 const DECIMAL = /^-?\d+(\.\d+)?$/;
@@ -71,4 +72,11 @@ export class CreateOutboundDto {
   @Type(() => Boolean)
   @IsBoolean()
   applyToStock?: boolean;
+
+  /** Mã đơn sản xuất dùng NVL này. Rỗng = bỏ gắn; không gửi = giữ nguyên khi sửa. */
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
+  @IsString()
+  @MaxLength(20)
+  productionOrderCode?: string | null;
 }

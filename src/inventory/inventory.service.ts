@@ -7,7 +7,12 @@ import {
 import { MaterialClass, MetalKind, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { InflightMap, TtlCache } from '../util/ttl-cache';
-import { availabilityOf, CLASS_LABEL, METAL_KIND_LABEL, decStr } from '../util/money';
+import {
+  availabilityOf,
+  CLASS_LABEL,
+  METAL_KIND_LABEL,
+  decStr,
+} from '../util/money';
 import type { AuthUserPayload } from '../auth/types';
 import { CreateInboundDto } from './dto/inbound.dto';
 import { CreateOutboundDto } from './dto/outbound.dto';
@@ -75,7 +80,9 @@ export class InventoryService {
   constructor(private readonly prisma: PrismaService) {}
 
   async listWarehouses() {
-    return this.cached('warehouses', WAREHOUSES_TTL_MS, () => this.loadWarehouses());
+    return this.cached('warehouses', WAREHOUSES_TTL_MS, () =>
+      this.loadWarehouses(),
+    );
   }
 
   private loadWarehouses() {
@@ -109,7 +116,11 @@ export class InventoryService {
     return warehouse;
   }
 
-  private cached<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
+  private cached<T>(
+    key: string,
+    ttlMs: number,
+    load: () => Promise<T>,
+  ): Promise<T> {
     const hit = this.cache.get<T>(key);
     if (hit) return Promise.resolve(hit);
     return this.inflight.run(key, async () => {
@@ -156,7 +167,9 @@ export class InventoryService {
   }
 
   async listStock(code: string) {
-    return this.cached(`stock:${code}`, STOCK_TTL_MS, () => this.loadStock(code));
+    return this.cached(`stock:${code}`, STOCK_TTL_MS, () =>
+      this.loadStock(code),
+    );
   }
 
   private async loadStock(code: string) {
@@ -172,7 +185,11 @@ export class InventoryService {
       select: materialStockSelect,
     });
     const inbounds = await this.prisma.stockInbound.findMany({
-      where: { warehouseId: warehouse.id, materialId: { not: null }, qty: { gt: 0 } },
+      where: {
+        warehouseId: warehouse.id,
+        materialId: { not: null },
+        qty: { gt: 0 },
+      },
       orderBy: [{ receivedAt: 'asc' }, { sortOrder: 'asc' }],
       select: {
         materialId: true,
@@ -189,20 +206,34 @@ export class InventoryService {
         applyToStock: true,
         qty: { gt: 0 },
       },
-      select: { materialId: true, qty: true, inboundUnitPrice: true, amount: true },
+      select: {
+        materialId: true,
+        qty: true,
+        inboundUnitPrice: true,
+        amount: true,
+      },
     });
 
     const zero = new Prisma.Decimal(0);
-    const inboundMap = new Map<string, { qty: Prisma.Decimal; amount: Prisma.Decimal }>();
+    const inboundMap = new Map<
+      string,
+      { qty: Prisma.Decimal; amount: Prisma.Decimal }
+    >();
     const firstInboundMap = new Map<string, Date>();
-    const inboundByMaterial = new Map<string, { qty: Prisma.Decimal; unitPrice: Prisma.Decimal }[]>();
+    const inboundByMaterial = new Map<
+      string,
+      { qty: Prisma.Decimal; unitPrice: Prisma.Decimal }[]
+    >();
     for (const row of inbounds) {
       if (!row.materialId) continue;
       if (!firstInboundMap.has(row.materialId)) {
         firstInboundMap.set(row.materialId, row.receivedAt);
       }
       if (!row.applyToStock) continue;
-      const prev = inboundMap.get(row.materialId) ?? { qty: zero, amount: zero };
+      const prev = inboundMap.get(row.materialId) ?? {
+        qty: zero,
+        amount: zero,
+      };
       inboundMap.set(row.materialId, {
         qty: prev.qty.add(row.qty),
         amount: prev.amount.add(row.qty.mul(row.unitPrice).toDecimalPlaces(2)),
@@ -212,14 +243,20 @@ export class InventoryService {
       inboundByMaterial.set(row.materialId, lots);
     }
 
-    const outboundMap = new Map<string, { qty: Prisma.Decimal; amount: Prisma.Decimal }>();
+    const outboundMap = new Map<
+      string,
+      { qty: Prisma.Decimal; amount: Prisma.Decimal }
+    >();
     const consumedByMaterial = new Map<string, Prisma.Decimal>();
     for (const row of outbounds) {
       if (!row.materialId) continue;
       const line = row.amount.gt(0)
         ? row.amount
         : row.qty.mul(row.inboundUnitPrice).toDecimalPlaces(2);
-      const prev = outboundMap.get(row.materialId) ?? { qty: zero, amount: zero };
+      const prev = outboundMap.get(row.materialId) ?? {
+        qty: zero,
+        amount: zero,
+      };
       outboundMap.set(row.materialId, {
         qty: prev.qty.add(row.qty),
         amount: prev.amount.add(line),
@@ -235,7 +272,10 @@ export class InventoryService {
       layerMap.set(
         material.id,
         consumeLayers(
-          buildPriceLayers(material.balance, inboundByMaterial.get(material.id) ?? []),
+          buildPriceLayers(
+            material.balance,
+            inboundByMaterial.get(material.id) ?? [],
+          ),
           consumedByMaterial.get(material.id) ?? zero,
         ),
       );
@@ -338,11 +378,14 @@ export class InventoryService {
       },
       select: { id: true },
     });
-    if (nameClash) throw new ConflictException('Tên NVL đã tồn tại trong kho này');
+    if (nameClash)
+      throw new ConflictException('Tên NVL đã tồn tại trong kho này');
 
     const sortOrder = (last._max.sortOrder ?? 0) + 1;
     const dec = (value?: string) =>
-      value == null || value === '' ? new Prisma.Decimal(0) : new Prisma.Decimal(value);
+      value == null || value === ''
+        ? new Prisma.Decimal(0)
+        : new Prisma.Decimal(value);
 
     const openingQty = dec(dto.openingQty);
     const stockUnitPrice = dec(dto.stockUnitPrice);
@@ -400,8 +443,7 @@ export class InventoryService {
     });
     if (!material) throw new NotFoundException('Không tìm thấy NVL');
 
-    const sku =
-      dto.sku === undefined ? undefined : dto.sku.trim() || null;
+    const sku = dto.sku === undefined ? undefined : dto.sku.trim() || null;
     if (sku) {
       const clash = await this.prisma.material.findFirst({
         where: {
@@ -435,14 +477,19 @@ export class InventoryService {
         },
         select: { id: true },
       });
-      if (nameClash) throw new ConflictException('Tên NVL đã tồn tại trong kho này');
+      if (nameClash)
+        throw new ConflictException('Tên NVL đã tồn tại trong kho này');
     }
 
     const dec = (value?: string) =>
       value == null ? undefined : new Prisma.Decimal(value);
 
     if (dto.locationCode !== undefined) {
-      await this.assertAssignableLocation(warehouse.id, dto.locationCode, material.id);
+      await this.assertAssignableLocation(
+        warehouse.id,
+        dto.locationCode,
+        material.id,
+      );
     }
 
     await this.prisma.$transaction(async (tx) => {
@@ -482,7 +529,8 @@ export class InventoryService {
       });
       const zero = new Prisma.Decimal(0);
       const openingQty = dec(dto.openingQty) ?? current?.openingQty ?? zero;
-      const stockUnitPrice = dec(dto.stockUnitPrice) ?? current?.stockUnitPrice ?? zero;
+      const stockUnitPrice =
+        dec(dto.stockUnitPrice) ?? current?.stockUnitPrice ?? zero;
       const openingAmount = openingMoney(openingQty, stockUnitPrice);
 
       await tx.stockBalance.upsert({
@@ -505,15 +553,16 @@ export class InventoryService {
       await this.recomputeStockBalance(tx, warehouse.id, material.id);
     });
 
-    const [updated, inboundMap, outboundMap, firstInboundMap] = await Promise.all([
-      this.prisma.material.findUniqueOrThrow({
-        where: { id: material.id },
-        select: materialStockSelect,
-      }),
-      this.inboundSums(warehouse.id, [material.id]),
-      this.outboundSums(warehouse.id, [material.id]),
-      this.firstInboundDates(warehouse.id, [material.id]),
-    ]);
+    const [updated, inboundMap, outboundMap, firstInboundMap] =
+      await Promise.all([
+        this.prisma.material.findUniqueOrThrow({
+          where: { id: material.id },
+          select: materialStockSelect,
+        }),
+        this.inboundSums(warehouse.id, [material.id]),
+        this.outboundSums(warehouse.id, [material.id]),
+        this.firstInboundDates(warehouse.id, [material.id]),
+      ]);
     this.bustWarehouseCaches(code);
     return this.toStockRow(
       updated,
@@ -524,7 +573,9 @@ export class InventoryService {
   }
 
   async listInbounds(code: string) {
-    return this.cached(`inbounds:${code}`, STOCK_TTL_MS, () => this.loadInbounds(code));
+    return this.cached(`inbounds:${code}`, STOCK_TTL_MS, () =>
+      this.loadInbounds(code),
+    );
   }
 
   private async loadInbounds(code: string) {
@@ -560,7 +611,11 @@ export class InventoryService {
     };
   }
 
-  async createInbound(code: string, dto: CreateInboundDto, actor: AuthUserPayload) {
+  async createInbound(
+    code: string,
+    dto: CreateInboundDto,
+    actor: AuthUserPayload,
+  ) {
     const warehouse = await this.prisma.warehouse.findUnique({
       where: { code },
       select: { id: true, code: true },
@@ -577,7 +632,10 @@ export class InventoryService {
 
     const [unit, supplier, last, existing] = await Promise.all([
       dto.unitId
-        ? this.prisma.unit.findUnique({ where: { id: dto.unitId }, select: { id: true, name: true } })
+        ? this.prisma.unit.findUnique({
+            where: { id: dto.unitId },
+            select: { id: true, name: true },
+          })
         : Promise.resolve(null),
       dto.supplierId
         ? this.prisma.supplier.findUnique({
@@ -592,8 +650,10 @@ export class InventoryService {
       this.resolveInboundMaterial(warehouse.id, dto.materialId, dto.sku, name),
     ]);
 
-    if (dto.unitId && !unit) throw new NotFoundException('Không tìm thấy đơn vị');
-    if (dto.supplierId && !supplier) throw new NotFoundException('Không tìm thấy NCC');
+    if (dto.unitId && !unit)
+      throw new NotFoundException('Không tìm thấy đơn vị');
+    if (dto.supplierId && !supplier)
+      throw new NotFoundException('Không tìm thấy NCC');
 
     const sortOrder = (last._max.sortOrder ?? 0) + 1;
     const unitName = dto.unitName?.trim() || unit?.name || 'viên';
@@ -606,7 +666,11 @@ export class InventoryService {
     }
 
     if (dto.locationCode !== undefined) {
-      await this.assertAssignableLocation(warehouse.id, dto.locationCode, existing.id);
+      await this.assertAssignableLocation(
+        warehouse.id,
+        dto.locationCode,
+        existing.id,
+      );
     }
 
     const created = await this.prisma.$transaction(async (tx) => {
@@ -684,7 +748,10 @@ export class InventoryService {
 
     const [unit, supplier] = await Promise.all([
       dto.unitId
-        ? this.prisma.unit.findUnique({ where: { id: dto.unitId }, select: { id: true, name: true } })
+        ? this.prisma.unit.findUnique({
+            where: { id: dto.unitId },
+            select: { id: true, name: true },
+          })
         : Promise.resolve(null),
       dto.supplierId
         ? this.prisma.supplier.findUnique({
@@ -693,8 +760,10 @@ export class InventoryService {
           })
         : Promise.resolve(null),
     ]);
-    if (dto.unitId && !unit) throw new NotFoundException('Không tìm thấy đơn vị');
-    if (dto.supplierId && !supplier) throw new NotFoundException('Không tìm thấy NCC');
+    if (dto.unitId && !unit)
+      throw new NotFoundException('Không tìm thấy đơn vị');
+    if (dto.supplierId && !supplier)
+      throw new NotFoundException('Không tìm thấy NCC');
 
     if (sku && inbound.materialId) {
       const clash = await this.prisma.material.findFirst({
@@ -712,13 +781,23 @@ export class InventoryService {
     const receivedAt = new Date(`${dto.receivedAt.slice(0, 10)}T00:00:00.000Z`);
     const unitName = dto.unitName?.trim() || unit?.name || 'viên';
     if (dto.locationCode !== undefined) {
-      await this.assertAssignableLocation(warehouse.id, dto.locationCode, inbound.materialId);
+      await this.assertAssignableLocation(
+        warehouse.id,
+        dto.locationCode,
+        inbound.materialId,
+      );
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
       let materialId = inbound.materialId;
       if (!materialId) {
-        const ensured = await this.ensureMaterialInTx(tx, warehouse, name, sku, unit);
+        const ensured = await this.ensureMaterialInTx(
+          tx,
+          warehouse,
+          name,
+          sku,
+          unit,
+        );
         materialId = ensured.id;
       } else {
         await tx.material.update({
@@ -829,7 +908,9 @@ export class InventoryService {
   }
 
   async listOutbounds(code: string) {
-    return this.cached(`outbounds:${code}`, STOCK_TTL_MS, () => this.loadOutbounds(code));
+    return this.cached(`outbounds:${code}`, STOCK_TTL_MS, () =>
+      this.loadOutbounds(code),
+    );
   }
 
   private async loadOutbounds(code: string) {
@@ -845,6 +926,7 @@ export class InventoryService {
       include: {
         unit: { select: { id: true, name: true } },
         material: { select: { id: true, sku: true } },
+        productionOrder: { select: { code: true } },
       },
     });
     const layerMap = await this.fullLayersByMaterial(warehouse.id);
@@ -854,7 +936,9 @@ export class InventoryService {
       (acc, row) => ({
         qty: acc.qty.add(row.qty),
         amount: acc.amount.add(
-          row.amount.gt(0) ? row.amount : row.qty.mul(row.inboundUnitPrice).toDecimalPlaces(2),
+          row.amount.gt(0)
+            ? row.amount
+            : row.qty.mul(row.inboundUnitPrice).toDecimalPlaces(2),
         ),
       }),
       { qty: zero, amount: zero },
@@ -864,14 +948,20 @@ export class InventoryService {
       warehouse,
       totals: { qty: decStr(totals.qty), amount: decStr(totals.amount) },
       items: rows.map((row) => {
-        const layers = row.materialId ? layerMap.get(row.materialId) ?? [] : [];
+        const layers = row.materialId
+          ? (layerMap.get(row.materialId) ?? [])
+          : [];
         const takes = pullFifoTakes(layers, row.qty);
         return this.toOutboundRow(row, takes);
       }),
     };
   }
 
-  async createOutbound(code: string, dto: CreateOutboundDto, actor: AuthUserPayload) {
+  async createOutbound(
+    code: string,
+    dto: CreateOutboundDto,
+    actor: AuthUserPayload,
+  ) {
     const warehouse = await this.prisma.warehouse.findUnique({
       where: { code },
       select: { id: true, code: true },
@@ -886,12 +976,16 @@ export class InventoryService {
 
     const [unit, existing] = await Promise.all([
       dto.unitId
-        ? this.prisma.unit.findUnique({ where: { id: dto.unitId }, select: { id: true, name: true } })
+        ? this.prisma.unit.findUnique({
+            where: { id: dto.unitId },
+            select: { id: true, name: true },
+          })
         : Promise.resolve(null),
       this.resolveInboundMaterial(warehouse.id, dto.materialId, dto.sku, name),
     ]);
 
-    if (dto.unitId && !unit) throw new NotFoundException('Không tìm thấy đơn vị');
+    if (dto.unitId && !unit)
+      throw new NotFoundException('Không tìm thấy đơn vị');
 
     const unitName = dto.unitName?.trim() || unit?.name || 'viên';
     const issuedAt = new Date(`${dto.issuedAt.slice(0, 10)}T00:00:00.000Z`);
@@ -904,6 +998,9 @@ export class InventoryService {
 
     const receiver = await this.resolveReceiver(dto.receivedByUserId, true);
     if (!receiver) throw new BadRequestException('Chọn người nhận');
+    const productionOrderId = await this.resolveProductionOrder(
+      dto.productionOrderCode,
+    );
 
     const created = await this.prisma.$transaction(async (tx) => {
       const material = existing;
@@ -924,6 +1021,7 @@ export class InventoryService {
         receivedBy: receiver.receivedBy,
         receivedByUserId: receiver.receivedByUserId,
         applyToStock,
+        productionOrderId,
       });
     });
 
@@ -931,7 +1029,11 @@ export class InventoryService {
     return this.toOutboundRow(created);
   }
 
-  async updateOutbound(code: string, outboundId: string, dto: CreateOutboundDto) {
+  async updateOutbound(
+    code: string,
+    outboundId: string,
+    dto: CreateOutboundDto,
+  ) {
     const warehouse = await this.prisma.warehouse.findUnique({
       where: { code },
       select: { id: true, code: true },
@@ -946,6 +1048,7 @@ export class InventoryService {
         applyToStock: true,
         qty: true,
         amount: true,
+        productionOrderId: true,
       },
     });
     if (!outbound) throw new NotFoundException('Không tìm thấy dòng xuất kho');
@@ -962,7 +1065,8 @@ export class InventoryService {
           select: { id: true, name: true },
         })
       : null;
-    if (dto.unitId && !unit) throw new NotFoundException('Không tìm thấy đơn vị');
+    if (dto.unitId && !unit)
+      throw new NotFoundException('Không tìm thấy đơn vị');
 
     if (sku && outbound.materialId) {
       const clash = await this.prisma.material.findFirst({
@@ -980,11 +1084,24 @@ export class InventoryService {
     const issuedAt = new Date(`${dto.issuedAt.slice(0, 10)}T00:00:00.000Z`);
     const unitName = dto.unitName?.trim() || unit?.name || 'viên';
     const receiver = await this.resolveReceiver(dto.receivedByUserId, false);
+    const productionOrderId =
+      dto.productionOrderCode === undefined
+        ? outbound.productionOrderId
+        : await this.resolveProductionOrder(
+            dto.productionOrderCode,
+            outbound.productionOrderId,
+          );
 
     const updated = await this.prisma.$transaction(async (tx) => {
       let materialId = outbound.materialId;
       if (!materialId) {
-        const ensured = await this.ensureMaterialInTx(tx, warehouse, name, sku, unit);
+        const ensured = await this.ensureMaterialInTx(
+          tx,
+          warehouse,
+          name,
+          sku,
+          unit,
+        );
         materialId = ensured.id;
       } else {
         await tx.material.update({
@@ -1003,8 +1120,20 @@ export class InventoryService {
         });
       }
 
-      await this.assertEnoughStock(tx, warehouse.id, materialId, qty, outbound.id);
-      const quote = await this.quoteFifo(tx, warehouse.id, materialId, qty, outbound.id);
+      await this.assertEnoughStock(
+        tx,
+        warehouse.id,
+        materialId,
+        qty,
+        outbound.id,
+      );
+      const quote = await this.quoteFifo(
+        tx,
+        warehouse.id,
+        materialId,
+        qty,
+        outbound.id,
+      );
 
       const row = await tx.stockOutbound.update({
         where: { id: outbound.id },
@@ -1020,6 +1149,7 @@ export class InventoryService {
           inboundUnitPrice: quote.unitPrice,
           amount: quote.amount,
           note: dto.note?.trim() || null,
+          productionOrderId,
           ...(receiver
             ? {
                 receivedBy: receiver.receivedBy,
@@ -1030,6 +1160,7 @@ export class InventoryService {
         include: {
           unit: { select: { id: true, name: true } },
           material: { select: { id: true, sku: true } },
+          productionOrder: { select: { code: true } },
         },
       });
 
@@ -1114,7 +1245,9 @@ export class InventoryService {
         select: { id: true, name: true },
       }));
     if (!fallbackUnit) {
-      throw new BadRequestException('Thiếu đơn vị tính để tạo NVL trên kho tồn');
+      throw new BadRequestException(
+        'Thiếu đơn vị tính để tạo NVL trên kho tồn',
+      );
     }
     const lastMat = await tx.material.aggregate({
       where: { warehouseId: warehouse.id, isActive: true },
@@ -1152,7 +1285,10 @@ export class InventoryService {
       select: { materialId: true, qty: true, unitPrice: true },
     });
     const zero = new Prisma.Decimal(0);
-    const map = new Map<string, { qty: Prisma.Decimal; amount: Prisma.Decimal }>();
+    const map = new Map<
+      string,
+      { qty: Prisma.Decimal; amount: Prisma.Decimal }
+    >();
     for (const row of rows) {
       if (!row.materialId) continue;
       const prev = map.get(row.materialId) ?? { qty: zero, amount: zero };
@@ -1190,10 +1326,18 @@ export class InventoryService {
         applyToStock: true,
         qty: { gt: 0 },
       },
-      select: { materialId: true, qty: true, inboundUnitPrice: true, amount: true },
+      select: {
+        materialId: true,
+        qty: true,
+        inboundUnitPrice: true,
+        amount: true,
+      },
     });
     const zero = new Prisma.Decimal(0);
-    const map = new Map<string, { qty: Prisma.Decimal; amount: Prisma.Decimal }>();
+    const map = new Map<
+      string,
+      { qty: Prisma.Decimal; amount: Prisma.Decimal }
+    >();
     for (const row of rows) {
       if (!row.materialId) continue;
       const line = row.amount.gt(0)
@@ -1279,26 +1423,28 @@ export class InventoryService {
     };
   }
 
-  private toOutboundRow(row: {
-    id: string;
-    sortOrder: number;
-    issuedAt: Date;
-    name: string;
-    sku: string | null;
-    unitName: string;
-    unitId: string | null;
-    qty: Prisma.Decimal;
-    stockUnitPrice: Prisma.Decimal;
-    inboundUnitPrice: Prisma.Decimal;
-    amount: Prisma.Decimal;
-    note: string | null;
-    issuedBy: string | null;
-    receivedBy: string | null;
-    receivedByUserId: string | null;
-    materialId: string | null;
-    unit?: { id: string; name: string } | null;
-    material?: { id: string; sku: string | null } | null;
-  },
+  private toOutboundRow(
+    row: {
+      id: string;
+      sortOrder: number;
+      issuedAt: Date;
+      name: string;
+      sku: string | null;
+      unitName: string;
+      unitId: string | null;
+      qty: Prisma.Decimal;
+      stockUnitPrice: Prisma.Decimal;
+      inboundUnitPrice: Prisma.Decimal;
+      amount: Prisma.Decimal;
+      note: string | null;
+      issuedBy: string | null;
+      receivedBy: string | null;
+      receivedByUserId: string | null;
+      materialId: string | null;
+      unit?: { id: string; name: string } | null;
+      material?: { id: string; sku: string | null } | null;
+      productionOrder?: { code: string } | null;
+    },
     takes?: PriceTake[],
   ) {
     return {
@@ -1318,6 +1464,7 @@ export class InventoryService {
       receivedBy: row.receivedBy,
       receivedByUserId: row.receivedByUserId,
       materialId: row.materialId,
+      productionOrderCode: row.productionOrder?.code ?? null,
       priceBreakdown: (takes ?? []).map((take) => ({
         qty: decStr(take.qty),
         unitPrice: decStr(take.unitPrice),
@@ -1355,8 +1502,37 @@ export class InventoryService {
       select: { name: true },
     });
     if (taken) {
-      throw new BadRequestException(`Vị trí ${code} đang dùng cho ${taken.name}`);
+      throw new BadRequestException(
+        `Vị trí ${code} đang dùng cho ${taken.name}`,
+      );
     }
+  }
+
+  /**
+   * Mã đơn sản xuất gắn vào phiếu xuất NVL. Đơn đã giao không nhận thêm NVL,
+   * trừ khi dòng xuất vốn đã gắn đúng đơn đó (sửa phiếu cũ).
+   */
+  private async resolveProductionOrder(
+    code: string | null | undefined,
+    currentOrderId?: string | null,
+  ): Promise<string | null> {
+    const normalized = code?.trim().toUpperCase();
+    if (!normalized) return null;
+    const order = await this.prisma.productionOrder.findUnique({
+      where: { code: normalized },
+      select: { id: true, status: true },
+    });
+    if (!order) {
+      throw new BadRequestException(
+        `Không tìm thấy đơn sản xuất ${normalized}`,
+      );
+    }
+    if (order.status === 'DELIVERED' && order.id !== currentOrderId) {
+      throw new BadRequestException(
+        `Đơn ${normalized} đã giao, không gắn thêm NVL`,
+      );
+    }
+    return order.id;
   }
 
   private async resolveReceiver(
@@ -1397,9 +1573,15 @@ export class InventoryService {
     if (!id) return;
     const found =
       kind === 'shape'
-        ? await this.prisma.shape.findUnique({ where: { id }, select: { id: true } })
+        ? await this.prisma.shape.findUnique({
+            where: { id },
+            select: { id: true },
+          })
         : kind === 'color'
-          ? await this.prisma.color.findUnique({ where: { id }, select: { id: true } })
+          ? await this.prisma.color.findUnique({
+              where: { id },
+              select: { id: true },
+            })
           : await this.prisma.materialType.findUnique({
               where: { id },
               select: { id: true },
@@ -1422,7 +1604,9 @@ export class InventoryService {
       outbound,
     );
     const av = availabilityOf(nxt.qty, m.reorderPoint);
-    const stockedAt = (firstInboundAt ?? m.createdAt).toISOString().slice(0, 10);
+    const stockedAt = (firstInboundAt ?? m.createdAt)
+      .toISOString()
+      .slice(0, 10);
     return {
       id: m.id,
       stt: m.sortOrder,
@@ -1456,7 +1640,9 @@ export class InventoryService {
       classificationCode: m.classification,
       classification: CLASS_LABEL[m.classification] ?? m.classification,
       metalKind: m.metalKind,
-      metalKindLabel: m.metalKind ? (METAL_KIND_LABEL[m.metalKind] ?? m.metalKind) : null,
+      metalKindLabel: m.metalKind
+        ? (METAL_KIND_LABEL[m.metalKind] ?? m.metalKind)
+        : null,
       availability: av.code,
       availabilityLabel: av.label,
     };
@@ -1501,7 +1687,9 @@ export class InventoryService {
       (acc, row) => ({
         qty: acc.qty.add(row.qty),
         amount: acc.amount.add(
-          row.amount.gt(0) ? row.amount : row.qty.mul(row.inboundUnitPrice).toDecimalPlaces(2),
+          row.amount.gt(0)
+            ? row.amount
+            : row.qty.mul(row.inboundUnitPrice).toDecimalPlaces(2),
         ),
       }),
       { qty: zero, amount: zero },
@@ -1601,7 +1789,12 @@ export class InventoryService {
     if (qty.lte(0)) {
       throw new BadRequestException('Số lượng xuất phải lớn hơn 0');
     }
-    const available = await this.availableOnHand(tx, warehouseId, materialId, exceptOutboundId);
+    const available = await this.availableOnHand(
+      tx,
+      warehouseId,
+      materialId,
+      exceptOutboundId,
+    );
     if (qty.gt(available)) {
       throw new BadRequestException(
         `Không đủ tồn để xuất (sẵn có ${decStr(available)}, xuất ${decStr(qty)})`,
@@ -1624,9 +1817,15 @@ export class InventoryService {
       receivedBy: string | null;
       receivedByUserId: string | null;
       applyToStock: boolean;
+      productionOrderId: string | null;
     },
   ) {
-    const quote = await this.quoteFifo(tx, params.warehouseId, params.material.id, params.qty);
+    const quote = await this.quoteFifo(
+      tx,
+      params.warehouseId,
+      params.material.id,
+      params.qty,
+    );
     const last = await tx.stockOutbound.aggregate({
       where: { warehouseId: params.warehouseId },
       _max: { sortOrder: true },
@@ -1650,13 +1849,19 @@ export class InventoryService {
         receivedBy: params.receivedBy,
         receivedByUserId: params.receivedByUserId,
         applyToStock: params.applyToStock,
+        productionOrderId: params.productionOrderId,
       },
       include: {
         unit: { select: { id: true, name: true } },
         material: { select: { id: true, sku: true } },
+        productionOrder: { select: { code: true } },
       },
     });
-    await this.recomputeStockBalance(tx, params.warehouseId, params.material.id);
+    await this.recomputeStockBalance(
+      tx,
+      params.warehouseId,
+      params.material.id,
+    );
     return row;
   }
 
@@ -1667,7 +1872,12 @@ export class InventoryService {
     qty: Prisma.Decimal,
     exceptOutboundId?: string,
   ) {
-    const layers = await this.listPriceLayers(tx, warehouseId, materialId, exceptOutboundId);
+    const layers = await this.listPriceLayers(
+      tx,
+      warehouseId,
+      materialId,
+      exceptOutboundId,
+    );
     return takeFifo(layers, qty);
   }
 
@@ -1686,7 +1896,10 @@ export class InventoryService {
       orderBy: [{ receivedAt: 'asc' }, { sortOrder: 'asc' }],
       select: { materialId: true, qty: true, unitPrice: true },
     });
-    const inboundByMaterial = new Map<string, { qty: Prisma.Decimal; unitPrice: Prisma.Decimal }[]>();
+    const inboundByMaterial = new Map<
+      string,
+      { qty: Prisma.Decimal; unitPrice: Prisma.Decimal }[]
+    >();
     for (const row of inbounds) {
       if (!row.materialId) continue;
       const list = inboundByMaterial.get(row.materialId) ?? [];
@@ -1695,7 +1908,13 @@ export class InventoryService {
     }
     const map = new Map<string, PriceLayer[]>();
     for (const balance of balances) {
-      map.set(balance.materialId, buildPriceLayers(balance, inboundByMaterial.get(balance.materialId) ?? []));
+      map.set(
+        balance.materialId,
+        buildPriceLayers(
+          balance,
+          inboundByMaterial.get(balance.materialId) ?? [],
+        ),
+      );
     }
     return map;
   }
@@ -1710,13 +1929,19 @@ export class InventoryService {
     const consumedByMaterial = new Map<string, Prisma.Decimal>();
     for (const row of outboundSums) {
       if (!row.materialId) continue;
-      consumedByMaterial.set(row.materialId, row._sum.qty ?? new Prisma.Decimal(0));
+      consumedByMaterial.set(
+        row.materialId,
+        row._sum.qty ?? new Prisma.Decimal(0),
+      );
     }
     const map = new Map<string, PriceLayer[]>();
     for (const [materialId, layers] of layerMap) {
       map.set(
         materialId,
-        consumeLayers(layers, consumedByMaterial.get(materialId) ?? new Prisma.Decimal(0)),
+        consumeLayers(
+          layers,
+          consumedByMaterial.get(materialId) ?? new Prisma.Decimal(0),
+        ),
       );
     }
     return map;
@@ -1771,7 +1996,10 @@ export class InventoryService {
 
 function classificationOf(warehouseCode: string): MaterialClass {
   if (warehouseCode === 'nvl-tieu-hao') return MaterialClass.CONSUMABLE;
-  if (warehouseCode === 'btp-cho-vao-da' || warehouseCode === 'ban-thanh-pham') {
+  if (
+    warehouseCode === 'btp-cho-vao-da' ||
+    warehouseCode === 'ban-thanh-pham'
+  ) {
     return MaterialClass.SEMI_FINISHED;
   }
   return MaterialClass.RAW_MATERIAL;
@@ -1786,7 +2014,9 @@ function exclusivePrices(stockUnitPrice?: string, inboundUnitPrice?: string) {
   const stock = new Prisma.Decimal(stockUnitPrice || 0);
   const inbound = new Prisma.Decimal(inboundUnitPrice || 0);
   if (!stock.isZero() && !inbound.isZero()) {
-    throw new BadRequestException('Chỉ nhập một trong hai: đơn giá tồn hoặc đơn giá nhập');
+    throw new BadRequestException(
+      'Chỉ nhập một trong hai: đơn giá tồn hoặc đơn giá nhập',
+    );
   }
   return { stock, inbound, unit: stock.isZero() ? inbound : stock };
 }
@@ -1811,22 +2041,32 @@ function buildPriceLayers(
       fromStock && !fromStock.isZero()
         ? fromStock
         : (balance?.openingAmount ?? zero).div(openingQty).toDecimalPlaces(2);
-    layers.push({ kind: 'opening', unitPrice: openingPrice, remaining: openingQty });
+    layers.push({
+      kind: 'opening',
+      unitPrice: openingPrice,
+      remaining: openingQty,
+    });
   }
   for (const row of inbounds) {
     if (row.qty.lte(0)) continue;
     const last = layers[layers.length - 1];
     const canMerge =
-      last &&
-      last.kind === 'inbound' &&
-      last.unitPrice.eq(row.unitPrice);
+      last && last.kind === 'inbound' && last.unitPrice.eq(row.unitPrice);
     if (canMerge) last.remaining = last.remaining.add(row.qty);
-    else layers.push({ kind: 'inbound', unitPrice: row.unitPrice, remaining: row.qty });
+    else
+      layers.push({
+        kind: 'inbound',
+        unitPrice: row.unitPrice,
+        remaining: row.qty,
+      });
   }
   return layers;
 }
 
-function consumeLayers(layers: PriceLayer[], consumed: Prisma.Decimal): PriceLayer[] {
+function consumeLayers(
+  layers: PriceLayer[],
+  consumed: Prisma.Decimal,
+): PriceLayer[] {
   let left = consumed;
   for (const layer of layers) {
     if (left.lte(0)) break;
@@ -1863,7 +2103,8 @@ function takeFifo(layers: PriceLayer[], qty: Prisma.Decimal) {
     zero,
   );
   const samePrice =
-    takes.length > 0 && takes.every((take) => take.unitPrice.eq(takes[0].unitPrice));
+    takes.length > 0 &&
+    takes.every((take) => take.unitPrice.eq(takes[0].unitPrice));
   return {
     amount,
     unitPrice: samePrice ? takes[0].unitPrice : zero,

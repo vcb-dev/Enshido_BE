@@ -1,0 +1,1109 @@
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { Prisma, ProductionStage, ProductionStatus } from '@prisma/client';
+import type { AuthUserPayload } from '../auth/types';
+import { PrismaService } from '../prisma/prisma.service';
+import { CloudinaryService } from '../uploads/cloudinary.service';
+import { decStr } from '../util/money';
+import { silverLossOf } from './stage-math';
+import {
+  CastingDto,
+  ChangeStatusDto,
+  HandoverStageDto,
+  ListProductionOrdersQuery,
+  OrderCostDto,
+  OrderImageDto,
+  ReturnStageDto,
+  StartStageDto,
+  UpsertProductionOrderDto,
+} from './dto/production-order.dto';
+
+const S = ProductionStatus;
+const G = ProductionStage;
+
+/** Thứ tự cột "Quá trình sản xuất" trên phiếu thợ. */
+export const STAGE_ORDER: ProductionStage[] = [
+  G.FILING,
+  G.STONE_SETTING,
+  G.POLISH_PLATING,
+  G.ENGRAVING,
+  G.APPEARANCE,
+];
+
+/** Khâu trên phiếu → trạng thái đơn. Khắc và Ngoại Quan thuộc Hoàn thiện. */
+const STAGE_STATUS: Record<ProductionStage, ProductionStatus> = {
+  FILING: S.FILING,
+  STONE_SETTING: S.STONE_SETTING,
+  POLISH_PLATING: S.POLISH_PLATING,
+  ENGRAVING: S.FINISHING,
+  APPEARANCE: S.FINISHING,
+};
+
+export const STATUS_LABEL: Record<ProductionStatus, string> = {
+  NEW: 'Mới',
+  REDO_3D: 'Sửa 3D',
+  CASTING: 'Đúc',
+  FILING: 'Nguội',
+  STONE_SETTING: 'Vào đá',
+  POLISH_PLATING: 'Bóng xi',
+  FINISHING: 'Hoàn thiện',
+  DELIVERED: 'Đã giao',
+  DEFECT: 'Sản xuất lỗi',
+};
+
+export const STAGE_LABEL: Record<ProductionStage, string> = {
+  FILING: 'Nguội',
+  STONE_SETTING: 'Vào đá',
+  POLISH_PLATING: 'Đánh bóng xi',
+  ENGRAVING: 'Khắc',
+  APPEARANCE: 'Ngoại Quan',
+};
+
+/** Trạng thái đơn đang nằm ở một khâu trên phiếu (có thợ đang giữ hàng hoặc vừa nộp lại). */
+const IN_STAGE_STATUSES: ProductionStatus[] = [
+  S.FILING,
+  S.STONE_SETTING,
+  S.POLISH_PLATING,
+  S.FINISHING,
+];
+
+/**
+ * Đổi tay được. Đúc đi qua báo Đúc, các khâu đi qua giao thợ, Đã giao đến từ phiếu xuất
+ * hàng — để phiếu thợ, kho thành phẩm và hệ thống luôn khớp.
+ */
+const MANUAL_STATUSES: ProductionStatus[] = [S.NEW, S.REDO_3D, S.DEFECT];
+
+const DEFAULT_LEAD_TIMES = ['3-5 ngày', '7-15 ngày', '15-30 ngày'];
+
+const SUGGEST_COLUMNS = {
+  closedBy: 'closed_by',
+  leadTime: 'lead_time',
+  debtStatus: 'debt_status',
+} as const;
+
+const detailInclude = {
+  images: { orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }] },
+  stages: { orderBy: { createdAt: 'asc' } },
+  statusLogs: { orderBy: { changedAt: 'desc' } },
+  parent: {
+    select: {
+      code: true,
+      children: { select: { id: true }, orderBy: { seq: 'asc' } },
+    },
+  },
+  children: { select: { code: true, status: true }, orderBy: { seq: 'asc' } },
+  receipt: true,
+  shipmentLines: {
+    select: {
+      qty: true,
+      shipment: { select: { code: true, shippedAt: true, customerName: true } },
+    },
+    orderBy: { shipment: { seq: 'asc' } },
+  },
+  _count: { select: { outbounds: true } },
+} satisfies Prisma.ProductionOrderInclude;
+
+type OrderDetail = Prisma.ProductionOrderGetPayload<{
+  include: typeof detailInclude;
+}>;
+type StageEntry = OrderDetail['stages'][number];
+
+const CREATE_RETRIES = 3;
+
+@Injectable()
+export class ProductionOrdersService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cloudinary: CloudinaryService,
+  ) {}
+
+  async list(query: ListProductionOrdersQuery) {
+    const page = query.page ?? 1;
+    const pageSize = query.pageSize ?? 25;
+    const dir = query.dir ?? 'desc';
+    const sort = query.sort ?? 'code';
+
+    const base: Prisma.ProductionOrderWhereInput = {};
+    if (query.requestType) base.requestType = query.requestType;
+    const search = query.search?.trim();
+    if (search) {
+      const contains = { contains: search, mode: 'insensitive' as const };
+      base.OR = [
+        { code: contains },
+        { trackingCode: contains },
+        { model3dCode: contains },
+        { closedBy: contains },
+        { description: contains },
+      ];
+    }
+    const where = query.status ? { ...base, status: query.status } : base;
+    const orderBy: Prisma.ProductionOrderOrderByWithRelationInput[] =
+      sort === 'code' ? [{ seq: dir }] : [{ [sort]: dir }, { seq: 'desc' }];
+
+    const [rows, total, grouped] = await Promise.all([
+      this.prisma.productionOrder.findMany({
+        where,
+        orderBy,
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        include: {
+          images: {
+            select: { id: true, kind: true, url: true },
+            orderBy: { sortOrder: 'asc' },
+          },
+        },
+      }),
+      this.prisma.productionOrder.count({ where }),
+      this.prisma.productionOrder.groupBy({
+        by: ['status'],
+        where: base,
+        _count: { _all: true },
+      }),
+    ]);
+
+    const statusCounts = Object.fromEntries(
+      Object.values(S).map((status) => [status, 0]),
+    ) as Record<ProductionStatus, number>;
+    let all = 0;
+    for (const group of grouped) {
+      statusCounts[group.status] = group._count._all;
+      all += group._count._all;
+    }
+
+    return {
+      total,
+      statusCounts: { ...statusCounts, ALL: all },
+      items: rows.map((row) => ({
+        id: row.id,
+        code: row.code,
+        status: row.status,
+        requestType: row.requestType,
+        qty: row.qty,
+        returnedQty: row.returnedQty,
+        model3dCode: row.model3dCode,
+        model3dUrl: row.model3dUrl,
+        leadTime: row.leadTime,
+        trackingCode: row.trackingCode,
+        closedBy: row.closedBy,
+        description: row.description,
+        stoneColor: row.stoneColor,
+        stoneTypes: row.stoneTypes,
+        size: row.size,
+        mainMaterial: row.mainMaterial,
+        platingColor: row.platingColor,
+        askedUserName: row.askedUserName,
+        receivedDate: ymd(row.receivedDate),
+        dueDate: row.dueDate ? ymd(row.dueDate) : null,
+        debtStatus: row.debtStatus,
+        createdAt: row.createdAt.toISOString(),
+        updatedAt: row.updatedAt.toISOString(),
+        images: row.images,
+      })),
+    };
+  }
+
+  async lookups() {
+    const [users, materialTypes, closers, usedStoneTypes, leadTimes, debts] =
+      await Promise.all([
+        this.prisma.user.findMany({
+          where: { isActive: true },
+          select: { id: true, username: true, fullName: true },
+          orderBy: { fullName: 'asc' },
+        }),
+        this.prisma.materialType.findMany({
+          select: { name: true },
+          orderBy: { sortOrder: 'asc' },
+        }),
+        this.distinctValues('closedBy'),
+        this.prisma.$queryRaw<Array<{ name: string }>>(
+          Prisma.sql`SELECT DISTINCT unnest(stone_types) AS name FROM production_orders`,
+        ),
+        this.distinctValues('leadTime'),
+        this.distinctValues('debtStatus'),
+      ]);
+
+    return {
+      users,
+      closers: uniqueSorted([
+        ...users.map((user) => user.fullName),
+        ...closers,
+      ]),
+      stoneTypes: uniqueSorted([
+        ...materialTypes
+          .map((item) => item.name)
+          .filter((name) => /^đá/i.test(name)),
+        ...usedStoneTypes.map((item) => item.name),
+      ]),
+      leadTimes: unique([...DEFAULT_LEAD_TIMES, ...leadTimes]),
+      debtStatuses: uniqueSorted(debts),
+    };
+  }
+
+  /** Đơn chưa giao cho ô chọn "Mã đơn SX" ở phiếu xuất NVL. */
+  async options(search?: string) {
+    const keyword = search?.trim();
+    const rows = await this.prisma.productionOrder.findMany({
+      where: {
+        status: { not: S.DELIVERED },
+        ...(keyword
+          ? {
+              OR: [
+                { code: { contains: keyword, mode: 'insensitive' } },
+                { description: { contains: keyword, mode: 'insensitive' } },
+                { trackingCode: { contains: keyword, mode: 'insensitive' } },
+              ],
+            }
+          : null),
+      },
+      orderBy: { seq: 'desc' },
+      take: 300,
+      select: { code: true, description: true, status: true },
+    });
+    return rows.map((row) => ({
+      code: row.code,
+      description:
+        row.description.length > 80
+          ? `${row.description.slice(0, 80)}…`
+          : row.description,
+      status: row.status,
+    }));
+  }
+
+  async addCost(code: string, dto: OrderCostDto, actor: AuthUserPayload) {
+    const order = await this.requireCostEditable(code);
+    await this.prisma.productionOrderCost.create({
+      data: {
+        orderId: order.id,
+        name: requireText(dto.name, 'Nhập tên khoản chi phí'),
+        amount: new Prisma.Decimal(dto.amount),
+        note: dto.note?.trim() || null,
+        createdByName: actorName(actor),
+      },
+    });
+    return { success: true };
+  }
+
+  async updateCost(code: string, costId: string, dto: OrderCostDto) {
+    const order = await this.requireCostEditable(code);
+    const { count } = await this.prisma.productionOrderCost.updateMany({
+      where: { id: costId, orderId: order.id },
+      data: {
+        name: requireText(dto.name, 'Nhập tên khoản chi phí'),
+        amount: new Prisma.Decimal(dto.amount),
+        note: dto.note?.trim() || null,
+      },
+    });
+    if (count === 0)
+      throw new NotFoundException('Không tìm thấy khoản chi phí');
+    return { success: true };
+  }
+
+  async removeCost(code: string, costId: string) {
+    const order = await this.requireCostEditable(code);
+    const { count } = await this.prisma.productionOrderCost.deleteMany({
+      where: { id: costId, orderId: order.id },
+    });
+    if (count === 0)
+      throw new NotFoundException('Không tìm thấy khoản chi phí');
+    return { success: true };
+  }
+
+  /** Đơn đã giao hết thì chi phí đã chụp lên phiếu xuất — không sửa nữa. */
+  private async requireCostEditable(code: string) {
+    const order = await this.prisma.productionOrder.findUnique({
+      where: { code: normalizeCode(code) },
+      select: { id: true, status: true },
+    });
+    if (!order) throw new NotFoundException('Không tìm thấy đơn sản xuất');
+    if (order.status === S.DELIVERED) {
+      throw new BadRequestException(
+        'Đơn đã giao, chi phí đã chốt trên phiếu xuất hàng',
+      );
+    }
+    return order;
+  }
+
+  async detail(code: string) {
+    return toDetail(await this.requireOrder(code));
+  }
+
+  async create(dto: UpsertProductionOrderDto, actor: AuthUserPayload) {
+    const fields = await this.orderFields(dto);
+    const images = this.newImages(dto.images, new Set());
+    const changedBy = actorName(actor);
+
+    for (let attempt = 1; ; attempt += 1) {
+      const last = await this.prisma.productionOrder.aggregate({
+        _max: { seq: true },
+      });
+      const seq = (last._max.seq ?? 0) + 1;
+      try {
+        const order = await this.prisma.productionOrder.create({
+          data: {
+            ...fields,
+            seq,
+            code: orderCode(seq),
+            createdBy: changedBy,
+            images: { create: images },
+            statusLogs: { create: { toStatus: S.NEW, changedBy } },
+          },
+          include: detailInclude,
+        });
+        await this.touchSiblings([fields.parentId], order.id);
+        return toDetail(order);
+      } catch (error) {
+        // Hai người lên đơn cùng lúc có thể lấy trùng số — thử lại với số kế tiếp.
+        if (isUniqueViolation(error) && attempt < CREATE_RETRIES) continue;
+        throw error;
+      }
+    }
+  }
+
+  async update(code: string, dto: UpsertProductionOrderDto) {
+    const order = await this.requireOrder(code);
+    if (order.receipt && dto.qty !== order.qty) {
+      throw new BadRequestException(
+        'Đơn đã vào kho thành phẩm, không đổi số lượng được',
+      );
+    }
+    const fields = await this.orderFields(dto, order.id);
+    const existing = new Set(order.images.map((image) => image.publicId));
+    const images = this.newImages(dto.images, existing);
+    const kept = new Set(images.map((image) => image.publicId));
+    const removed = order.images
+      .map((image) => image.publicId)
+      .filter((publicId) => !kept.has(publicId));
+
+    const updated = await this.prisma.productionOrder.update({
+      where: { id: order.id },
+      data: {
+        ...fields,
+        dataChangedAt: new Date(),
+        images: { deleteMany: {}, create: images },
+      },
+      include: detailInclude,
+    });
+    if (order.parentId !== fields.parentId) {
+      await this.touchSiblings([order.parentId, fields.parentId], order.id);
+    }
+    await this.cloudinary.destroy(removed);
+    return toDetail(updated);
+  }
+
+  async remove(code: string) {
+    const order = await this.requireOrder(code);
+    if (order.status !== S.NEW || order.stages.length > 0) {
+      throw new BadRequestException(
+        'Chỉ xóa được đơn ở trạng thái Mới và chưa giao khâu nào',
+      );
+    }
+    if (order.children.length > 0) {
+      throw new BadRequestException(
+        'Đơn đang có đơn con, gỡ liên kết trước khi xóa',
+      );
+    }
+    // Mã SX = số lớn nhất + 1 nên mã của đơn bị xóa có thể được cấp lại; không cho
+    // xóa đơn đã có phiếu giấy để tránh hai phiếu cùng mã.
+    if (order.lastPrintedAt) {
+      throw new BadRequestException('Đơn đã in phiếu cho thợ, không xóa được');
+    }
+    if (order._count.outbounds > 0) {
+      throw new BadRequestException(
+        'Đơn đã có phiếu xuất NVL gắn vào, gỡ mã đơn trên phiếu xuất trước khi xóa',
+      );
+    }
+    await this.prisma.productionOrder.delete({ where: { id: order.id } });
+    await this.touchSiblings([order.parentId], order.id);
+    await this.cloudinary.destroy(order.images.map((image) => image.publicId));
+    return { success: true };
+  }
+
+  async changeStatus(
+    code: string,
+    dto: ChangeStatusDto,
+    actor: AuthUserPayload,
+  ) {
+    const order = await this.requireOrder(code);
+    const target = dto.status;
+    const note = dto.note?.trim() || null;
+
+    if (target === S.DELIVERED) {
+      throw new BadRequestException(
+        'Đơn chuyển sang Đã giao khi lập phiếu xuất hàng đủ số lượng',
+      );
+    }
+    if (!MANUAL_STATUSES.includes(target)) {
+      throw new BadRequestException(
+        'Đúc đổi qua "Báo Đúc", các khâu đổi khi giao thợ trên phiếu',
+      );
+    }
+    if (order.status === target) {
+      throw new BadRequestException(
+        `Đơn đang ở trạng thái ${STATUS_LABEL[target]}`,
+      );
+    }
+    if (order.status === S.DELIVERED) {
+      throw new BadRequestException('Đơn đã giao, không đổi trạng thái được');
+    }
+    if (
+      (target === S.NEW || target === S.REDO_3D) &&
+      IN_STAGE_STATUSES.includes(order.status)
+    ) {
+      throw new BadRequestException(
+        `Đơn đang ở khâu ${STATUS_LABEL[order.status]} — chuyển sang Sản xuất lỗi trước nếu cần làm lại`,
+      );
+    }
+    if (target === S.DEFECT && !note) {
+      throw new BadRequestException(
+        'Ghi rõ lỗi khi chuyển đơn sang Sản xuất lỗi',
+      );
+    }
+    if (order.receipt && order.shipmentLines.length > 0) {
+      throw new BadRequestException(
+        'Đơn đã có phiếu xuất hàng — xóa phiếu xuất trước nếu cần làm lại',
+      );
+    }
+    // Hàng trong kho thành phẩm (chưa xuất) bị lỗi thì rút khỏi kho để làm lại.
+    const leaveStock = target === S.DEFECT && order.receipt != null;
+
+    const updated = await this.prisma.productionOrder.update({
+      where: { id: order.id },
+      data: {
+        status: target,
+        dataChangedAt: new Date(),
+        ...(leaveStock ? { receipt: { delete: true } } : null),
+        statusLogs: {
+          create: {
+            fromStatus: order.status,
+            toStatus: target,
+            note: leaveStock ? `${note} (rút khỏi kho thành phẩm)` : note,
+            changedBy: actorName(actor),
+          },
+        },
+      },
+      include: detailInclude,
+    });
+    return toDetail(updated);
+  }
+
+  /** Báo Đúc (đơn chuyển sang Đúc, từ đây mới in được phiếu) và ghi ngày Đúc về. */
+  async updateCasting(code: string, dto: CastingDto, actor: AuthUserPayload) {
+    const order = await this.requireOrder(code);
+    if (order.status === S.DELIVERED) {
+      throw new BadRequestException('Đơn đã giao, không sửa ngày đúc được');
+    }
+    const sentDate = dateOnly(dto.sentDate);
+    const returnedDate = dto.returnedDate ? dateOnly(dto.returnedDate) : null;
+    if (returnedDate && returnedDate < sentDate) {
+      throw new BadRequestException(
+        'Ngày Đúc về không được trước ngày báo Đúc',
+      );
+    }
+    if (!returnedDate && order.stages.length > 0) {
+      throw new BadRequestException(
+        'Đơn đã giao khâu cho thợ, không bỏ ngày Đúc về được',
+      );
+    }
+    // Báo Đúc lần đầu hoặc đúc lại sau lỗi thì đơn chuyển sang Đúc.
+    const toCasting = (
+      [S.NEW, S.REDO_3D, S.DEFECT] as ProductionStatus[]
+    ).includes(order.status);
+
+    const updated = await this.prisma.productionOrder.update({
+      where: { id: order.id },
+      data: {
+        castingSentDate: sentDate,
+        castingReturnedDate: returnedDate,
+        dataChangedAt: new Date(),
+        ...(toCasting
+          ? {
+              status: S.CASTING,
+              statusLogs: {
+                create: {
+                  fromStatus: order.status,
+                  toStatus: S.CASTING,
+                  note: `Báo Đúc ngày ${ymd(sentDate)}`,
+                  changedBy: actorName(actor),
+                },
+              },
+            }
+          : null),
+      },
+      include: detailInclude,
+    });
+    return toDetail(updated);
+  }
+
+  /** Giao khâu cho thợ. Người giao là tài khoản đăng nhập. */
+  async startStage(code: string, dto: StartStageDto, actor: AuthUserPayload) {
+    const order = await this.requireOrder(code);
+    if (order.status === S.DELIVERED) {
+      throw new BadRequestException('Đơn đã giao, không giao khâu được');
+    }
+    if (!order.castingSentDate || !order.castingReturnedDate) {
+      throw new BadRequestException(
+        'Ghi ngày báo Đúc và ngày Đúc về trước khi giao khâu cho thợ',
+      );
+    }
+    const open = order.stages.find((entry) => !entry.returnedAt);
+    if (open) {
+      throw new BadRequestException(
+        `Khâu ${STAGE_LABEL[open.stage]} chưa được KCS nhận lại, chưa giao được khâu mới`,
+      );
+    }
+    const last = lastStage(order);
+    // Được bỏ qua khâu (hàng không đá thì không qua Vào đá) nhưng không được lùi khâu,
+    // trừ khi đơn đã ra khỏi khâu (Mới / Sửa 3D / Đúc / Sản xuất lỗi) để làm lại.
+    const reworking = !IN_STAGE_STATUSES.includes(order.status);
+    if (
+      last &&
+      !reworking &&
+      STAGE_ORDER.indexOf(dto.stage) <= STAGE_ORDER.indexOf(last.stage)
+    ) {
+      throw new BadRequestException(
+        `Khâu mới phải sau khâu ${STAGE_LABEL[last.stage]}. Muốn làm lại, chuyển đơn sang Sản xuất lỗi trước.`,
+      );
+    }
+
+    const craftsman = await this.resolveUser(dto.craftsmanUserId);
+    const attempt =
+      order.stages.filter((entry) => entry.stage === dto.stage).length + 1;
+    const nextStatus = STAGE_STATUS[dto.stage];
+    const changedBy = actorName(actor);
+
+    const updated = await this.prisma.productionOrder.update({
+      where: { id: order.id },
+      data: {
+        status: nextStatus,
+        dataChangedAt: new Date(),
+        stages: {
+          create: {
+            stage: dto.stage,
+            attempt,
+            handedByUserId: actor.id,
+            handedByName: changedBy,
+            handedAt: new Date(dto.handedAt),
+            handedTotalWeight: decimalOrNull(dto.handedTotalWeight),
+            handedSilverWeight: new Prisma.Decimal(dto.handedSilverWeight),
+            craftsmanUserId: craftsman.id,
+            craftsmanName: craftsman.name,
+            note: dto.note?.trim() || null,
+          },
+        },
+        statusLogs:
+          order.status === nextStatus
+            ? undefined
+            : {
+                create: {
+                  fromStatus: order.status,
+                  toStatus: nextStatus,
+                  note: `Giao ${STAGE_LABEL[dto.stage]} cho ${craftsman.name}`,
+                  changedBy,
+                },
+              },
+      },
+      include: detailInclude,
+    });
+    return toDetail(updated);
+  }
+
+  /** Sửa thông tin giao khi KCS chưa nhận lại. Người giao giữ nguyên. */
+  async updateHandover(code: string, stageId: string, dto: HandoverStageDto) {
+    const order = await this.requireOrder(code);
+    const entry = requireStage(order, stageId);
+    if (entry.returnedAt) {
+      throw new BadRequestException('KCS đã nhận lại khâu này, không sửa được');
+    }
+    const craftsman = await this.resolveUser(dto.craftsmanUserId);
+
+    const updated = await this.prisma.productionOrder.update({
+      where: { id: order.id },
+      data: {
+        dataChangedAt: new Date(),
+        stages: {
+          update: {
+            where: { id: entry.id },
+            data: {
+              craftsmanUserId: craftsman.id,
+              craftsmanName: craftsman.name,
+              handedAt: new Date(dto.handedAt),
+              handedTotalWeight: decimalOrNull(dto.handedTotalWeight),
+              handedSilverWeight: new Prisma.Decimal(dto.handedSilverWeight),
+              note: dto.note?.trim() || null,
+            },
+          },
+        },
+      },
+      include: detailInclude,
+    });
+    return toDetail(updated);
+  }
+
+  /** KCS nhận lại hàng từ thợ, cân lại bạc. Người KCS là tài khoản đăng nhập. */
+  async returnStage(
+    code: string,
+    stageId: string,
+    dto: ReturnStageDto,
+    actor: AuthUserPayload,
+  ) {
+    const order = await this.requireOrder(code);
+    const entry = requireStage(order, stageId);
+    if (entry.returnedAt) {
+      throw new BadRequestException('KCS đã nhận lại khâu này');
+    }
+    const returnedAt = new Date(dto.returnedAt);
+    if (returnedAt < entry.handedAt) {
+      throw new BadRequestException(
+        'Thời gian nhận lại không được trước thời gian giao',
+      );
+    }
+    const kcsName = actorName(actor);
+    // Qua Ngoại Quan là xong sản xuất: đơn tự vào kho thành phẩm với đủ số lượng.
+    const receipt = {
+      qty: order.qty,
+      receivedAt: returnedAt,
+      receivedByUserId: actor.id,
+      receivedByName: kcsName,
+    };
+
+    const updated = await this.prisma.productionOrder.update({
+      where: { id: order.id },
+      data: {
+        dataChangedAt: new Date(),
+        stages: {
+          update: {
+            where: { id: entry.id },
+            data: {
+              returnedByUserId: actor.id,
+              returnedByName: kcsName,
+              returnedAt,
+              returnedTotalWeight: decimalOrNull(dto.returnedTotalWeight),
+              returnedSilverWeight: new Prisma.Decimal(
+                dto.returnedSilverWeight,
+              ),
+              btpRecoveredWeight: decimalOrNull(dto.btpRecoveredWeight),
+              silverRecoveredWeight: decimalOrNull(dto.silverRecoveredWeight),
+              laborCost: decimalOrNull(dto.laborCost),
+              // Ghi chú lúc nhận lại nối vào ghi chú lúc giao, không ghi đè.
+              note: joinNotes(entry.note, dto.note),
+            },
+          },
+        },
+        ...(entry.stage === G.APPEARANCE
+          ? { receipt: { upsert: { create: receipt, update: receipt } } }
+          : null),
+      },
+      include: detailInclude,
+    });
+    return toDetail(updated);
+  }
+
+  /** Admin gỡ lần nhận lại để sửa sai; chỉ áp dụng cho khâu cuối. */
+  async undoReturn(code: string, stageId: string, actor: AuthUserPayload) {
+    const order = await this.requireOrder(code);
+    const entry = requireStage(order, stageId);
+    if (!entry.returnedAt) {
+      throw new BadRequestException('KCS chưa nhận lại khâu này');
+    }
+    if (lastStage(order)?.id !== entry.id) {
+      throw new BadRequestException('Chỉ gỡ nhận lại được khâu cuối cùng');
+    }
+    if (order.status === S.DELIVERED) {
+      throw new BadRequestException('Đơn đã giao, không gỡ nhận lại được');
+    }
+    if (entry.stage === G.APPEARANCE && order.shipmentLines.length > 0) {
+      throw new BadRequestException(
+        'Đơn đã có phiếu xuất hàng, xóa phiếu xuất trước khi gỡ nhận lại Ngoại Quan',
+      );
+    }
+
+    const updated = await this.prisma.productionOrder.update({
+      where: { id: order.id },
+      data: {
+        dataChangedAt: new Date(),
+        stages: {
+          update: {
+            where: { id: entry.id },
+            data: {
+              returnedByUserId: null,
+              returnedByName: null,
+              returnedAt: null,
+              returnedTotalWeight: null,
+              returnedSilverWeight: null,
+              btpRecoveredWeight: null,
+              silverRecoveredWeight: null,
+              laborCost: null,
+            },
+          },
+        },
+        // Gỡ nhận lại Ngoại Quan thì đơn ra khỏi kho thành phẩm.
+        ...(entry.stage === G.APPEARANCE && order.receipt
+          ? { receipt: { delete: true } }
+          : null),
+        statusLogs: {
+          create: {
+            fromStatus: order.status,
+            toStatus: order.status,
+            note: `Gỡ nhận lại khâu ${STAGE_LABEL[entry.stage]} (KCS: ${entry.returnedByName ?? '—'})`,
+            changedBy: actorName(actor),
+          },
+        },
+      },
+      include: detailInclude,
+    });
+    return toDetail(updated);
+  }
+
+  async markPrinted(code: string) {
+    const order = await this.prisma.productionOrder.findUnique({
+      where: { code: normalizeCode(code) },
+      select: { id: true, castingSentDate: true },
+    });
+    if (!order) throw new NotFoundException('Không tìm thấy đơn sản xuất');
+    if (!order.castingSentDate) {
+      throw new BadRequestException('Chỉ in phiếu thợ khi đơn đã báo Đúc');
+    }
+    const updated = await this.prisma.productionOrder.update({
+      where: { id: order.id },
+      data: { lastPrintedAt: new Date() },
+      select: { lastPrintedAt: true },
+    });
+    return { lastPrintedAt: updated.lastPrintedAt?.toISOString() ?? null };
+  }
+
+  /**
+   * Phân đơn (2/3) tính từ các đơn con cùng mẹ — thêm / bớt đơn con làm phiếu đã in của
+   * các đơn anh em bị sai, nên đánh dấu dữ liệu đã đổi để trang chi tiết nhắc in lại.
+   */
+  private async touchSiblings(parentIds: Array<string | null>, selfId: string) {
+    const ids = unique(parentIds.filter((id): id is string => Boolean(id)));
+    if (ids.length === 0) return;
+    await this.prisma.productionOrder.updateMany({
+      where: { parentId: { in: ids }, id: { not: selfId } },
+      data: { dataChangedAt: new Date() },
+    });
+  }
+
+  private async requireOrder(code: string) {
+    const order = await this.prisma.productionOrder.findUnique({
+      where: { code: normalizeCode(code) },
+      include: detailInclude,
+    });
+    if (!order) throw new NotFoundException('Không tìm thấy đơn sản xuất');
+    return order;
+  }
+
+  private async orderFields(dto: UpsertProductionOrderDto, selfId?: string) {
+    const description = dto.description.trim();
+    if (!description) {
+      throw new BadRequestException(
+        'Mô tả / yêu cầu sản phẩm không được trống',
+      );
+    }
+    const closedBy = dto.closedBy.trim();
+    if (!closedBy) throw new BadRequestException('Nhập người chốt đơn');
+    const receivedDate = dateOnly(dto.receivedDate);
+    const dueDate = dto.dueDate ? dateOnly(dto.dueDate) : null;
+    if (dueDate && dueDate < receivedDate) {
+      throw new BadRequestException(
+        'Ngày cần trả không được trước ngày đặt đơn',
+      );
+    }
+
+    const asked = dto.askedUserId
+      ? await this.resolveUser(dto.askedUserId)
+      : null;
+
+    let parentId: string | null = null;
+    const parentCode = dto.parentCode?.trim();
+    if (parentCode) {
+      const parent = await this.prisma.productionOrder.findUnique({
+        where: { code: normalizeCode(parentCode) },
+        select: { id: true, parentId: true },
+      });
+      if (!parent) {
+        throw new BadRequestException(`Không tìm thấy đơn mẹ ${parentCode}`);
+      }
+      if (parent.id === selfId || (selfId && parent.parentId === selfId)) {
+        throw new BadRequestException('Đơn mẹ không hợp lệ');
+      }
+      parentId = parent.id;
+    }
+
+    return {
+      requestType: dto.requestType,
+      receivedDate,
+      dueDate,
+      closedBy,
+      description,
+      qty: dto.qty,
+      model3dCode: optional(dto.model3dCode),
+      model3dUrl: optional(dto.model3dUrl),
+      leadTime: optional(dto.leadTime),
+      trackingCode: optional(dto.trackingCode),
+      stoneColor: optional(dto.stoneColor),
+      stoneTypes: unique(
+        (dto.stoneTypes ?? []).map((item) => item.trim()).filter(Boolean),
+      ),
+      stoneCount: dto.stoneCount ?? null,
+      stoneWeight: decimalOrNull(dto.stoneWeight),
+      size: optional(dto.size),
+      sizeLabel: optional(dto.sizeLabel),
+      mainMaterial: optional(dto.mainMaterial),
+      platingColor: optional(dto.platingColor),
+      laserEngraving: optional(dto.laserEngraving),
+      otherRequirements: optional(dto.otherRequirements),
+      askedUserId: asked?.id ?? null,
+      askedUserName: asked?.name ?? null,
+      debtStatus: optional(dto.debtStatus),
+      parentId,
+    };
+  }
+
+  /** Ảnh mới phải nằm trong thư mục Cloudinary của hệ thống; ảnh đã có trên đơn thì giữ nguyên. */
+  private newImages(images: OrderImageDto[], existing: Set<string>) {
+    const seen = new Set<string>();
+    const counters = { DETAIL: 0, PRODUCT: 0 };
+    return images
+      .filter((image) => {
+        if (seen.has(image.publicId)) return false;
+        seen.add(image.publicId);
+        return true;
+      })
+      .map((image) => {
+        if (!existing.has(image.publicId)) {
+          const host = new URL(image.url).hostname;
+          if (
+            host !== 'res.cloudinary.com' ||
+            !this.cloudinary.ownsPublicId(image.publicId)
+          ) {
+            throw new BadRequestException(
+              'Ảnh không thuộc kho ảnh của hệ thống',
+            );
+          }
+        }
+        return {
+          kind: image.kind,
+          url: image.url,
+          publicId: image.publicId,
+          width: image.width ?? null,
+          height: image.height ?? null,
+          sortOrder: counters[image.kind]++,
+        };
+      });
+  }
+
+  private async resolveUser(userId: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, isActive: true },
+      select: { id: true, fullName: true, username: true },
+    });
+    if (!user) {
+      throw new BadRequestException('Chọn người từ tài khoản hệ thống');
+    }
+    return { id: user.id, name: actorName(user) };
+  }
+
+  /** Giá trị đã từng nhập, dùng làm gợi ý. Tên cột lấy từ bảng cố định nên ghép vào SQL an toàn. */
+  private async distinctValues(field: keyof typeof SUGGEST_COLUMNS) {
+    const column = Prisma.raw(SUGGEST_COLUMNS[field]);
+    const rows = await this.prisma.$queryRaw<Array<{ value: string }>>(
+      Prisma.sql`SELECT DISTINCT ${column} AS value FROM production_orders WHERE ${column} IS NOT NULL LIMIT 200`,
+    );
+    return rows.map((row) => row.value);
+  }
+}
+
+function toDetail(order: OrderDetail) {
+  // Phân đơn: đơn con đánh số theo thứ tự tạo trong các đơn con của cùng đơn mẹ.
+  const siblings = order.parent?.children ?? [];
+  const splitIndex = siblings.findIndex((child) => child.id === order.id);
+  const split =
+    splitIndex >= 0
+      ? { no: splitIndex + 1, total: siblings.length }
+      : { no: 1, total: 1 };
+
+  return {
+    id: order.id,
+    code: order.code,
+    status: order.status,
+    requestType: order.requestType,
+    qty: order.qty,
+    returnedQty: order.returnedQty,
+    model3dCode: order.model3dCode,
+    model3dUrl: order.model3dUrl,
+    leadTime: order.leadTime,
+    trackingCode: order.trackingCode,
+    closedBy: order.closedBy,
+    description: order.description,
+    stoneColor: order.stoneColor,
+    stoneTypes: order.stoneTypes,
+    stoneCount: order.stoneCount,
+    stoneWeight: order.stoneWeight != null ? decStr(order.stoneWeight) : null,
+    size: order.size,
+    sizeLabel: order.sizeLabel,
+    mainMaterial: order.mainMaterial,
+    platingColor: order.platingColor,
+    laserEngraving: order.laserEngraving,
+    otherRequirements: order.otherRequirements,
+    askedUserId: order.askedUserId,
+    askedUserName: order.askedUserName,
+    receivedDate: ymd(order.receivedDate),
+    dueDate: order.dueDate ? ymd(order.dueDate) : null,
+    castingSentDate: order.castingSentDate ? ymd(order.castingSentDate) : null,
+    castingReturnedDate: order.castingReturnedDate
+      ? ymd(order.castingReturnedDate)
+      : null,
+    debtStatus: order.debtStatus,
+    parentCode: order.parent?.code ?? null,
+    split,
+    children: order.children,
+    linkedOutbounds: order._count.outbounds,
+    finishedGoods: order.receipt
+      ? {
+          qty: order.receipt.qty,
+          receivedAt: order.receipt.receivedAt.toISOString(),
+          receivedByName: order.receipt.receivedByName,
+          shippedQty: order.shipmentLines.reduce(
+            (sum, line) => sum + line.qty,
+            0,
+          ),
+          remainingQty:
+            order.receipt.qty -
+            order.shipmentLines.reduce((sum, line) => sum + line.qty, 0),
+          shipments: order.shipmentLines.map((line) => ({
+            code: line.shipment.code,
+            shippedAt: ymd(line.shipment.shippedAt),
+            customerName: line.shipment.customerName,
+            qty: line.qty,
+          })),
+        }
+      : null,
+    lastPrintedAt: order.lastPrintedAt?.toISOString() ?? null,
+    dataChangedAt: order.dataChangedAt.toISOString(),
+    createdBy: order.createdBy,
+    createdAt: order.createdAt.toISOString(),
+    updatedAt: order.updatedAt.toISOString(),
+    images: order.images.map((image) => ({
+      id: image.id,
+      kind: image.kind,
+      url: image.url,
+      publicId: image.publicId,
+      width: image.width,
+      height: image.height,
+    })),
+    stages: order.stages.map(toStage),
+    statusLogs: order.statusLogs.map((log) => ({
+      id: log.id,
+      fromStatus: log.fromStatus,
+      toStatus: log.toStatus,
+      note: log.note,
+      changedBy: log.changedBy,
+      changedAt: log.changedAt.toISOString(),
+    })),
+  };
+}
+
+function toStage(entry: StageEntry) {
+  const silverLoss = silverLossOf(entry);
+  const silverLossPercent =
+    silverLoss != null &&
+    entry.handedSilverWeight != null &&
+    entry.handedSilverWeight.gt(0)
+      ? silverLoss.div(entry.handedSilverWeight).mul(100).toDecimalPlaces(2)
+      : null;
+  const dec = (value: Prisma.Decimal | null) =>
+    value != null ? decStr(value) : null;
+
+  return {
+    id: entry.id,
+    stage: entry.stage,
+    attempt: entry.attempt,
+    handedByName: entry.handedByName,
+    handedAt: entry.handedAt.toISOString(),
+    handedTotalWeight: dec(entry.handedTotalWeight),
+    handedSilverWeight: dec(entry.handedSilverWeight),
+    craftsmanUserId: entry.craftsmanUserId,
+    craftsmanName: entry.craftsmanName,
+    returnedByName: entry.returnedByName,
+    returnedAt: entry.returnedAt?.toISOString() ?? null,
+    returnedTotalWeight: dec(entry.returnedTotalWeight),
+    returnedSilverWeight: dec(entry.returnedSilverWeight),
+    btpRecoveredWeight: dec(entry.btpRecoveredWeight),
+    silverRecoveredWeight: dec(entry.silverRecoveredWeight),
+    silverLoss: dec(silverLoss),
+    silverLossPercent: dec(silverLossPercent),
+    laborCost: dec(entry.laborCost),
+    note: entry.note,
+  };
+}
+
+function lastStage(order: OrderDetail): StageEntry | undefined {
+  return order.stages[order.stages.length - 1];
+}
+
+function requireStage(order: OrderDetail, stageId: string) {
+  const entry = order.stages.find((item) => item.id === stageId);
+  if (!entry) throw new NotFoundException('Không tìm thấy khâu trên đơn');
+  return entry;
+}
+
+function requireText(value: string, message: string) {
+  const trimmed = value.trim();
+  if (!trimmed) throw new BadRequestException(message);
+  return trimmed;
+}
+
+function joinNotes(previous: string | null, next: string | undefined) {
+  const added = next?.trim();
+  if (!added) return previous;
+  return previous ? `${previous}\n${added}` : added;
+}
+
+function decimalOrNull(value: string | null | undefined) {
+  return value != null && value !== '' ? new Prisma.Decimal(value) : null;
+}
+
+export function orderCode(seq: number) {
+  return `A${String(seq).padStart(3, '0')}`;
+}
+
+function normalizeCode(code: string) {
+  return code.trim().toUpperCase();
+}
+
+function optional(value: string | null | undefined) {
+  return value?.trim() || null;
+}
+
+function unique(values: string[]) {
+  return Array.from(new Set(values));
+}
+
+function uniqueSorted(values: string[]) {
+  return unique(values.map((value) => value.trim()).filter(Boolean)).sort(
+    (a, b) => a.localeCompare(b, 'vi'),
+  );
+}
+
+function ymd(value: Date) {
+  return value.toISOString().slice(0, 10);
+}
+
+function dateOnly(value: string) {
+  return new Date(`${value.slice(0, 10)}T00:00:00.000Z`);
+}
+
+function actorName(actor: { fullName: string; username: string }) {
+  return actor.fullName.trim() || actor.username;
+}
+
+function isUniqueViolation(error: unknown) {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === 'P2002'
+  );
+}

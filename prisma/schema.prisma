@@ -61,8 +61,8 @@ model Warehouse {
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
-  parent    Warehouse?      @relation("WarehouseTree", fields: [parentId], references: [id])
-  children  Warehouse[]     @relation("WarehouseTree")
+  parent    Warehouse?          @relation("WarehouseTree", fields: [parentId], references: [id])
+  children  Warehouse[]         @relation("WarehouseTree")
   materials Material[]
   balances  StockBalance[]
   inbounds  StockInbound[]
@@ -76,15 +76,15 @@ model Warehouse {
 
 /// Ô kệ cấu hình sẵn. Mã = Zone + Dãy + Tầng + Số (vd A1C12).
 model WarehouseLocation {
-  id          String  @id @default(uuid()) @db.Uuid
-  warehouseId String  @map("warehouse_id") @db.Uuid
+  id          String   @id @default(uuid()) @db.Uuid
+  warehouseId String   @map("warehouse_id") @db.Uuid
   zone        String
   aisle       Int
   level       String
   position    Int
   code        String
-  sortOrder   Int     @default(0) @map("sort_order")
-  isActive    Boolean @default(true) @map("is_active")
+  sortOrder   Int      @default(0) @map("sort_order")
+  isActive    Boolean  @default(true) @map("is_active")
   createdAt   DateTime @default(now()) @map("created_at")
 
   warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
@@ -262,32 +262,35 @@ model StockInbound {
 
 /// Một dòng trên tab Xuất NVL đá.
 model StockOutbound {
-  id               String   @id @default(uuid()) @db.Uuid
-  warehouseId      String   @map("warehouse_id") @db.Uuid
-  materialId       String?  @map("material_id") @db.Uuid
-  sortOrder        Int      @default(0) @map("sort_order")
-  issuedAt         DateTime @map("issued_at") @db.Date
-  name             String
-  sku              String?
-  unitId           String?  @map("unit_id") @db.Uuid
-  unitName         String   @map("unit_name")
-  qty              Decimal  @db.Decimal(18, 4)
-  stockUnitPrice   Decimal  @default(0) @map("stock_unit_price") @db.Decimal(18, 2)
-  inboundUnitPrice Decimal  @default(0) @map("inbound_unit_price") @db.Decimal(18, 2)
-  amount           Decimal  @default(0) @db.Decimal(18, 2)
-  note             String?
-  issuedBy         String?  @map("issued_by")
-  receivedBy       String?  @map("received_by")
+  id                String   @id @default(uuid()) @db.Uuid
+  warehouseId       String   @map("warehouse_id") @db.Uuid
+  materialId        String?  @map("material_id") @db.Uuid
+  sortOrder         Int      @default(0) @map("sort_order")
+  issuedAt          DateTime @map("issued_at") @db.Date
+  name              String
+  sku               String?
+  unitId            String?  @map("unit_id") @db.Uuid
+  unitName          String   @map("unit_name")
+  qty               Decimal  @db.Decimal(18, 4)
+  stockUnitPrice    Decimal  @default(0) @map("stock_unit_price") @db.Decimal(18, 2)
+  inboundUnitPrice  Decimal  @default(0) @map("inbound_unit_price") @db.Decimal(18, 2)
+  amount            Decimal  @default(0) @db.Decimal(18, 2)
+  note              String?
+  issuedBy          String?  @map("issued_by")
+  receivedBy        String?  @map("received_by")
   /// Liên kết người nhận tới tài khoản — cột đã có sẵn trên DB.
-  receivedByUserId String?  @map("received_by_user_id") @db.Uuid
+  receivedByUserId  String?  @map("received_by_user_id") @db.Uuid
   /// Seed lịch sử = false (tồn kho đá đã gồm số xuất). Phiếu mới từ UI = true.
-  applyToStock     Boolean  @default(false) @map("apply_to_stock")
-  createdAt        DateTime @default(now()) @map("created_at")
-  updatedAt        DateTime @updatedAt @map("updated_at")
+  applyToStock      Boolean  @default(false) @map("apply_to_stock")
+  /// Đơn sản xuất dùng NVL này — nguồn chi phí NVL của đơn.
+  productionOrderId String?  @map("production_order_id") @db.Uuid
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
 
-  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
-  material  Material? @relation(fields: [materialId], references: [id], onDelete: SetNull)
-  unit      Unit?     @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  warehouse       Warehouse        @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  material        Material?        @relation(fields: [materialId], references: [id], onDelete: SetNull)
+  unit            Unit?            @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  productionOrder ProductionOrder? @relation(fields: [productionOrderId], references: [id], onDelete: Restrict)
 
   @@unique([warehouseId, sortOrder])
   @@index([warehouseId, issuedAt])
@@ -316,10 +319,250 @@ model BtpWaitingItem {
   warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
   unit      Unit?     @relation(fields: [unitId], references: [id], onDelete: SetNull)
 
+  @@unique([warehouseId, sortOrder])
   @@index([warehouseId, receivedAt])
   @@index([warehouseId, sortOrder])
-  @@unique([warehouseId, sortOrder])
   @@map("btp_waiting_items")
+}
+
+/// Trạng thái đơn sản xuất (theo view Lark Base). Khắc + Ngoại Quan trên phiếu thuộc FINISHING.
+enum ProductionStatus {
+  NEW
+  REDO_3D
+  CASTING
+  FILING
+  STONE_SETTING
+  POLISH_PLATING
+  FINISHING
+  DELIVERED
+  DEFECT
+}
+
+/// Yêu cầu làm hàng: Dựng mẫu / Đơn khách lẻ / SX SLL.
+enum ProductionRequestType {
+  SAMPLE
+  RETAIL
+  BULK
+}
+
+enum ProductionImageKind {
+  DETAIL
+  PRODUCT
+}
+
+/// Cột "Quá trình sản xuất" trên phiếu thợ. Đúc không phải cột — nằm ở đầu phiếu.
+enum ProductionStage {
+  FILING
+  STONE_SETTING
+  POLISH_PLATING
+  ENGRAVING
+  APPEARANCE
+}
+
+/// Đơn sản xuất — một dòng trên danh sách đơn, in ra một phiếu cho thợ.
+model ProductionOrder {
+  id                  String                @id @default(uuid()) @db.Uuid
+  /// Số thứ tự sinh mã SX (A001, A002…).
+  seq                 Int                   @unique
+  code                String                @unique
+  status              ProductionStatus      @default(NEW)
+  requestType         ProductionRequestType @map("request_type")
+  qty                 Int                   @default(1)
+  /// Cột "Đã trả" trên Lark.
+  returnedQty         Int                   @default(0) @map("returned_qty")
+  model3dCode         String?               @map("model_3d_code")
+  model3dUrl          String?               @map("model_3d_url")
+  leadTime            String?               @map("lead_time")
+  /// Mã theo dõi đơn bên bán hàng, vd V-9147.
+  trackingCode        String?               @map("tracking_code")
+  closedBy            String                @map("closed_by")
+  description         String
+  stoneColor          String?               @map("stone_color")
+  stoneTypes          String[]              @default([]) @map("stone_types")
+  /// Kích thước (đường kính, dài…). Size nhẫn / lắc nằm ở `sizeLabel`.
+  size                String?
+  sizeLabel           String?               @map("size_label")
+  stoneCount          Int?                  @map("stone_count")
+  stoneWeight         Decimal?              @map("stone_weight") @db.Decimal(18, 4)
+  laserEngraving      String?               @map("laser_engraving")
+  otherRequirements   String?               @map("other_requirements")
+  mainMaterial        String?               @map("main_material")
+  platingColor        String?               @map("plating_color")
+  askedUserId         String?               @map("asked_user_id") @db.Uuid
+  askedUserName       String?               @map("asked_user_name")
+  /// Ngày đặt đơn trên phiếu.
+  receivedDate        DateTime              @map("received_date") @db.Date
+  dueDate             DateTime?             @map("due_date") @db.Date
+  /// Ngày báo Đúc — có ngày này đơn mới được in phiếu thợ.
+  castingSentDate     DateTime?             @map("casting_sent_date") @db.Date
+  castingReturnedDate DateTime?             @map("casting_returned_date") @db.Date
+  debtStatus          String?               @map("debt_status")
+  parentId            String?               @map("parent_id") @db.Uuid
+  lastPrintedAt       DateTime?             @map("last_printed_at")
+  /// Lần cuối nội dung in trên phiếu thay đổi. Tách khỏi updatedAt vì đánh dấu "đã in" cũng làm updatedAt đổi.
+  dataChangedAt       DateTime              @default(now()) @map("data_changed_at")
+  createdBy           String?               @map("created_by")
+  createdAt           DateTime              @default(now()) @map("created_at")
+  updatedAt           DateTime              @updatedAt @map("updated_at")
+
+  parent        ProductionOrder?       @relation("ProductionOrderTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children      ProductionOrder[]      @relation("ProductionOrderTree")
+  images        ProductionOrderImage[]
+  stages        ProductionStageEntry[]
+  statusLogs    ProductionStatusLog[]
+  outbounds     StockOutbound[]
+  costs         ProductionOrderCost[]
+  receipt       FinishedGoodsReceipt?
+  shipmentLines ShipmentLine[]
+
+  @@index([status, createdAt])
+  @@index([requestType])
+  @@index([parentId])
+  @@map("production_orders")
+}
+
+model ProductionOrderImage {
+  id        String              @id @default(uuid()) @db.Uuid
+  orderId   String              @map("order_id") @db.Uuid
+  kind      ProductionImageKind
+  url       String
+  publicId  String              @map("public_id")
+  width     Int?
+  height    Int?
+  sortOrder Int                 @default(0) @map("sort_order")
+  createdAt DateTime            @default(now()) @map("created_at")
+
+  order ProductionOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, kind, sortOrder])
+  @@map("production_order_images")
+}
+
+/// Một cột khâu trên phiếu thợ. Giao cho thợ rồi KCS cân lại khi thợ nộp lại.
+/// Người giao / người KCS do server ghi từ tài khoản đăng nhập. `attempt` tăng khi làm lại.
+model ProductionStageEntry {
+  id                    String          @id @default(uuid()) @db.Uuid
+  orderId               String          @map("order_id") @db.Uuid
+  stage                 ProductionStage
+  attempt               Int             @default(1)
+  handedByUserId        String?         @map("handed_by_user_id") @db.Uuid
+  handedByName          String          @map("handed_by_name")
+  handedAt              DateTime        @map("handed_at")
+  /// Trọng lượng giao: tổng (cả đá) và riêng bạc.
+  handedTotalWeight     Decimal?        @map("handed_total_weight") @db.Decimal(18, 4)
+  handedSilverWeight    Decimal?        @map("handed_silver_weight") @db.Decimal(18, 4)
+  craftsmanUserId       String?         @map("craftsman_user_id") @db.Uuid
+  craftsmanName         String          @map("craftsman_name")
+  returnedByUserId      String?         @map("returned_by_user_id") @db.Uuid
+  /// Người KCS — nhân viên cân lại bạc khi thợ nộp lại.
+  returnedByName        String?         @map("returned_by_name")
+  returnedAt            DateTime?       @map("returned_at")
+  returnedTotalWeight   Decimal?        @map("returned_total_weight") @db.Decimal(18, 4)
+  returnedSilverWeight  Decimal?        @map("returned_silver_weight") @db.Decimal(18, 4)
+  btpRecoveredWeight    Decimal?        @map("btp_recovered_weight") @db.Decimal(18, 4)
+  silverRecoveredWeight Decimal?        @map("silver_recovered_weight") @db.Decimal(18, 4)
+  /// Tiền công khâu, nhập khi KCS nhận lại.
+  laborCost             Decimal?        @map("labor_cost") @db.Decimal(18, 2)
+  note                  String?
+  createdAt             DateTime        @default(now()) @map("created_at")
+  updatedAt             DateTime        @updatedAt @map("updated_at")
+
+  order ProductionOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([orderId, stage, attempt])
+  @@index([orderId, createdAt])
+  @@map("production_stage_entries")
+}
+
+model ProductionStatusLog {
+  id         String            @id @default(uuid()) @db.Uuid
+  orderId    String            @map("order_id") @db.Uuid
+  fromStatus ProductionStatus? @map("from_status")
+  toStatus   ProductionStatus  @map("to_status")
+  note       String?
+  changedBy  String?           @map("changed_by")
+  changedAt  DateTime          @default(now()) @map("changed_at")
+
+  order ProductionOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, changedAt])
+  @@map("production_status_logs")
+}
+
+/// Chi phí khác của đơn nhập tay (đúc thuê, 3D, thuê ngoài…).
+model ProductionOrderCost {
+  id            String   @id @default(uuid()) @db.Uuid
+  orderId       String   @map("order_id") @db.Uuid
+  name          String
+  amount        Decimal  @db.Decimal(18, 2)
+  note          String?
+  createdByName String?  @map("created_by_name")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  order ProductionOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+  @@map("production_order_costs")
+}
+
+/// Đơn vào kho thành phẩm khi KCS nhận lại khâu Ngoại Quan. Tồn = qty − tổng đã xuất.
+model FinishedGoodsReceipt {
+  id               String   @id @default(uuid()) @db.Uuid
+  orderId          String   @unique @map("order_id") @db.Uuid
+  qty              Int
+  receivedAt       DateTime @map("received_at")
+  receivedByUserId String?  @map("received_by_user_id") @db.Uuid
+  receivedByName   String   @map("received_by_name")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  order ProductionOrder @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@map("finished_goods_receipts")
+}
+
+/// Phiếu xuất hàng thành phẩm (PX0001).
+model Shipment {
+  id              String    @id @default(uuid()) @db.Uuid
+  seq             Int       @unique
+  code            String    @unique
+  shippedAt       DateTime  @map("shipped_at") @db.Date
+  customerName    String    @map("customer_name")
+  paymentMethod   String?   @map("payment_method")
+  note            String?
+  createdByUserId String?   @map("created_by_user_id") @db.Uuid
+  createdByName   String    @map("created_by_name")
+  lastPrintedAt   DateTime? @map("last_printed_at")
+  dataChangedAt   DateTime  @default(now()) @map("data_changed_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  lines ShipmentLine[]
+
+  @@index([shippedAt])
+  @@map("shipments")
+}
+
+/// Một dòng hàng trên phiếu xuất. Chi phí được chụp lại lúc lập / sửa phiếu.
+model ShipmentLine {
+  id         String  @id @default(uuid()) @db.Uuid
+  shipmentId String  @map("shipment_id") @db.Uuid
+  orderId    String  @map("order_id") @db.Uuid
+  qty        Int
+  unitPrice  Decimal @map("unit_price") @db.Decimal(18, 2)
+  amount     Decimal @db.Decimal(18, 2)
+  unitCost   Decimal @map("unit_cost") @db.Decimal(18, 2)
+  costAmount Decimal @map("cost_amount") @db.Decimal(18, 2)
+  note       String?
+  sortOrder  Int     @default(0) @map("sort_order")
+
+  shipment Shipment        @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  order    ProductionOrder @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([shipmentId, sortOrder])
+  @@index([orderId])
+  @@map("shipment_lines")
 }
 
 model RefreshToken {
