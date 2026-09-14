@@ -6,6 +6,7 @@ import {
   COOKIE_ACCESS,
   COOKIE_CSRF,
   COOKIE_REFRESH,
+  COOKIE_SAMESITE,
 } from './cookie.constants';
 import { parseDurationMs } from '../util/duration';
 
@@ -18,7 +19,7 @@ export class CookieAuthService {
     return {
       httpOnly: true,
       secure,
-      sameSite: 'lax',
+      sameSite: COOKIE_SAMESITE,
       path: '/',
     };
   }
@@ -34,22 +35,23 @@ export class CookieAuthService {
       this.config.get<string>('JWT_REFRESH_EXPIRES', '7d'),
     );
     const csrf = randomBytes(32).toString('hex');
+    const base = this.baseOptions();
 
     res.cookie(COOKIE_ACCESS, tokens.accessToken, {
-      ...this.baseOptions(),
+      ...base,
       maxAge: accessMaxAge,
     });
 
     res.cookie(COOKIE_REFRESH, tokens.refreshToken, {
-      ...this.baseOptions(),
+      ...base,
       maxAge: refreshMaxAge,
       path: '/api/auth',
     });
 
     res.cookie(COOKIE_CSRF, csrf, {
       httpOnly: false,
-      secure: this.config.get<string>('COOKIE_SECURE', 'false') === 'true',
-      sameSite: 'lax',
+      secure: base.secure,
+      sameSite: COOKIE_SAMESITE,
       path: '/',
       maxAge: refreshMaxAge,
     });
@@ -57,12 +59,20 @@ export class CookieAuthService {
 
   clearAuthCookies(res: Response) {
     const secure = this.config.get<string>('COOKIE_SECURE', 'false') === 'true';
-    res.clearCookie(COOKIE_ACCESS, { path: '/', sameSite: 'lax', secure });
-    res.clearCookie(COOKIE_REFRESH, {
-      path: '/api/auth',
-      sameSite: 'lax',
+    res.clearCookie(COOKIE_ACCESS, {
+      path: '/',
+      sameSite: COOKIE_SAMESITE,
       secure,
     });
-    res.clearCookie(COOKIE_CSRF, { path: '/', sameSite: 'lax', secure });
+    res.clearCookie(COOKIE_REFRESH, {
+      path: '/api/auth',
+      sameSite: COOKIE_SAMESITE,
+      secure,
+    });
+    res.clearCookie(COOKIE_CSRF, {
+      path: '/',
+      sameSite: COOKIE_SAMESITE,
+      secure,
+    });
   }
 }

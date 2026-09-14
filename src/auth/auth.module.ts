@@ -2,7 +2,6 @@ import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { CookieModule } from '../cookie/cookie.module';
-import { InventoryModule } from '../inventory/inventory.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
@@ -12,7 +11,6 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.register({}),
     CookieModule,
-    InventoryModule,
   ],
   controllers: [AuthController],
   providers: [AuthService, JwtStrategy],

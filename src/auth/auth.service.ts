@@ -10,7 +10,7 @@ import { AuthUserPayload, JwtPayload } from './types';
 import { permissionsForUser, roleLabelFor } from './permissions';
 import { COOKIE_ACCESS } from '../cookie/cookie.constants';
 import { parseDurationMs } from '../util/duration';
-import { TtlCache } from '../util/ttl-cache';
+import { InflightMap, TtlCache } from '../util/ttl-cache';
 import type { Request } from 'express';
 
 export const BCRYPT_COST = 8;
@@ -27,7 +27,7 @@ const userSessionSelect = {
   isActive: true,
 } as const;
 
-const SESSION_TTL_MS = 30_000;
+const SESSION_TTL_MS = 5 * 60_000;
 
 type DbUser = {
   id: string;
@@ -45,6 +45,7 @@ type DbUser = {
 @Injectable()
 export class AuthService {
   private readonly sessionCache = new TtlCache();
+  private readonly sessionInflight = new InflightMap();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -135,16 +136,20 @@ export class AuthService {
     const cacheKey = `user:${payload.sub}`;
     const cached = this.sessionCache.get<AuthUserPayload>(cacheKey);
     if (cached) return cached;
-    const user = await this.prisma.user.findUnique({
-      where: { id: payload.sub },
-      select: userSessionSelect,
+    return this.sessionInflight.run(cacheKey, async () => {
+      const again = this.sessionCache.get<AuthUserPayload>(cacheKey);
+      if (again) return again;
+      const user = await this.prisma.user.findUnique({
+        where: { id: payload.sub },
+        select: userSessionSelect,
+      });
+      if (!user || !user.isActive) {
+        throw new UnauthorizedException('Phiên đăng nhập không hợp lệ');
+      }
+      const publicUser = this.toPublicUser(user);
+      this.sessionCache.set(cacheKey, publicUser, SESSION_TTL_MS);
+      return publicUser;
     });
-    if (!user || !user.isActive) {
-      throw new UnauthorizedException('Phiên đăng nhập không hợp lệ');
-    }
-    const publicUser = this.toPublicUser(user);
-    this.sessionCache.set(cacheKey, publicUser, SESSION_TTL_MS);
-    return publicUser;
   }
 
   bustSession(userId: string) {
