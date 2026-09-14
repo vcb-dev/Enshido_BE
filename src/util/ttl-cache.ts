@@ -33,4 +33,8 @@ export class TtlCache {
   delete(key: string) {
     this.store.delete(key);
   }
+
+  clear() {
+    this.store.clear();
+  }
 }

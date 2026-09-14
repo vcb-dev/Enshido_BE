@@ -7,7 +7,10 @@ import * as bcrypt from 'bcrypt';
 import { RoleCode } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateUserDto, UpdateUserDto } from './dto/user.dto';
-import { BCRYPT_COST } from '../auth/auth.service';
+import { AuthService, BCRYPT_COST } from '../auth/auth.service';
+import { sanitizeScreens } from '../auth/permissions';
+import { DEFAULT_STAFF_SCREENS } from '../auth/screens';
+import { InventoryService } from '../inventory/inventory.service';
 
 const userSelect = {
   id: true,
@@ -16,6 +19,7 @@ const userSelect = {
   fullName: true,
   roleCode: true,
   extraRoles: true,
+  allowedScreens: true,
   department: true,
   isActive: true,
   createdAt: true,
@@ -23,7 +27,11 @@ const userSelect = {
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly inventory: InventoryService,
+    private readonly auth: AuthService,
+  ) {}
 
   list() {
     return this.prisma.user.findMany({
@@ -40,7 +48,12 @@ export class UsersService {
     }
 
     const passwordHash = await bcrypt.hash(dto.password, BCRYPT_COST);
-    return this.prisma.user.create({
+    const allowedScreens =
+      dto.roleCode === RoleCode.ADMIN
+        ? []
+        : sanitizeScreens(dto.allowedScreens ?? DEFAULT_STAFF_SCREENS);
+
+    const created = await this.prisma.user.create({
       data: {
         username,
         email: dto.email?.toLowerCase().trim() || null,
@@ -48,11 +61,14 @@ export class UsersService {
         fullName: dto.fullName.trim(),
         roleCode: dto.roleCode,
         extraRoles: dto.extraRoles ?? [],
+        allowedScreens,
         department: dto.department?.trim() || null,
         isActive: true,
       },
       select: userSelect,
     });
+    this.inventory.bustLookups();
+    return created;
   }
 
   async update(id: string, dto: UpdateUserDto) {
@@ -63,6 +79,7 @@ export class UsersService {
       fullName?: string;
       roleCode?: RoleCode;
       extraRoles?: RoleCode[];
+      allowedScreens?: string[];
       department?: string | null;
       email?: string | null;
       isActive?: boolean;
@@ -70,19 +87,29 @@ export class UsersService {
     } = {};
 
     if (dto.fullName !== undefined) data.fullName = dto.fullName.trim();
-    if (dto.roleCode !== undefined) data.roleCode = dto.roleCode;
+    if (dto.roleCode !== undefined && user.roleCode !== RoleCode.ADMIN) {
+      data.roleCode = dto.roleCode;
+    }
     if (dto.extraRoles !== undefined) data.extraRoles = dto.extraRoles;
+    if (dto.allowedScreens !== undefined && user.roleCode !== RoleCode.ADMIN) {
+      data.allowedScreens = sanitizeScreens(dto.allowedScreens);
+    }
     if (dto.department !== undefined) {
       data.department = dto.department.trim() || null;
     }
     if (dto.email !== undefined) data.email = dto.email.toLowerCase().trim() || null;
-    if (dto.isActive !== undefined) data.isActive = dto.isActive;
+    if (dto.isActive !== undefined && user.roleCode !== RoleCode.ADMIN) {
+      data.isActive = dto.isActive;
+    }
     if (dto.password) data.passwordHash = await bcrypt.hash(dto.password, BCRYPT_COST);
 
-    return this.prisma.user.update({
+    const updated = await this.prisma.user.update({
       where: { id },
       data,
       select: userSelect,
     });
+    this.inventory.bustLookups();
+    this.auth.bustSession(id);
+    return updated;
   }
 }

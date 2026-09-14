@@ -35,7 +35,7 @@ export class AuthController {
       accessToken: result.accessToken,
       refreshToken: result.refreshToken,
     });
-    return { user: result.user };
+    return { user: result.user, expiresAt: result.expiresAt };
   }
 
   @Public()
@@ -50,7 +50,7 @@ export class AuthController {
       accessToken: result.accessToken,
       refreshToken: result.refreshToken,
     });
-    return { user: result.user };
+    return { user: result.user, expiresAt: result.expiresAt };
   }
 
   @Public()
@@ -67,7 +67,10 @@ export class AuthController {
   }
 
   @Get('me')
-  me(@CurrentUser() user: AuthUserPayload) {
-    return this.authService.meFromPayload(user);
+  me(@CurrentUser() user: AuthUserPayload, @Req() req: Request) {
+    return {
+      user: this.authService.meFromPayload(user),
+      expiresAt: this.authService.expiresAtFromRequest(req),
+    };
   }
 }

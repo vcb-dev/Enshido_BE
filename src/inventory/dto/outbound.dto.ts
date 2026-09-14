@@ -79,4 +79,10 @@ export class CreateOutboundDto {
   @IsString()
   @MaxLength(20)
   productionOrderCode?: string | null;
+
+  /** Mã kho nhận — xuất ở kho này sẽ tự nhập sang kho đó. */
+  @IsOptional()
+  @Transform(({ value }) => (value === '' ? null : value))
+  @IsString()
+  destWarehouseCode?: string | null;
 }

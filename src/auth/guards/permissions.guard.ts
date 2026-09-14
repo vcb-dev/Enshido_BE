@@ -31,7 +31,12 @@ export class PermissionsGuard implements CanActivate {
     }
 
     const ok = required.some((p) =>
-      userHasPermission(user.roleCode, user.extraRoles ?? [], p),
+      userHasPermission(
+        user.roleCode,
+        user.extraRoles ?? [],
+        p,
+        user.allowedScreens ?? [],
+      ),
     );
     if (!ok) {
       throw new ForbiddenException('Không đủ quyền cho thao tác này');

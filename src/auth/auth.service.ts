@@ -7,9 +7,27 @@ import { createHash, randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { LoginDto } from './dto/login.dto';
 import { AuthUserPayload, JwtPayload } from './types';
-import { permissionsForRoles, roleLabelFor } from './permissions';
+import { permissionsForUser, roleLabelFor } from './permissions';
+import { COOKIE_ACCESS } from '../cookie/cookie.constants';
+import { parseDurationMs } from '../util/duration';
+import { InflightMap, TtlCache } from '../util/ttl-cache';
+import type { Request } from 'express';
 
 export const BCRYPT_COST = 8;
+
+const userSessionSelect = {
+  id: true,
+  username: true,
+  email: true,
+  fullName: true,
+  roleCode: true,
+  extraRoles: true,
+  allowedScreens: true,
+  department: true,
+  isActive: true,
+} as const;
+
+const SESSION_TTL_MS = 5 * 60_000;
 
 type DbUser = {
   id: string;
@@ -18,6 +36,7 @@ type DbUser = {
   fullName: string;
   roleCode: RoleCode;
   extraRoles: RoleCode[];
+  allowedScreens?: string[];
   department: string | null;
   passwordHash?: string;
   isActive?: boolean;
@@ -25,6 +44,9 @@ type DbUser = {
 
 @Injectable()
 export class AuthService {
+  private readonly sessionCache = new TtlCache();
+  private readonly sessionInflight = new InflightMap();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
@@ -36,15 +58,8 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({
       where: { username },
       select: {
-        id: true,
-        username: true,
-        email: true,
-        fullName: true,
-        roleCode: true,
-        extraRoles: true,
-        department: true,
+        ...userSessionSelect,
         passwordHash: true,
-        isActive: true,
       },
     });
 
@@ -75,16 +90,7 @@ export class AuthService {
         revokedAt: true,
         expiresAt: true,
         user: {
-          select: {
-            id: true,
-            username: true,
-            email: true,
-            fullName: true,
-            roleCode: true,
-            extraRoles: true,
-            department: true,
-            isActive: true,
-          },
+          select: userSessionSelect,
         },
       },
     });
@@ -123,19 +129,31 @@ export class AuthService {
     return this.toSessionUser(user);
   }
 
-  validateJwtPayload(payload: JwtPayload): AuthUserPayload {
+  async validateJwtPayload(payload: JwtPayload): Promise<AuthUserPayload> {
     if (!payload?.sub || !payload.username || !payload.roleCode) {
       throw new UnauthorizedException('Phiên đăng nhập không hợp lệ');
     }
-    return {
-      id: payload.sub,
-      username: payload.username,
-      email: null,
-      fullName: payload.fullName ?? '',
-      roleCode: payload.roleCode,
-      extraRoles: payload.extraRoles ?? [],
-      department: payload.department ?? null,
-    };
+    const cacheKey = `user:${payload.sub}`;
+    const cached = this.sessionCache.get<AuthUserPayload>(cacheKey);
+    if (cached) return cached;
+    return this.sessionInflight.run(cacheKey, async () => {
+      const again = this.sessionCache.get<AuthUserPayload>(cacheKey);
+      if (again) return again;
+      const user = await this.prisma.user.findUnique({
+        where: { id: payload.sub },
+        select: userSessionSelect,
+      });
+      if (!user || !user.isActive) {
+        throw new UnauthorizedException('Phiên đăng nhập không hợp lệ');
+      }
+      const publicUser = this.toPublicUser(user);
+      this.sessionCache.set(cacheKey, publicUser, SESSION_TTL_MS);
+      return publicUser;
+    });
+  }
+
+  bustSession(userId: string) {
+    this.sessionCache.delete(`user:${userId}`);
   }
 
   private async issueTokens(user: DbUser) {
@@ -148,7 +166,8 @@ export class AuthService {
       department: user.department,
     };
 
-    const accessExpires = this.config.get<string>('JWT_ACCESS_EXPIRES', '15m');
+    const accessExpires = this.config.get<string>('JWT_ACCESS_EXPIRES', '8h');
+    const accessMs = parseDurationMs(accessExpires);
     const refreshToken = randomBytes(48).toString('hex');
     const refreshDays = this.parseDays(
       this.config.get<string>('JWT_REFRESH_EXPIRES', '7d'),
@@ -180,8 +199,21 @@ export class AuthService {
     return {
       accessToken,
       refreshToken,
+      expiresAt: new Date(Date.now() + accessMs).toISOString(),
       user: this.toSessionUser(user),
     };
+  }
+
+  expiresAtFromRequest(req: Request) {
+    const token = req.cookies?.[COOKIE_ACCESS];
+    if (typeof token === 'string' && token.length > 0) {
+      const decoded = this.jwt.decode(token) as { exp?: number } | null;
+      if (decoded?.exp) return new Date(decoded.exp * 1000).toISOString();
+    }
+    return new Date(
+      Date.now() +
+        parseDurationMs(this.config.get<string>('JWT_ACCESS_EXPIRES', '8h')),
+    ).toISOString();
   }
 
   private maybeRehashPassword(
@@ -223,16 +255,18 @@ export class AuthService {
       fullName: user.fullName,
       roleCode: user.roleCode,
       extraRoles: user.extraRoles ?? [],
+      allowedScreens: user.allowedScreens ?? [],
       department: user.department,
     };
   }
 
   private toSessionUser(user: DbUser) {
     const extraRoles = user.extraRoles ?? [];
+    const allowedScreens = user.allowedScreens ?? [];
     return {
       ...this.toPublicUser(user),
       roleLabel: roleLabelFor(user.roleCode, extraRoles),
-      permissions: permissionsForRoles(user.roleCode, extraRoles),
+      permissions: permissionsForUser(user.roleCode, extraRoles, allowedScreens),
     };
   }
 }

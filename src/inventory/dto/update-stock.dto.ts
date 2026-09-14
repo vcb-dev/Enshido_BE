@@ -62,6 +62,30 @@ export class UpdateStockDto {
 
   @IsOptional()
   @IsString()
+  otherClassName?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => (value === '' ? null : value))
+  @IsUUID()
+  otherClassId?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => (value === '' ? null : value))
+  @IsUUID()
+  bodyMetalId?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => (value === '' ? null : value))
+  @IsUUID()
+  productKindId?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => (value === '' ? null : value))
+  @IsUUID()
+  btpCategoryId?: string | null;
+
+  @IsOptional()
+  @IsString()
   note?: string | null;
 
   @IsOptional()
@@ -136,6 +160,30 @@ export class CreateStockDto {
   @Transform(({ value }) => (value === '' ? null : value))
   @IsEnum(MetalKind)
   metalKind?: MetalKind | null;
+
+  @IsOptional()
+  @IsString()
+  otherClassName?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => (value === '' ? null : value))
+  @IsUUID()
+  otherClassId?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => (value === '' ? null : value))
+  @IsUUID()
+  bodyMetalId?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => (value === '' ? null : value))
+  @IsUUID()
+  productKindId?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => (value === '' ? null : value))
+  @IsUUID()
+  btpCategoryId?: string | null;
 
   @IsOptional()
   @IsString()

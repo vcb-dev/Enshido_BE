@@ -9,6 +9,11 @@ const BCRYPT_COST = 8;
 
 async function seedUsers() {
   const passwordHash = await bcrypt.hash(DEMO_PASSWORD, BCRYPT_COST);
+  const keepUsernames = ['admin', 'phuong-mai', 'hai-yen'];
+  await prisma.user.deleteMany({
+    where: { username: { notIn: keepUsernames } },
+  });
+
   const users = [
     {
       username: 'admin',
@@ -16,13 +21,34 @@ async function seedUsers() {
       roleCode: RoleCode.ADMIN,
       extraRoles: [] as RoleCode[],
       department: 'IT',
+      allowedScreens: [] as string[],
     },
     {
-      username: 'user',
-      fullName: 'User Enshido',
+      username: 'phuong-mai',
+      fullName: 'Phương Mai',
       roleCode: RoleCode.USER,
       extraRoles: [] as RoleCode[],
-      department: 'Operations',
+      department: 'Quản lý kho',
+      allowedScreens: [
+        'screen.dashboard',
+        'screen.warehouse.nvl-chinh',
+        'screen.warehouse.btp-cho-vao-da',
+        'screen.warehouse.nvl-tieu-hao',
+        'screen.locations',
+      ],
+    },
+    {
+      username: 'hai-yen',
+      fullName: 'Hải Yến',
+      roleCode: RoleCode.USER,
+      extraRoles: [] as RoleCode[],
+      department: 'Kế toán',
+      allowedScreens: [
+        'screen.dashboard',
+        'screen.warehouse.nvl-chinh',
+        'screen.warehouse.btp-cho-vao-da',
+        'screen.warehouse.nvl-tieu-hao',
+      ],
     },
   ];
 
@@ -35,6 +61,7 @@ async function seedUsers() {
         roleCode: u.roleCode,
         extraRoles: u.extraRoles,
         department: u.department,
+        allowedScreens: u.allowedScreens,
         isActive: true,
       },
       create: {
@@ -44,6 +71,7 @@ async function seedUsers() {
         roleCode: u.roleCode,
         extraRoles: u.extraRoles,
         department: u.department,
+        allowedScreens: u.allowedScreens,
         isActive: true,
       },
     });
@@ -71,18 +99,112 @@ async function seedLookups() {
   }
 
   for (const row of [
-    { code: 'da-moiss', name: 'Đá Moiss', sortOrder: 1 },
-    { code: 'da-cz', name: 'Đá CZ', sortOrder: 2 },
-    { code: 'da-dz', name: 'Đá DZ', sortOrder: 3 },
-    { code: 'da-quy-khac', name: 'Đá quý khác', sortOrder: 4 },
-    { code: 'da-thuong', name: 'Đá thường', sortOrder: 5 },
-    { code: 'bac', name: 'Bạc', sortOrder: 6 },
-    { code: 'vang', name: 'Vàng', sortOrder: 7 },
+    { code: 'bac-a', name: 'Bạc A', metalKind: MetalKind.SILVER, sortOrder: 1 },
+    { code: 'bac-b', name: 'Bạc B', metalKind: MetalKind.SILVER, sortOrder: 2 },
+    { code: 'bac-925', name: 'Bạc 925', metalKind: MetalKind.SILVER, sortOrder: 3 },
+    { code: 'bac-999', name: 'Bạc 999', metalKind: MetalKind.SILVER, sortOrder: 4 },
+    { code: 'vang-10k', name: 'Vàng 10K', metalKind: MetalKind.GOLD, sortOrder: 5 },
+    { code: 'vang-18k', name: 'Vàng 18K', metalKind: MetalKind.GOLD, sortOrder: 6 },
+    { code: 'vang-24k', name: 'Vàng 24K', metalKind: MetalKind.GOLD, sortOrder: 7 },
+    { code: 'da-moiss', name: 'Đá Moiss', metalKind: MetalKind.STONE, sortOrder: 8 },
+    { code: 'da-cz', name: 'Đá CZ', metalKind: MetalKind.STONE, sortOrder: 9 },
+    { code: 'da-dz', name: 'Đá DZ', metalKind: MetalKind.STONE, sortOrder: 10 },
+    { code: 'da-quy-khac', name: 'Đá quý khác', metalKind: MetalKind.STONE, sortOrder: 11 },
+    { code: 'da-thuong', name: 'Đá thường', metalKind: MetalKind.STONE, sortOrder: 12 },
+    { code: 'hoi-pha-a', name: 'Hội pha A', metalKind: MetalKind.ALLOY, sortOrder: 13 },
+    { code: 'hoi-pha-b', name: 'Hội pha B', metalKind: MetalKind.ALLOY, sortOrder: 14 },
+    { code: 'dong-a', name: 'Đồng A', metalKind: MetalKind.COPPER, sortOrder: 15 },
+    { code: 'dong-b', name: 'Đồng B', metalKind: MetalKind.COPPER, sortOrder: 16 },
   ]) {
     await prisma.materialType.upsert({
       where: { code: row.code },
-      update: { name: row.name, sortOrder: row.sortOrder },
+      update: { name: row.name, metalKind: row.metalKind, sortOrder: row.sortOrder },
       create: row,
+    });
+  }
+
+  const otherParents = [
+    { code: 'bac', name: 'Bạc', sortOrder: 1 },
+    { code: 'vang', name: 'Vàng', sortOrder: 2 },
+    { code: 'da', name: 'Đá', sortOrder: 3 },
+    { code: 'hoi-pha', name: 'Hội pha', sortOrder: 4 },
+    { code: 'dong', name: 'Đồng', sortOrder: 5 },
+    { code: 'ccdc', name: 'CCDC', sortOrder: 6 },
+    { code: 'nvl-phu', name: 'NVL phụ', sortOrder: 7 },
+    { code: 'nvl-chinh', name: 'NVL chính', sortOrder: 8 },
+    { code: 'phan-loai-khac', name: 'Phân loại khác', sortOrder: 9 },
+    { code: 'chat-lieu', name: 'Chất liệu', sortOrder: 9, kind: 'OTHER' as const },
+    { code: 'danh-muc-btp', name: 'Danh mục BTP', sortOrder: 10, kind: 'OTHER' as const },
+    { code: 'phan-loai-san-pham', name: 'Phân loại sản phẩm', sortOrder: 11, kind: 'OTHER' as const },
+  ];
+  for (const row of otherParents) {
+    await prisma.otherClass.upsert({
+      where: { code: row.code },
+      update: {
+        name: row.name,
+        sortOrder: row.sortOrder,
+        parentId: null,
+        ...('kind' in row ? { kind: row.kind } : {}),
+      },
+      create: row,
+    });
+  }
+  const parentIdByCode = Object.fromEntries(
+    (
+      await prisma.otherClass.findMany({
+        where: { code: { in: otherParents.map((row) => row.code) } },
+        select: { id: true, code: true },
+      })
+    ).map((row) => [row.code, row.id]),
+  );
+  for (const row of [
+    { code: 'bac-a', name: 'Bạc A', parent: 'bac', sortOrder: 1 },
+    { code: 'bac-b', name: 'Bạc B', parent: 'bac', sortOrder: 2 },
+    { code: 'bac-925', name: 'Bạc 925', parent: 'bac', sortOrder: 3 },
+    { code: 'bac-999', name: 'Bạc 999', parent: 'bac', sortOrder: 4 },
+    { code: 'vang-10k', name: 'Vàng 10K', parent: 'vang', sortOrder: 1 },
+    { code: 'vang-18k', name: 'Vàng 18K', parent: 'vang', sortOrder: 2 },
+    { code: 'vang-24k', name: 'Vàng 24K', parent: 'vang', sortOrder: 3 },
+    { code: 'da-moiss', name: 'Đá Moiss', parent: 'da', sortOrder: 1 },
+    { code: 'da-cz', name: 'Đá CZ', parent: 'da', sortOrder: 2 },
+    { code: 'da-dz', name: 'Đá DZ', parent: 'da', sortOrder: 3 },
+    { code: 'da-quy-khac', name: 'Đá quý khác', parent: 'da', sortOrder: 4 },
+    { code: 'da-thuong', name: 'Đá thường', parent: 'da', sortOrder: 5 },
+    { code: 'hoi-pha-a', name: 'Hội pha A', parent: 'hoi-pha', sortOrder: 1 },
+    { code: 'hoi-pha-b', name: 'Hội pha B', parent: 'hoi-pha', sortOrder: 2 },
+    { code: 'dong-a', name: 'Đồng A', parent: 'dong', sortOrder: 1 },
+    { code: 'dong-b', name: 'Đồng B', parent: 'dong', sortOrder: 2 },
+    { code: 'chat-lieu-bac', name: 'Bạc', parent: 'chat-lieu', sortOrder: 1, kind: 'OTHER' as const },
+    { code: 'chat-lieu-vang', name: 'Vàng', parent: 'chat-lieu', sortOrder: 2, kind: 'OTHER' as const },
+    { code: 'chat-lieu-hoi-pha', name: 'Hội pha', parent: 'chat-lieu', sortOrder: 3, kind: 'OTHER' as const },
+    { code: 'chat-lieu-dong', name: 'Đồng', parent: 'chat-lieu', sortOrder: 4, kind: 'OTHER' as const },
+    { code: 'btp-da', name: 'Đá', parent: 'danh-muc-btp', sortOrder: 1, kind: 'OTHER' as const },
+    { code: 'btp-si-bong', name: 'Si bóng', parent: 'danh-muc-btp', sortOrder: 2, kind: 'OTHER' as const },
+    { code: 'sp-nhan', name: 'Nhẫn', parent: 'phan-loai-san-pham', sortOrder: 1, kind: 'OTHER' as const },
+    { code: 'sp-day-chuyen', name: 'Dây chuyền', parent: 'phan-loai-san-pham', sortOrder: 2, kind: 'OTHER' as const },
+    { code: 'sp-lac-tay', name: 'Lắc tay', parent: 'phan-loai-san-pham', sortOrder: 3, kind: 'OTHER' as const },
+    { code: 'sp-lac-chan', name: 'Lắc chân', parent: 'phan-loai-san-pham', sortOrder: 4, kind: 'OTHER' as const },
+    { code: 'sp-bong-tai', name: 'Bông tai', parent: 'phan-loai-san-pham', sortOrder: 5, kind: 'OTHER' as const },
+    { code: 'sp-mat-day', name: 'Mặt dây', parent: 'phan-loai-san-pham', sortOrder: 6, kind: 'OTHER' as const },
+    { code: 'sp-charm', name: 'Charm', parent: 'phan-loai-san-pham', sortOrder: 7, kind: 'OTHER' as const },
+    { code: 'sp-bo', name: 'Bộ trang sức', parent: 'phan-loai-san-pham', sortOrder: 8, kind: 'OTHER' as const },
+    { code: 'sp-khac', name: 'Khác', parent: 'phan-loai-san-pham', sortOrder: 9, kind: 'OTHER' as const },
+  ]) {
+    await prisma.otherClass.upsert({
+      where: { code: row.code },
+      update: {
+        name: row.name,
+        sortOrder: row.sortOrder,
+        parentId: parentIdByCode[row.parent],
+        ...('kind' in row ? { kind: row.kind } : {}),
+      },
+      create: {
+        code: row.code,
+        name: row.name,
+        sortOrder: row.sortOrder,
+        parentId: parentIdByCode[row.parent],
+        ...('kind' in row ? { kind: row.kind } : {}),
+      },
     });
   }
 
@@ -220,18 +342,18 @@ async function seedWarehouses() {
   await prisma.warehouse.upsert({
     where: { code: 'btp-cho-vao-da' },
     update: {
-      name: 'Kho BTP chờ vào đá',
-      shortName: 'Kho BTP chờ vào đá',
-      description: 'Bán thành phẩm đã gia công, chờ gắn đá.',
+      name: 'Kho BTP',
+      shortName: 'Kho BTP',
+      description: 'Nhập, xuất và tồn bán thành phẩm. Xuất từ kho khác có thể chuyển sang đây.',
       parentId: null,
       sortOrder: 2,
       isActive: true,
     },
     create: {
       code: 'btp-cho-vao-da',
-      name: 'Kho BTP chờ vào đá',
-      shortName: 'Kho BTP chờ vào đá',
-      description: 'Bán thành phẩm đã gia công, chờ gắn đá.',
+      name: 'Kho BTP',
+      shortName: 'Kho BTP',
+      description: 'Nhập, xuất và tồn bán thành phẩm. Xuất từ kho khác có thể chuyển sang đây.',
       sortOrder: 2,
     },
   });
@@ -799,8 +921,9 @@ async function main() {
   await seedDaOutbounds();
 
   console.log('Seed OK — password:', DEMO_PASSWORD);
-  console.log('  admin  ADMIN');
-  console.log('  user   USER');
+  console.log('  admin       ADMIN — Admin Enshido');
+  console.log('  phuong-mai  USER  — Phương Mai (Quản lý kho)');
+  console.log('  hai-yen     USER  — Hải Yến (Kế toán)');
   console.log('  warehouses: nvl-chinh, btp-cho-vao-da (tồn / nhập / xuất), nvl-tieu-hao');
   console.log('  sample stock: NVL kho chính + NVL tạo từ phiếu nhập/xuất');
   console.log('  kho nhập: 97 dòng từ sheet nhập (gắn NVL, hiện Nhập trên kho tồn)');
