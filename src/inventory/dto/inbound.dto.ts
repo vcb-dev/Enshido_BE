@@ -75,4 +75,9 @@ export class CreateInboundDto {
   @IsOptional()
   @IsString()
   locationCode?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => (value === '' ? null : value))
+  @IsUUID()
+  otherClassId?: string | null;
 }

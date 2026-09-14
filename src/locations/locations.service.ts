@@ -17,6 +17,14 @@ export class LocationsService {
       this.prisma.warehouseLocation.findMany({
         where: { warehouseId: warehouse.id, isActive: true },
         orderBy: [{ zone: 'asc' }, { aisle: 'asc' }, { level: 'asc' }, { position: 'asc' }],
+        select: {
+          id: true,
+          code: true,
+          zone: true,
+          aisle: true,
+          level: true,
+          position: true,
+        },
       }),
       this.prisma.material.findMany({
         where: {

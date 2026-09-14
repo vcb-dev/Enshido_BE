@@ -7,13 +7,16 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  UseGuards,
 } from '@nestjs/common';
 import { CurrentUser } from '../auth/decorators';
+import { WarehouseScreenGuard } from '../auth/guards/warehouse-screen.guard';
 import type { AuthUserPayload } from '../auth/types';
 import { BtpService } from './btp.service';
 import { UpsertBtpWaitingDto } from './dto/waiting-item.dto';
 
 @Controller('warehouses/:code/btp-waiting')
+@UseGuards(WarehouseScreenGuard)
 export class BtpController {
   constructor(private readonly btp: BtpService) {}
 

@@ -71,4 +71,10 @@ export class CreateOutboundDto {
   @Type(() => Boolean)
   @IsBoolean()
   applyToStock?: boolean;
+
+  /** Mã kho nhận — xuất ở kho này sẽ tự nhập sang kho đó. */
+  @IsOptional()
+  @Transform(({ value }) => (value === '' ? null : value))
+  @IsString()
+  destWarehouseCode?: string | null;
 }

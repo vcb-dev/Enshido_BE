@@ -7,6 +7,7 @@ export type AuthUserPayload = {
   fullName: string;
   roleCode: RoleCode;
   extraRoles: RoleCode[];
+  allowedScreens: string[];
   department: string | null;
 };
 
@@ -18,3 +19,4 @@ export type JwtPayload = {
   extraRoles: RoleCode[];
   department: string | null;
 };
+

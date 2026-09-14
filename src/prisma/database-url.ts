@@ -15,7 +15,7 @@ export function resolveDatabaseUrl(raw = process.env.DATABASE_URL): string {
     params.delete('pgbouncer');
   }
   if (!params.has('connection_limit')) {
-    params.set('connection_limit', process.env.PRISMA_CONNECTION_LIMIT ?? '2');
+    params.set('connection_limit', process.env.PRISMA_CONNECTION_LIMIT ?? '5');
   }
   if (!params.has('pool_timeout')) {
     params.set('pool_timeout', process.env.PRISMA_POOL_TIMEOUT ?? '20');

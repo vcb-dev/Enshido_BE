@@ -14,6 +14,7 @@ import { LoginDto } from './dto/login.dto';
 import { CurrentUser, Public } from './decorators';
 import { CookieAuthService } from '../cookie/cookie-auth.service';
 import { COOKIE_REFRESH } from '../cookie/cookie.constants';
+import { InventoryService } from '../inventory/inventory.service';
 import type { AuthUserPayload } from './types';
 
 @Controller('auth')
@@ -21,6 +22,7 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly cookies: CookieAuthService,
+    private readonly inventory: InventoryService,
   ) {}
 
   @Public()
@@ -30,12 +32,15 @@ export class AuthController {
     @Body() dto: LoginDto,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const result = await this.authService.login(dto);
+    const [result, lookups] = await Promise.all([
+      this.authService.login(dto),
+      this.inventory.listLookups(),
+    ]);
     this.cookies.setAuthCookies(res, {
       accessToken: result.accessToken,
       refreshToken: result.refreshToken,
     });
-    return { user: result.user };
+    return { user: result.user, lookups, expiresAt: result.expiresAt };
   }
 
   @Public()
@@ -45,12 +50,15 @@ export class AuthController {
     @Res({ passthrough: true }) res: Response,
   ) {
     const refreshToken = req.cookies?.[COOKIE_REFRESH] as string | undefined;
-    const result = await this.authService.refresh(refreshToken ?? '');
+    const [result, lookups] = await Promise.all([
+      this.authService.refresh(refreshToken ?? ''),
+      this.inventory.listLookups(),
+    ]);
     this.cookies.setAuthCookies(res, {
       accessToken: result.accessToken,
       refreshToken: result.refreshToken,
     });
-    return { user: result.user };
+    return { user: result.user, lookups, expiresAt: result.expiresAt };
   }
 
   @Public()
@@ -67,7 +75,12 @@ export class AuthController {
   }
 
   @Get('me')
-  me(@CurrentUser() user: AuthUserPayload) {
-    return this.authService.meFromPayload(user);
+  async me(@CurrentUser() user: AuthUserPayload, @Req() req: Request) {
+    const lookups = await this.inventory.listLookups();
+    return {
+      user: this.authService.meFromPayload(user),
+      lookups,
+      expiresAt: this.authService.expiresAtFromRequest(req),
+    };
   }
 }

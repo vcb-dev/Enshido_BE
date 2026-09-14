@@ -15,6 +15,7 @@ import { InventoryModule } from './inventory/inventory.module';
 import { UsersModule } from './users/users.module';
 import { BtpModule } from './btp/btp.module';
 import { LocationsModule } from './locations/locations.module';
+import { CatalogsModule } from './catalogs/catalogs.module';
 import { WarehousesModule } from './warehouses/warehouses.module';
 
 @Module({
@@ -37,6 +38,7 @@ import { WarehousesModule } from './warehouses/warehouses.module';
     WarehousesModule,
     BtpModule,
     LocationsModule,
+    CatalogsModule,
   ],
   controllers: [AppController],
   providers: [

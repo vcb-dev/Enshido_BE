@@ -7,8 +7,10 @@ import {
   Matches,
   MinLength,
   IsArray,
+  IsIn,
 } from 'class-validator';
 import { RoleCode } from '@prisma/client';
+import { ALL_PERMISSIONS } from '../../auth/permissions';
 
 export class CreateUserDto {
   @IsString()
@@ -34,6 +36,11 @@ export class CreateUserDto {
   extraRoles?: RoleCode[];
 
   @IsOptional()
+  @IsArray()
+  @IsIn(ALL_PERMISSIONS, { each: true })
+  allowedScreens?: string[];
+
+  @IsOptional()
   @IsEmail()
   email?: string;
 
@@ -56,6 +63,11 @@ export class UpdateUserDto {
   @IsArray()
   @IsEnum(RoleCode, { each: true })
   extraRoles?: RoleCode[];
+
+  @IsOptional()
+  @IsArray()
+  @IsIn(ALL_PERMISSIONS, { each: true })
+  allowedScreens?: string[];
 
   @IsOptional()
   @IsEmail()

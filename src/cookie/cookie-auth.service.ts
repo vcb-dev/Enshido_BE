@@ -28,7 +28,7 @@ export class CookieAuthService {
     tokens: { accessToken: string; refreshToken: string },
   ) {
     const accessMaxAge = parseDurationMs(
-      this.config.get<string>('JWT_ACCESS_EXPIRES', '15m'),
+      this.config.get<string>('JWT_ACCESS_EXPIRES', '8h'),
     );
     const refreshMaxAge = parseDurationMs(
       this.config.get<string>('JWT_REFRESH_EXPIRES', '7d'),

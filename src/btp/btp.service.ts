@@ -20,7 +20,21 @@ export class BtpService {
     const rows = await this.prisma.btpWaitingItem.findMany({
       where: { warehouseId: warehouse.id },
       orderBy: [{ sortOrder: 'asc' }, { receivedAt: 'asc' }],
-      include: { unit: { select: { id: true, name: true } } },
+      select: {
+        id: true,
+        sortOrder: true,
+        receivedAt: true,
+        craftsmanUserId: true,
+        craftsmanName: true,
+        name: true,
+        unitId: true,
+        unitName: true,
+        qty: true,
+        weight: true,
+        note: true,
+        enteredBy: true,
+        unit: { select: { id: true, name: true } },
+      },
     });
     const zero = new Prisma.Decimal(0);
     const totals = rows.reduce(
@@ -108,7 +122,7 @@ export class BtpService {
 
   private async requireWarehouse(code: string) {
     if (code !== BTP_WAREHOUSE_CODE) {
-      throw new BadRequestException('Kho này không dùng sổ BTP chờ vào đá');
+      throw new BadRequestException('Kho này không dùng sổ BTP');
     }
     const warehouse = await this.prisma.warehouse.findUnique({
       where: { code },

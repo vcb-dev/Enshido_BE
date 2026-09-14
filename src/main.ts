@@ -23,8 +23,8 @@ async function bootstrap() {
     }),
   );
 
-  const feOrigin = config.get<string>('FE_ORIGIN', 'http://localhost:3001');
-  const origins = feOrigin
+  const corsOrigin = config.get<string>('CORS_ORIGIN', 'http://localhost:3001');
+  const origins = corsOrigin
     .split(',')
     .map((o) => o.trim())
     .filter(Boolean);
