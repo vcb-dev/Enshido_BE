@@ -17,6 +17,9 @@ import { BtpModule } from './btp/btp.module';
 import { LocationsModule } from './locations/locations.module';
 import { CatalogsModule } from './catalogs/catalogs.module';
 import { WarehousesModule } from './warehouses/warehouses.module';
+import { UploadsModule } from './uploads/uploads.module';
+import { ProductionOrdersModule } from './production-orders/production-orders.module';
+import { FinishedGoodsModule } from './finished-goods/finished-goods.module';
 
 @Module({
   imports: [
@@ -38,6 +41,9 @@ import { WarehousesModule } from './warehouses/warehouses.module';
     WarehousesModule,
     BtpModule,
     LocationsModule,
+    UploadsModule,
+    ProductionOrdersModule,
+    FinishedGoodsModule,
     CatalogsModule,
   ],
   controllers: [AppController],
