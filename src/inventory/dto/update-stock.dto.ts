@@ -1,17 +1,40 @@
 import { Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsDateString,
   IsEnum,
   IsInt,
   IsOptional,
   IsString,
+  IsUrl,
   IsUUID,
   Matches,
+  MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
 import { MaterialClass, MetalKind } from '@prisma/client';
 
 const DECIMAL = /^-?\d+(\.\d+)?$/;
+
+/** Ảnh sản phẩm BTP đã upload lên Cloudinary. */
+export class MaterialImageDto {
+  @IsUrl({ protocols: ['https'], require_protocol: true })
+  url!: string;
+
+  @IsString()
+  @MaxLength(300)
+  publicId!: string;
+
+  @IsOptional()
+  @IsInt()
+  width?: number | null;
+
+  @IsOptional()
+  @IsInt()
+  height?: number | null;
+}
 
 export class UpdateStockDto {
   @IsOptional()
@@ -83,6 +106,23 @@ export class UpdateStockDto {
   @Transform(({ value }) => (value === '' ? null : value))
   @IsUUID()
   btpCategoryId?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => (value === '' ? null : value))
+  @IsUUID()
+  platingColorId?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  sizeLabel?: string | null;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => MaterialImageDto)
+  images?: MaterialImageDto[];
 
   @IsOptional()
   @IsString()
@@ -184,6 +224,23 @@ export class CreateStockDto {
   @Transform(({ value }) => (value === '' ? null : value))
   @IsUUID()
   btpCategoryId?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => (value === '' ? null : value))
+  @IsUUID()
+  platingColorId?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  sizeLabel?: string | null;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => MaterialImageDto)
+  images?: MaterialImageDto[];
 
   @IsOptional()
   @IsString()
