@@ -136,9 +136,6 @@ type MaterialStock = Prisma.MaterialGetPayload<{
   select: typeof materialStockSelect;
 }>;
 
-/** DB ở xa (~1s/query) — mặc định 5s của Prisma không đủ cho tạo/sửa dòng kho kèm ảnh. */
-const STOCK_TX = { timeout: 15_000, maxWait: 10_000 };
-
 type PriceLayer = {
   kind: 'opening' | 'inbound';
   unitPrice: Prisma.Decimal;
@@ -463,7 +460,7 @@ export class InventoryService {
         ? dto.otherClassId || null
         : await this.resolveOtherClassId(dto.otherClassName);
 
-    const materialId = await this.prisma.$transaction(async (tx) => {
+    const materialId = await this.prisma.runTx(async (tx) => {
       const sku = await allocateMaterialSku(tx);
       const material = await tx.material.create({
         data: {
@@ -499,7 +496,7 @@ export class InventoryService {
         },
       });
       return material.id;
-    }, STOCK_TX);
+    });
 
     // Đọc lại sau commit — select nhiều quan hệ, để trong transaction dễ quá timeout.
     const created = await this.prisma.material.findUniqueOrThrow({
@@ -591,7 +588,7 @@ export class InventoryService {
       await this.assertConsumableClass(dto.otherClassId);
     }
 
-    await this.prisma.$transaction(async (tx) => {
+    await this.prisma.runTx(async (tx) => {
       await tx.material.update({
         where: { id: material.id },
         data: {
@@ -658,7 +655,7 @@ export class InventoryService {
         },
       });
       await this.recomputeStockBalance(tx, warehouse.id, material.id);
-    }, STOCK_TX);
+    });
 
     const [updated, inboundMap, outboundMap, firstInboundMap, layers] = await Promise.all([
       this.prisma.material.findUniqueOrThrow({
@@ -769,7 +766,7 @@ export class InventoryService {
       await this.assertAssignableLocation(warehouse.id, dto.locationCode, existing?.id);
     }
 
-    const created = await this.prisma.$transaction(async (tx) => {
+    const created = await this.prisma.runTx(async (tx) => {
       const material = existing
         ? existing
         : await this.ensureMaterialInTx(tx, warehouse, name, unit, dto.otherClassId);
@@ -800,11 +797,6 @@ export class InventoryService {
           supplierId: supplier?.id ?? null,
           supplierName: dto.supplierName?.trim() || supplier?.name || null,
           applyToStock,
-        },
-        include: {
-          unit: { select: { id: true, name: true } },
-          supplier: { select: { id: true, name: true } },
-          material: { select: { id: true, sku: true } },
         },
       });
 
@@ -868,7 +860,7 @@ export class InventoryService {
       await this.assertAssignableLocation(warehouse.id, dto.locationCode, inbound.materialId);
     }
 
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.runTx(async (tx) => {
       let materialId = inbound.materialId;
       let materialSku: string | null = null;
       if (!materialId) {
@@ -914,11 +906,6 @@ export class InventoryService {
           supplierId: supplier?.id ?? null,
           supplierName: dto.supplierName?.trim() || supplier?.name || null,
         },
-        include: {
-          unit: { select: { id: true, name: true } },
-          supplier: { select: { id: true, name: true } },
-          material: { select: { id: true, sku: true } },
-        },
       });
 
       await this.recomputeStockBalance(tx, warehouse.id, materialId);
@@ -954,7 +941,7 @@ export class InventoryService {
       );
     }
 
-    await this.prisma.$transaction(async (tx) => {
+    await this.prisma.runTx(async (tx) => {
       if (inbound.materialId) {
         await this.assertDeleteKeepsStockNonNegative(
           tx,
@@ -1066,7 +1053,7 @@ export class InventoryService {
     if (!receiver) throw new BadRequestException('Chọn người nhận');
     const productionOrderId = await this.resolveProductionOrder(dto.productionOrderCode);
 
-    const created = await this.prisma.$transaction(async (tx) => {
+    const created = await this.prisma.runTx(async (tx) => {
       const material = existing;
       await this.assertEnoughStock(tx, warehouse.id, material.id, qty);
       const lotUnit = await this.resolveMoveUnit(tx, material.id, unit);
@@ -1102,19 +1089,20 @@ export class InventoryService {
         enteredBy: actorDisplayName(actor),
         note: dto.note?.trim() || null,
       });
-      return tx.stockOutbound.findUniqueOrThrow({
-        where: { id: row.id },
-        include: {
-          unit: { select: { id: true, name: true } },
-          material: { select: { id: true, sku: true } },
-          destWarehouse: { select: { code: true, shortName: true } },
-          productionOrder: { select: { code: true } },
-        },
-      });
+      return {
+        ...row,
+        destWarehouse: { code: dest.code, shortName: dest.shortName },
+      };
     });
 
     this.bustWarehouseCaches(code, dest?.code);
-    return this.toOutboundRow(created);
+    // Không join trong transaction — mã đơn đã biết từ phiếu gửi lên.
+    return this.toOutboundRow({
+      ...created,
+      productionOrder: productionOrderId
+        ? { code: dto.productionOrderCode?.trim().toUpperCase() ?? '' }
+        : null,
+    });
   }
 
   async updateOutbound(code: string, outboundId: string, dto: CreateOutboundDto) {
@@ -1163,7 +1151,7 @@ export class InventoryService {
         ? outbound.productionOrderId
         : await this.resolveProductionOrder(dto.productionOrderCode, outbound.productionOrderId);
 
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.runTx(async (tx) => {
       let materialId = outbound.materialId;
       let materialSku: string | null = null;
       if (!materialId) {
@@ -1277,7 +1265,7 @@ export class InventoryService {
     if (!outbound) throw new NotFoundException('Không tìm thấy dòng xuất kho');
     assertNotAutoIssued(outbound);
 
-    await this.prisma.$transaction(async (tx) => {
+    await this.prisma.runTx(async (tx) => {
       if (outbound.destInboundId && outbound.destWarehouse) {
         const destIn = await tx.stockInbound.findUnique({
           where: { id: outbound.destInboundId },
@@ -1308,20 +1296,18 @@ export class InventoryService {
     removeOutQty: Prisma.Decimal,
   ) {
     const zero = new Prisma.Decimal(0);
-    const [balance, inbound, outbound] = await Promise.all([
-      tx.stockBalance.findUnique({
-        where: { materialId },
-        select: { openingQty: true },
-      }),
-      tx.stockInbound.aggregate({
-        where: { warehouseId, materialId },
-        _sum: { qty: true },
-      }),
-      tx.stockOutbound.aggregate({
-        where: { warehouseId, materialId, applyToStock: true, qty: { gt: 0 } },
-        _sum: { qty: true },
-      }),
-    ]);
+    const balance = await tx.stockBalance.findUnique({
+      where: { materialId },
+      select: { openingQty: true },
+    });
+    const inbound = await tx.stockInbound.aggregate({
+      where: { warehouseId, materialId },
+      _sum: { qty: true },
+    });
+    const outbound = await tx.stockOutbound.aggregate({
+      where: { warehouseId, materialId, applyToStock: true, qty: { gt: 0 } },
+      _sum: { qty: true },
+    });
     const next = (balance?.openingQty ?? zero)
       .add(inbound._sum.qty ?? zero)
       .sub(removeInQty)
@@ -1350,13 +1336,11 @@ export class InventoryService {
     if (!fallbackUnit) {
       throw new BadRequestException('Thiếu đơn vị tính để tạo NVL trên Tồn');
     }
-    const [lastMat, sku] = await Promise.all([
-      tx.material.aggregate({
-        where: { warehouseId: warehouse.id, isActive: true },
-        _max: { sortOrder: true },
-      }),
-      allocateMaterialSku(tx),
-    ]);
+    const lastMat = await tx.material.aggregate({
+      where: { warehouseId: warehouse.id, isActive: true },
+      _max: { sortOrder: true },
+    });
+    const sku = await allocateMaterialSku(tx);
     const material = await tx.material.create({
       data: {
         warehouseId: warehouse.id,
@@ -1583,15 +1567,16 @@ export class InventoryService {
   ) {
     const code = locationCode?.trim() || '';
     if (!code) return;
-    const configured = await this.prisma.warehouseLocation.count({
-      where: { warehouseId, isActive: true },
+    const slot = await this.prisma.warehouseLocation.findFirst({
+      where: { warehouseId, code, isActive: true },
+      select: { id: true },
     });
-    if (configured > 0) {
-      const slot = await this.prisma.warehouseLocation.findFirst({
-        where: { warehouseId, code, isActive: true },
+    if (!slot) {
+      const configured = await this.prisma.warehouseLocation.findFirst({
+        where: { warehouseId, isActive: true },
         select: { id: true },
       });
-      if (!slot) {
+      if (configured) {
         throw new BadRequestException('Chọn vị trí đã cấu hình (vd A1C12)');
       }
     }
@@ -2070,65 +2055,60 @@ export class InventoryService {
     }
   }
 
-  /** Tồn kho SL/TT = đầu kỳ + nhập − xuất. */
+  /** Tồn kho SL/TT = đầu kỳ + nhập − xuất. One SQL so the tx does not multiplex. */
   private async recomputeStockBalance(
     tx: Prisma.TransactionClient,
     warehouseId: string,
     materialId: string | null,
   ) {
     if (!materialId) return;
-    const zero = new Prisma.Decimal(0);
-    const [balance, inboundAgg, outboundAgg] = await Promise.all([
-      tx.stockBalance.findUnique({
-        where: { materialId },
-        select: { openingQty: true, openingAmount: true },
-      }),
-      tx.stockInbound.aggregate({
-        where: { warehouseId, materialId, applyToStock: true, qty: { gt: 0 } },
-        _sum: { qty: true, amount: true },
-      }),
-      tx.stockOutbound.aggregate({
-        where: { warehouseId, materialId, applyToStock: true, qty: { gt: 0 } },
-        _sum: { qty: true, amount: true },
-      }),
-    ]);
-    const inbound = {
-      qty: inboundAgg._sum.qty ?? zero,
-      amount: inboundAgg._sum.amount ?? zero,
-    };
-    const outbound = {
-      qty: outboundAgg._sum.qty ?? zero,
-      amount: outboundAgg._sum.amount ?? zero,
-    };
-    const nxt = nxtFigures(
-      balance?.openingQty ?? zero,
-      balance?.openingAmount ?? zero,
-      inbound,
-      outbound,
-    );
-    await tx.stockBalance.upsert({
-      where: { materialId },
-      create: {
-        warehouseId,
-        materialId,
-        openingQty: balance?.openingQty ?? zero,
-        openingAmount: balance?.openingAmount ?? zero,
-        inQty: nxt.inQty,
-        inAmount: nxt.inAmount,
-        outQty: nxt.outQty,
-        outAmount: nxt.outAmount,
-        qty: nxt.qty,
-        amount: nxt.amount,
-      },
-      update: {
-        inQty: nxt.inQty,
-        inAmount: nxt.inAmount,
-        outQty: nxt.outQty,
-        outAmount: nxt.outAmount,
-        qty: nxt.qty,
-        amount: nxt.amount,
-      },
-    });
+    await tx.$executeRaw`
+      INSERT INTO stock_balances (
+        id, warehouse_id, material_id,
+        opening_qty, opening_amount, stock_unit_price,
+        in_qty, in_amount, out_qty, out_amount, qty, amount, updated_at
+      )
+      SELECT
+        gen_random_uuid(),
+        ${warehouseId}::uuid,
+        ${materialId}::uuid,
+        COALESCE(b.opening_qty, 0),
+        COALESCE(b.opening_amount, 0),
+        COALESCE(b.stock_unit_price, 0),
+        COALESCE(i.qty, 0),
+        COALESCE(i.amount, 0),
+        COALESCE(o.qty, 0),
+        COALESCE(o.amount, 0),
+        COALESCE(b.opening_qty, 0) + COALESCE(i.qty, 0) - COALESCE(o.qty, 0),
+        COALESCE(b.opening_amount, 0) + COALESCE(i.amount, 0) - COALESCE(o.amount, 0),
+        NOW()
+      FROM (SELECT 1) AS dummy
+      LEFT JOIN stock_balances b ON b.material_id = ${materialId}::uuid
+      LEFT JOIN (
+        SELECT COALESCE(SUM(qty), 0) AS qty, COALESCE(SUM(amount), 0) AS amount
+        FROM stock_inbounds
+        WHERE warehouse_id = ${warehouseId}::uuid
+          AND material_id = ${materialId}::uuid
+          AND apply_to_stock = true
+          AND qty > 0
+      ) i ON true
+      LEFT JOIN (
+        SELECT COALESCE(SUM(qty), 0) AS qty, COALESCE(SUM(amount), 0) AS amount
+        FROM stock_outbounds
+        WHERE warehouse_id = ${warehouseId}::uuid
+          AND material_id = ${materialId}::uuid
+          AND apply_to_stock = true
+          AND qty > 0
+      ) o ON true
+      ON CONFLICT (material_id) DO UPDATE SET
+        in_qty = EXCLUDED.in_qty,
+        in_amount = EXCLUDED.in_amount,
+        out_qty = EXCLUDED.out_qty,
+        out_amount = EXCLUDED.out_amount,
+        qty = EXCLUDED.qty,
+        amount = EXCLUDED.amount,
+        updated_at = NOW()
+    `;
   }
 
   private async syncMaterialLines(
@@ -2147,10 +2127,8 @@ export class InventoryService {
       ...(patch.unitId ? { unitId: patch.unitId } : {}),
       ...(patch.unitName ? { unitName: patch.unitName } : {}),
     };
-    await Promise.all([
-      tx.stockInbound.updateMany({ where: { materialId }, data }),
-      tx.stockOutbound.updateMany({ where: { materialId }, data }),
-    ]);
+    await tx.stockInbound.updateMany({ where: { materialId }, data });
+    await tx.stockOutbound.updateMany({ where: { materialId }, data });
   }
 
   private async availableOnHand(
@@ -2160,27 +2138,24 @@ export class InventoryService {
     exceptOutboundId?: string,
   ) {
     const zero = new Prisma.Decimal(0);
-    const [balance, inbound, outbound] = await Promise.all([
-      tx.stockBalance.findUnique({
-        where: { materialId },
-        select: { openingQty: true },
-      }),
-      tx.stockInbound.aggregate({
-        where: { warehouseId, materialId, applyToStock: true, qty: { gt: 0 } },
-        _sum: { qty: true },
-      }),
-      tx.stockOutbound.aggregate({
-        where: {
-          warehouseId,
-          materialId,
-          applyToStock: true,
-          qty: { gt: 0 },
-          ...(exceptOutboundId ? { NOT: { id: exceptOutboundId } } : {}),
-        },
-        _sum: { qty: true },
-      }),
-    ]);
-    return (balance?.openingQty ?? zero)
+    const locked = await tx.$queryRaw<Array<{ opening_qty: Prisma.Decimal }>>`
+      SELECT opening_qty FROM stock_balances WHERE material_id = ${materialId}::uuid FOR UPDATE
+    `;
+    const inbound = await tx.stockInbound.aggregate({
+      where: { warehouseId, materialId, applyToStock: true, qty: { gt: 0 } },
+      _sum: { qty: true },
+    });
+    const outbound = await tx.stockOutbound.aggregate({
+      where: {
+        warehouseId,
+        materialId,
+        applyToStock: true,
+        qty: { gt: 0 },
+        ...(exceptOutboundId ? { NOT: { id: exceptOutboundId } } : {}),
+      },
+      _sum: { qty: true },
+    });
+    return (locked[0]?.opening_qty ?? zero)
       .add(inbound._sum.qty ?? zero)
       .sub(outbound._sum.qty ?? zero);
   }
@@ -2313,61 +2288,58 @@ export class InventoryService {
     if (!waiting.length) return;
 
     for (const row of waiting) {
-      await this.prisma.$transaction(
-        async (tx) => {
-          const stillThere = await tx.btpWaitingItem.findUnique({
-            where: { id: row.id },
-            select: { id: true },
-          });
-          if (!stillThere) return;
+      await this.prisma.runTx(async (tx) => {
+        const stillThere = await tx.btpWaitingItem.findUnique({
+          where: { id: row.id },
+          select: { id: true },
+        });
+        if (!stillThere) return;
 
-          const unit =
-            (row.unitId
-              ? await tx.unit.findUnique({
-                  where: { id: row.unitId },
-                  select: { id: true, name: true },
-                })
-              : null) ??
-            (row.unitName
-              ? await tx.unit.findFirst({
-                  where: { name: row.unitName },
-                  select: { id: true, name: true },
-                })
-              : null);
-          const material =
-            (await tx.material.findFirst({
-              where: { warehouseId: warehouse.id, name: row.name, isActive: true },
-              select: { id: true, sku: true },
-            })) ?? (await this.ensureMaterialInTx(tx, warehouse, row.name, unit));
-          const last = await tx.stockInbound.aggregate({
-            where: { warehouseId: warehouse.id },
-            _max: { sortOrder: true },
-          });
-          const extras = [
-            row.craftsmanName ? `Thợ: ${row.craftsmanName}` : null,
-            row.weight && !row.weight.isZero() ? `TL: ${decStr(row.weight)}` : null,
-          ].filter(Boolean);
-          const note = [...extras, row.note].filter(Boolean).join(' — ') || null;
-          await tx.stockInbound.create({
-            data: {
-              warehouseId: warehouse.id,
-              materialId: material.id,
-              sortOrder: (last._max.sortOrder ?? 0) + 1,
-              receivedAt: row.receivedAt,
-              name: row.name,
-              unitId: unit?.id ?? null,
-              unitName: unit?.name ?? row.unitName,
-              qty: row.qty,
-              applyToStock: true,
-              note,
-              enteredBy: row.enteredBy,
-            },
-          });
-          await this.recomputeStockBalance(tx, warehouse.id, material.id);
-          await tx.btpWaitingItem.delete({ where: { id: row.id } });
-        },
-        { timeout: 20_000, maxWait: 10_000 },
-      );
+        const unit =
+          (row.unitId
+            ? await tx.unit.findUnique({
+                where: { id: row.unitId },
+                select: { id: true, name: true },
+              })
+            : null) ??
+          (row.unitName
+            ? await tx.unit.findFirst({
+                where: { name: row.unitName },
+                select: { id: true, name: true },
+              })
+            : null);
+        const material =
+          (await tx.material.findFirst({
+            where: { warehouseId: warehouse.id, name: row.name, isActive: true },
+            select: { id: true, sku: true },
+          })) ?? (await this.ensureMaterialInTx(tx, warehouse, row.name, unit));
+        const last = await tx.stockInbound.aggregate({
+          where: { warehouseId: warehouse.id },
+          _max: { sortOrder: true },
+        });
+        const extras = [
+          row.craftsmanName ? `Thợ: ${row.craftsmanName}` : null,
+          row.weight && !row.weight.isZero() ? `TL: ${decStr(row.weight)}` : null,
+        ].filter(Boolean);
+        const note = [...extras, row.note].filter(Boolean).join(' — ') || null;
+        await tx.stockInbound.create({
+          data: {
+            warehouseId: warehouse.id,
+            materialId: material.id,
+            sortOrder: (last._max.sortOrder ?? 0) + 1,
+            receivedAt: row.receivedAt,
+            name: row.name,
+            unitId: unit?.id ?? null,
+            unitName: unit?.name ?? row.unitName,
+            qty: row.qty,
+            applyToStock: true,
+            note,
+            enteredBy: row.enteredBy,
+          },
+        });
+        await this.recomputeStockBalance(tx, warehouse.id, material.id);
+        await tx.btpWaitingItem.delete({ where: { id: row.id } });
+      });
     }
   }
 
@@ -2416,11 +2388,6 @@ export class InventoryService {
         applyToStock: params.applyToStock,
         productionOrderId: params.productionOrderId,
         autoIssued: params.autoIssued ?? false,
-      },
-      include: {
-        unit: { select: { id: true, name: true } },
-        material: { select: { id: true, sku: true } },
-        productionOrder: { select: { code: true } },
       },
     });
     await this.recomputeStockBalance(tx, params.warehouseId, params.material.id);
@@ -2485,27 +2452,25 @@ export class InventoryService {
     materialId: string,
     exceptOutboundId?: string,
   ) {
-    const [balance, inbounds, outbound] = await Promise.all([
-      tx.stockBalance.findUnique({
-        where: { materialId },
-        select: { openingQty: true, openingAmount: true, stockUnitPrice: true },
-      }),
-      tx.stockInbound.findMany({
-        where: { warehouseId, materialId, applyToStock: true, qty: { gt: 0 } },
-        orderBy: [{ receivedAt: 'asc' }, { sortOrder: 'asc' }],
-        select: { qty: true, unitPrice: true },
-      }),
-      tx.stockOutbound.aggregate({
-        where: {
-          warehouseId,
-          materialId,
-          applyToStock: true,
-          qty: { gt: 0 },
-          ...(exceptOutboundId ? { NOT: { id: exceptOutboundId } } : {}),
-        },
-        _sum: { qty: true },
-      }),
-    ]);
+    const balance = await tx.stockBalance.findUnique({
+      where: { materialId },
+      select: { openingQty: true, openingAmount: true, stockUnitPrice: true },
+    });
+    const inbounds = await tx.stockInbound.findMany({
+      where: { warehouseId, materialId, applyToStock: true, qty: { gt: 0 } },
+      orderBy: [{ receivedAt: 'asc' }, { sortOrder: 'asc' }],
+      select: { qty: true, unitPrice: true },
+    });
+    const outbound = await tx.stockOutbound.aggregate({
+      where: {
+        warehouseId,
+        materialId,
+        applyToStock: true,
+        qty: { gt: 0 },
+        ...(exceptOutboundId ? { NOT: { id: exceptOutboundId } } : {}),
+      },
+      _sum: { qty: true },
+    });
     return consumeLayers(
       buildPriceLayers(balance, inbounds),
       outbound._sum.qty ?? new Prisma.Decimal(0),

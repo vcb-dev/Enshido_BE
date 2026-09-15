@@ -146,7 +146,7 @@ export class LocationsService {
     });
     if (clash) throw new BadRequestException(`Mã vị trí ${code} đã tồn tại`);
 
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.runTx(async (tx) => {
       if (code !== slot.code) {
         await tx.material.updateMany({
           where: { warehouseId: slot.warehouseId, locationCode: slot.code },

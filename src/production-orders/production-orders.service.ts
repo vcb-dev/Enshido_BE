@@ -120,9 +120,6 @@ type StageEntry = OrderDetail['stages'][number];
 
 const CREATE_RETRIES = 3;
 
-/** Lên đơn BTP chạy thêm xuất kho FIFO trong cùng transaction — nới thời gian chờ. */
-const ORDER_TX = { timeout: 15_000, maxWait: 10_000 };
-
 const BTP_WAREHOUSE_CODE = 'btp-cho-vao-da';
 
 @Injectable()
@@ -411,7 +408,7 @@ export class ProductionOrdersService {
       });
       const seq = (last._max.seq ?? 0) + 1;
       try {
-        const order = await this.prisma.$transaction(async (tx) => {
+        const order = await this.prisma.runTx(async (tx) => {
           const created = await tx.productionOrder.create({
             data: {
               ...fields,
@@ -437,7 +434,7 @@ export class ProductionOrdersService {
             where: { id: created.id },
             include: detailInclude,
           });
-        }, ORDER_TX);
+        });
         if (fields.btpMaterialId) this.inventory.bustBtpStock();
         await this.touchSiblings([fields.parentId], order.id);
         return toDetail(order);
@@ -487,7 +484,7 @@ export class ProductionOrdersService {
       .map((image) => image.publicId)
       .filter((publicId) => !kept.has(publicId));
 
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.runTx(async (tx) => {
       await tx.productionOrder.update({
         where: { id: order.id },
         data: {
@@ -513,7 +510,7 @@ export class ProductionOrdersService {
         where: { id: order.id },
         include: detailInclude,
       });
-    }, ORDER_TX);
+    });
     if (reissue) this.inventory.bustBtpStock();
     if (order.parentId !== fields.parentId) {
       await this.touchSiblings([order.parentId, fields.parentId], order.id);
@@ -548,10 +545,10 @@ export class ProductionOrdersService {
         'Đơn đã có phiếu xuất NVL gắn vào, gỡ mã đơn trên phiếu xuất trước khi xóa',
       );
     }
-    await this.prisma.$transaction(async (tx) => {
+    await this.prisma.runTx(async (tx) => {
       await this.inventory.revokeBtpForOrder(tx, order.id);
       await tx.productionOrder.delete({ where: { id: order.id } });
-    }, ORDER_TX);
+    });
     if (order.source === ProductionSource.BTP) this.inventory.bustBtpStock();
     await this.touchSiblings([order.parentId], order.id);
     await this.cloudinary.destroy(order.images.map((image) => image.publicId));
