@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
+import { PrismaService } from '../prisma/prisma.service';
 
 type CloudinaryConfig = {
   cloudName: string;
@@ -21,7 +22,10 @@ type CloudinaryConfig = {
 export class CloudinaryService {
   private readonly logger = new Logger(CloudinaryService.name);
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly prisma: PrismaService,
+  ) {}
 
   signUpload() {
     const { cloudName, apiKey, apiSecret, folder } = this.requireConfig();
@@ -39,8 +43,13 @@ export class CloudinaryService {
     return publicId.startsWith(`${folder}/`);
   }
 
-  /** Xóa ảnh trên Cloudinary; lỗi chỉ ghi log vì dữ liệu đơn đã được lưu. */
-  async destroy(publicIds: string[]) {
+  /**
+   * Xóa ảnh trên Cloudinary; lỗi chỉ ghi log vì dữ liệu đã được lưu. Gọi SAU khi đã xoá
+   * dòng ảnh trong DB. Ảnh BTP chép sang đơn dùng chung publicId nên ảnh còn dòng kho
+   * hoặc đơn khác trỏ tới thì giữ lại.
+   */
+  async destroy(candidates: string[]) {
+    const publicIds = await this.unreferenced(candidates);
     if (publicIds.length === 0) return;
     const config = this.readConfig();
     if (!config) {
@@ -71,6 +80,19 @@ export class CloudinaryService {
         }
       }),
     );
+  }
+
+  private async unreferenced(publicIds: string[]) {
+    const ids = Array.from(new Set(publicIds));
+    if (ids.length === 0) return [];
+    const where = { publicId: { in: ids } };
+    const select = { publicId: true } as const;
+    const [materials, orders] = await Promise.all([
+      this.prisma.materialImage.findMany({ where, select }),
+      this.prisma.productionOrderImage.findMany({ where, select }),
+    ]);
+    const used = new Set([...materials, ...orders].map((row) => row.publicId));
+    return ids.filter((id) => !used.has(id));
   }
 
   private readConfig(): CloudinaryConfig | null {

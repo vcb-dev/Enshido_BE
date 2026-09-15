@@ -19,6 +19,7 @@ import {
 import {
   ProductionImageKind,
   ProductionRequestType,
+  ProductionSource,
   ProductionStage,
   ProductionStatus,
 } from '@prisma/client';
@@ -46,6 +47,10 @@ export class ListProductionOrdersQuery {
   @IsOptional()
   @IsEnum(ProductionRequestType)
   requestType?: ProductionRequestType;
+
+  @IsOptional()
+  @IsEnum(ProductionSource)
+  source?: ProductionSource;
 
   @IsOptional()
   @IsString()
@@ -95,6 +100,16 @@ export class OrderImageDto {
 }
 
 export class UpsertProductionOrderDto {
+  /** Đơn NVL (làm từ đầu) hoặc Đơn BTP (lấy BTP có sẵn theo mã). */
+  @IsEnum(ProductionSource)
+  source!: ProductionSource;
+
+  /** Dòng kho BTP — bắt buộc với Đơn BTP. */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @IsUUID()
+  btpMaterialId?: string | null;
+
   @IsEnum(ProductionRequestType)
   requestType!: ProductionRequestType;
 

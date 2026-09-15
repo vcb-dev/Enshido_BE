@@ -3,8 +3,14 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, ProductionStage, ProductionStatus } from '@prisma/client';
+import {
+  Prisma,
+  ProductionSource,
+  ProductionStage,
+  ProductionStatus,
+} from '@prisma/client';
 import type { AuthUserPayload } from '../auth/types';
+import { InventoryService } from '../inventory/inventory.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CloudinaryService } from '../uploads/cloudinary.service';
 import { decStr } from '../util/money';
@@ -96,6 +102,7 @@ const detailInclude = {
   },
   children: { select: { code: true, status: true }, orderBy: { seq: 'asc' } },
   receipt: true,
+  btpMaterial: { select: { id: true, sku: true, name: true } },
   shipmentLines: {
     select: {
       qty: true,
@@ -113,11 +120,17 @@ type StageEntry = OrderDetail['stages'][number];
 
 const CREATE_RETRIES = 3;
 
+/** Lên đơn BTP chạy thêm xuất kho FIFO trong cùng transaction — nới thời gian chờ. */
+const ORDER_TX = { timeout: 15_000, maxWait: 10_000 };
+
+const BTP_WAREHOUSE_CODE = 'btp-cho-vao-da';
+
 @Injectable()
 export class ProductionOrdersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly cloudinary: CloudinaryService,
+    private readonly inventory: InventoryService,
   ) {}
 
   async list(query: ListProductionOrdersQuery) {
@@ -128,6 +141,7 @@ export class ProductionOrdersService {
 
     const base: Prisma.ProductionOrderWhereInput = {};
     if (query.requestType) base.requestType = query.requestType;
+    if (query.source) base.source = query.source;
     const search = query.search?.trim();
     if (search) {
       const contains = { contains: search, mode: 'insensitive' as const };
@@ -154,6 +168,7 @@ export class ProductionOrdersService {
             select: { id: true, kind: true, url: true },
             orderBy: { sortOrder: 'asc' },
           },
+          btpMaterial: { select: { sku: true } },
         },
       }),
       this.prisma.productionOrder.count({ where }),
@@ -180,6 +195,8 @@ export class ProductionOrdersService {
         id: row.id,
         code: row.code,
         status: row.status,
+        source: row.source,
+        btpSku: row.btpMaterial?.sku ?? null,
         requestType: row.requestType,
         qty: row.qty,
         returnedQty: row.returnedQty,
@@ -272,6 +289,59 @@ export class ProductionOrdersService {
     }));
   }
 
+  /** BTP còn tồn cho ô chọn "Mã BTP" khi lên Đơn BTP, kèm thông tin để điền sẵn vào đơn. */
+  async btpOptions(search?: string) {
+    const keyword = search?.trim();
+    const rows = await this.prisma.material.findMany({
+      where: {
+        isActive: true,
+        warehouse: { code: BTP_WAREHOUSE_CODE },
+        balance: { qty: { gt: 0 } },
+        ...(keyword
+          ? {
+              OR: [
+                { sku: { contains: keyword, mode: 'insensitive' } },
+                { name: { contains: keyword, mode: 'insensitive' } },
+              ],
+            }
+          : null),
+      },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      take: 100,
+      select: {
+        id: true,
+        sku: true,
+        name: true,
+        sizeLabel: true,
+        unit: { select: { name: true } },
+        balance: { select: { qty: true } },
+        bodyMetal: { select: { name: true } },
+        productKind: { select: { name: true } },
+        otherClass: { select: { name: true } },
+        platingColor: { select: { name: true } },
+        color: { select: { name: true } },
+        images: {
+          select: { url: true, publicId: true, width: true, height: true },
+          orderBy: { sortOrder: 'asc' },
+        },
+      },
+    });
+    return rows.map((row) => ({
+      id: row.id,
+      sku: row.sku,
+      name: row.name,
+      unit: row.unit.name,
+      qty: decStr(row.balance?.qty),
+      bodyMetal: row.bodyMetal?.name ?? null,
+      productKind: row.productKind?.name ?? null,
+      category: row.otherClass?.name ?? null,
+      platingColor: row.platingColor?.name ?? null,
+      stoneColor: row.color?.name ?? null,
+      sizeLabel: row.sizeLabel,
+      images: row.images,
+    }));
+  }
+
   async addCost(code: string, dto: OrderCostDto, actor: AuthUserPayload) {
     const order = await this.requireCostEditable(code);
     await this.prisma.productionOrderCost.create({
@@ -341,17 +411,34 @@ export class ProductionOrdersService {
       });
       const seq = (last._max.seq ?? 0) + 1;
       try {
-        const order = await this.prisma.productionOrder.create({
-          data: {
-            ...fields,
-            seq,
-            code: orderCode(seq),
-            createdBy: changedBy,
-            images: { create: images },
-            statusLogs: { create: { toStatus: S.NEW, changedBy } },
-          },
-          include: detailInclude,
-        });
+        const order = await this.prisma.$transaction(async (tx) => {
+          const created = await tx.productionOrder.create({
+            data: {
+              ...fields,
+              seq,
+              code: orderCode(seq),
+              createdBy: changedBy,
+              images: { create: images },
+              statusLogs: { create: { toStatus: S.NEW, changedBy } },
+            },
+            select: { id: true, code: true },
+          });
+          if (fields.btpMaterialId) {
+            await this.inventory.issueBtpForOrder(tx, {
+              orderId: created.id,
+              orderCode: created.code,
+              materialId: fields.btpMaterialId,
+              qty: fields.qty,
+              issuedAt: fields.receivedDate,
+              issuedBy: changedBy,
+            });
+          }
+          return tx.productionOrder.findUniqueOrThrow({
+            where: { id: created.id },
+            include: detailInclude,
+          });
+        }, ORDER_TX);
+        if (fields.btpMaterialId) this.inventory.bustBtpStock();
         await this.touchSiblings([fields.parentId], order.id);
         return toDetail(order);
       } catch (error) {
@@ -362,7 +449,11 @@ export class ProductionOrdersService {
     }
   }
 
-  async update(code: string, dto: UpsertProductionOrderDto) {
+  async update(
+    code: string,
+    dto: UpsertProductionOrderDto,
+    actor: AuthUserPayload,
+  ) {
     const order = await this.requireOrder(code);
     if (order.receipt && dto.qty !== order.qty) {
       throw new BadRequestException(
@@ -370,6 +461,25 @@ export class ProductionOrdersService {
       );
     }
     const fields = await this.orderFields(dto, order.id);
+    // Đổi loại đơn / mã BTP / số lượng của Đơn BTP thì hoàn phiếu xuất BTP cũ và xuất lại.
+    const reissue =
+      fields.source !== order.source ||
+      fields.btpMaterialId !== order.btpMaterialId ||
+      (fields.source === ProductionSource.BTP && fields.qty !== order.qty);
+    if (reissue && order.stages.length > 0) {
+      throw new BadRequestException(
+        'Đơn đã giao khâu cho thợ, không đổi loại đơn, mã BTP hoặc số lượng BTP được',
+      );
+    }
+    if (
+      fields.source === ProductionSource.BTP &&
+      order.source !== ProductionSource.BTP &&
+      order.castingSentDate
+    ) {
+      throw new BadRequestException(
+        'Đơn đã báo Đúc, không chuyển sang Đơn BTP được',
+      );
+    }
     const existing = new Set(order.images.map((image) => image.publicId));
     const images = this.newImages(dto.images, existing);
     const kept = new Set(images.map((image) => image.publicId));
@@ -377,15 +487,34 @@ export class ProductionOrdersService {
       .map((image) => image.publicId)
       .filter((publicId) => !kept.has(publicId));
 
-    const updated = await this.prisma.productionOrder.update({
-      where: { id: order.id },
-      data: {
-        ...fields,
-        dataChangedAt: new Date(),
-        images: { deleteMany: {}, create: images },
-      },
-      include: detailInclude,
-    });
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.productionOrder.update({
+        where: { id: order.id },
+        data: {
+          ...fields,
+          dataChangedAt: new Date(),
+          images: { deleteMany: {}, create: images },
+        },
+      });
+      if (reissue) {
+        await this.inventory.revokeBtpForOrder(tx, order.id);
+        if (fields.btpMaterialId) {
+          await this.inventory.issueBtpForOrder(tx, {
+            orderId: order.id,
+            orderCode: order.code,
+            materialId: fields.btpMaterialId,
+            qty: fields.qty,
+            issuedAt: fields.receivedDate,
+            issuedBy: actorName(actor),
+          });
+        }
+      }
+      return tx.productionOrder.findUniqueOrThrow({
+        where: { id: order.id },
+        include: detailInclude,
+      });
+    }, ORDER_TX);
+    if (reissue) this.inventory.bustBtpStock();
     if (order.parentId !== fields.parentId) {
       await this.touchSiblings([order.parentId, fields.parentId], order.id);
     }
@@ -410,12 +539,20 @@ export class ProductionOrdersService {
     if (order.lastPrintedAt) {
       throw new BadRequestException('Đơn đã in phiếu cho thợ, không xóa được');
     }
-    if (order._count.outbounds > 0) {
+    // Phiếu xuất BTP do lên đơn tự tạo được hoàn kho cùng lúc xoá đơn.
+    const manualOutbounds = await this.prisma.stockOutbound.count({
+      where: { productionOrderId: order.id, autoIssued: false },
+    });
+    if (manualOutbounds > 0) {
       throw new BadRequestException(
         'Đơn đã có phiếu xuất NVL gắn vào, gỡ mã đơn trên phiếu xuất trước khi xóa',
       );
     }
-    await this.prisma.productionOrder.delete({ where: { id: order.id } });
+    await this.prisma.$transaction(async (tx) => {
+      await this.inventory.revokeBtpForOrder(tx, order.id);
+      await tx.productionOrder.delete({ where: { id: order.id } });
+    }, ORDER_TX);
+    if (order.source === ProductionSource.BTP) this.inventory.bustBtpStock();
     await this.touchSiblings([order.parentId], order.id);
     await this.cloudinary.destroy(order.images.map((image) => image.publicId));
     return { success: true };
@@ -444,6 +581,9 @@ export class ProductionOrdersService {
       throw new BadRequestException(
         `Đơn đang ở trạng thái ${STATUS_LABEL[target]}`,
       );
+    }
+    if (target === S.REDO_3D && order.source === ProductionSource.BTP) {
+      throw new BadRequestException('Đơn BTP không qua bước 3D');
     }
     if (order.status === S.DELIVERED) {
       throw new BadRequestException('Đơn đã giao, không đổi trạng thái được');
@@ -492,6 +632,9 @@ export class ProductionOrdersService {
   /** Báo Đúc (đơn chuyển sang Đúc, từ đây mới in được phiếu) và ghi ngày Đúc về. */
   async updateCasting(code: string, dto: CastingDto, actor: AuthUserPayload) {
     const order = await this.requireOrder(code);
+    if (order.source === ProductionSource.BTP) {
+      throw new BadRequestException('Đơn BTP lấy hàng đúc sẵn, không qua Đúc');
+    }
     if (order.status === S.DELIVERED) {
       throw new BadRequestException('Đơn đã giao, không sửa ngày đúc được');
     }
@@ -543,7 +686,11 @@ export class ProductionOrdersService {
     if (order.status === S.DELIVERED) {
       throw new BadRequestException('Đơn đã giao, không giao khâu được');
     }
-    if (!order.castingSentDate || !order.castingReturnedDate) {
+    // Đơn BTP lấy hàng đúc sẵn nên giao khâu ngay.
+    if (
+      order.source === ProductionSource.NVL &&
+      (!order.castingSentDate || !order.castingReturnedDate)
+    ) {
       throw new BadRequestException(
         'Ghi ngày báo Đúc và ngày Đúc về trước khi giao khâu cho thợ',
       );
@@ -833,7 +980,14 @@ export class ProductionOrdersService {
       parentId = parent.id;
     }
 
+    const btpMaterialId =
+      dto.source === ProductionSource.BTP
+        ? await this.resolveBtpMaterial(dto.btpMaterialId)
+        : null;
+
     return {
+      source: dto.source,
+      btpMaterialId,
       requestType: dto.requestType,
       receivedDate,
       dueDate,
@@ -896,6 +1050,23 @@ export class ProductionOrdersService {
       });
   }
 
+  /** Tồn kiểm tra lúc xuất trong transaction — ở đây chỉ chắc mã nằm trong kho BTP. */
+  private async resolveBtpMaterial(materialId: string | null | undefined) {
+    if (!materialId) throw new BadRequestException('Chọn mã BTP cho Đơn BTP');
+    const material = await this.prisma.material.findFirst({
+      where: {
+        id: materialId,
+        isActive: true,
+        warehouse: { code: BTP_WAREHOUSE_CODE },
+      },
+      select: { id: true },
+    });
+    if (!material) {
+      throw new BadRequestException('Không tìm thấy mã BTP trong kho BTP');
+    }
+    return material.id;
+  }
+
   private async resolveUser(userId: string) {
     const user = await this.prisma.user.findFirst({
       where: { id: userId, isActive: true },
@@ -930,6 +1101,9 @@ function toDetail(order: OrderDetail) {
     id: order.id,
     code: order.code,
     status: order.status,
+    source: order.source,
+    btp: order.btpMaterial,
+    btpSku: order.btpMaterial?.sku ?? null,
     requestType: order.requestType,
     qty: order.qty,
     returnedQty: order.returnedQty,

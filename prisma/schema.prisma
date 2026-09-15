@@ -148,6 +148,7 @@ model OtherClass {
   materials      Material[]
   bodyMetalOf    Material[]   @relation("MaterialBodyMetal")
   productKindOf  Material[]   @relation("MaterialProductKind")
+  platingColorOf Material[]   @relation("MaterialPlatingColor")
 
   @@index([kind, sortOrder])
   @@index([parentId])
@@ -191,6 +192,8 @@ model Material {
   bodyMetalId    String?       @map("body_metal_id") @db.Uuid
   /// Phân loại sản phẩm (kho BTP) — danh mục con của parent `phan-loai-san-pham`.
   productKindId  String?       @map("product_kind_id") @db.Uuid
+  /// Màu xi (kho BTP) — danh mục con của parent `mau-xi`. Màu đá dùng `colorId`.
+  platingColorId String?       @map("plating_color_id") @db.Uuid
   shapeId        String?       @map("shape_id") @db.Uuid
   colorId        String?       @map("color_id") @db.Uuid
   sizeLabel      String?       @map("size_label")
@@ -212,11 +215,14 @@ model Material {
   otherClass   OtherClass?     @relation(fields: [otherClassId], references: [id], onDelete: SetNull)
   bodyMetal    OtherClass?     @relation("MaterialBodyMetal", fields: [bodyMetalId], references: [id], onDelete: SetNull)
   productKind  OtherClass?     @relation("MaterialProductKind", fields: [productKindId], references: [id], onDelete: SetNull)
+  platingColor OtherClass?     @relation("MaterialPlatingColor", fields: [platingColorId], references: [id], onDelete: SetNull)
   shape        Shape?          @relation(fields: [shapeId], references: [id], onDelete: SetNull)
   color        Color?          @relation(fields: [colorId], references: [id], onDelete: SetNull)
   balance      StockBalance?
   inbounds     StockInbound[]
   outbounds    StockOutbound[]
+  images       MaterialImage[]
+  btpOrders    ProductionOrder[]
 
   @@unique([warehouseId, sku])
   @@unique([sku], map: "materials_sku_key")
@@ -225,7 +231,26 @@ model Material {
   @@index([materialTypeId])
   @@index([bodyMetalId])
   @@index([productKindId])
+  @@index([platingColorId])
   @@map("materials")
+}
+
+/// Ảnh sản phẩm của một dòng kho (dùng cho BTP). Lên đơn BTP chép ảnh sang đơn, dùng chung publicId.
+model MaterialImage {
+  id         String   @id @default(uuid()) @db.Uuid
+  materialId String   @map("material_id") @db.Uuid
+  url        String
+  publicId   String   @map("public_id")
+  width      Int?
+  height     Int?
+  sortOrder  Int      @default(0) @map("sort_order")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  material Material @relation(fields: [materialId], references: [id], onDelete: Cascade)
+
+  @@index([materialId, sortOrder])
+  @@index([publicId])
+  @@map("material_images")
 }
 
 /// Số liệu NXT của 1 NVL trong 1 kho. Tồn = đầu kỳ + nhập − xuất.
@@ -336,6 +361,8 @@ model StockOutbound {
   applyToStock      Boolean  @default(false) @map("apply_to_stock")
   /// Đơn sản xuất dùng NVL này — nguồn chi phí NVL của đơn.
   productionOrderId String?  @map("production_order_id") @db.Uuid
+  /// Phiếu xuất BTP do lên đơn BTP tự tạo — chỉ sửa / xoá qua đơn.
+  autoIssued        Boolean  @default(false) @map("auto_issued")
   /// Xuất chuyển sang kho khác — phiếu nhập đối ứng.
   destWarehouseId   String?  @map("dest_warehouse_id") @db.Uuid
   destInboundId     String?  @unique @map("dest_inbound_id") @db.Uuid
@@ -403,6 +430,12 @@ enum ProductionRequestType {
   BULK
 }
 
+/// Loại đơn: làm từ NVL (3D → Đúc → khâu) hoặc lấy BTP có sẵn trong kho BTP (bỏ 3D + Đúc).
+enum ProductionSource {
+  NVL
+  BTP
+}
+
 enum ProductionImageKind {
   DETAIL
   PRODUCT
@@ -424,6 +457,9 @@ model ProductionOrder {
   seq                 Int                   @unique
   code                String                @unique
   status              ProductionStatus      @default(NEW)
+  source              ProductionSource      @default(NVL)
+  /// Mã BTP lấy ra làm đơn (đơn BTP). Phiếu xuất BTP tự tạo gắn mã đơn, `autoIssued = true`.
+  btpMaterialId       String?               @map("btp_material_id") @db.Uuid
   requestType         ProductionRequestType @map("request_type")
   qty                 Int                   @default(1)
   /// Cột "Đã trả" trên Lark.
@@ -464,6 +500,7 @@ model ProductionOrder {
   updatedAt           DateTime              @updatedAt @map("updated_at")
 
   parent        ProductionOrder?       @relation("ProductionOrderTree", fields: [parentId], references: [id], onDelete: SetNull)
+  btpMaterial   Material?              @relation(fields: [btpMaterialId], references: [id], onDelete: SetNull)
   children      ProductionOrder[]      @relation("ProductionOrderTree")
   images        ProductionOrderImage[]
   stages        ProductionStageEntry[]
@@ -476,6 +513,7 @@ model ProductionOrder {
   @@index([status, createdAt])
   @@index([requestType])
   @@index([parentId])
+  @@index([btpMaterialId])
   @@map("production_orders")
 }
 

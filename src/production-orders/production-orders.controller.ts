@@ -48,6 +48,12 @@ export class ProductionOrdersController {
     return this.orders.options(query.search);
   }
 
+  /** Mã BTP còn tồn cho ô chọn khi lên Đơn BTP. */
+  @Get('btp-options')
+  btpOptions(@Query() query: OrderOptionsQuery) {
+    return this.orders.btpOptions(query.search);
+  }
+
   @Get(':code/costing')
   costingOf(@Param('code') code: string) {
     return this.costing.costingByCode(code);
@@ -93,8 +99,12 @@ export class ProductionOrdersController {
   }
 
   @Patch(':code')
-  update(@Param('code') code: string, @Body() dto: UpsertProductionOrderDto) {
-    return this.orders.update(code, dto);
+  update(
+    @Param('code') code: string,
+    @Body() dto: UpsertProductionOrderDto,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.orders.update(code, dto, user);
   }
 
   @Delete(':code')

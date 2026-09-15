@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { MaterialClass, MetalKind, OtherClassKind, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { CloudinaryService } from '../uploads/cloudinary.service';
 import { InflightMap, TtlCache } from '../util/ttl-cache';
 import { availabilityOf, CLASS_LABEL, METAL_KIND_LABEL, decStr } from '../util/money';
 import { allocateMaterialSku } from '../util/material-sku';
@@ -14,12 +15,13 @@ import type { AuthUserPayload } from '../auth/types';
 import { canSeeWarehouse } from '../auth/screens';
 import { CreateInboundDto } from './dto/inbound.dto';
 import { CreateOutboundDto } from './dto/outbound.dto';
-import { CreateStockDto, UpdateStockDto } from './dto/update-stock.dto';
+import { CreateStockDto, MaterialImageDto, UpdateStockDto } from './dto/update-stock.dto';
 
 const LOOKUPS_TTL_MS = 10 * 60_000;
 const USERS_TTL_MS = 60_000;
 const WAREHOUSES_TTL_MS = 2 * 60_000;
 const STOCK_TTL_MS = 60_000;
+const BTP_WAREHOUSE_CODE = 'btp-cho-vao-da';
 
 const warehouseSelect = {
   id: true,
@@ -43,8 +45,10 @@ const materialStockSelect = {
   otherClassId: true,
   bodyMetalId: true,
   productKindId: true,
+  platingColorId: true,
   shapeId: true,
   colorId: true,
+  sizeLabel: true,
   classification: true,
   metalKind: true,
   note: true,
@@ -56,8 +60,13 @@ const materialStockSelect = {
   otherClass: { select: { id: true, name: true, parentId: true, parent: { select: { id: true, code: true, name: true } } } },
   bodyMetal: { select: { id: true, name: true } },
   productKind: { select: { id: true, name: true } },
+  platingColor: { select: { id: true, name: true } },
   shape: { select: { id: true, name: true } },
   color: { select: { id: true, name: true } },
+  images: {
+    select: { url: true, publicId: true, width: true, height: true },
+    orderBy: { sortOrder: 'asc' },
+  },
   balance: {
     select: {
       openingQty: true,
@@ -115,6 +124,7 @@ const outboundListSelect = {
   receivedBy: true,
   receivedByUserId: true,
   materialId: true,
+  autoIssued: true,
   destInboundId: true,
   destWarehouse: { select: { code: true, shortName: true } },
   productionOrder: { select: { code: true } },
@@ -125,6 +135,9 @@ const outboundListSelect = {
 type MaterialStock = Prisma.MaterialGetPayload<{
   select: typeof materialStockSelect;
 }>;
+
+/** DB ở xa (~1s/query) — mặc định 5s của Prisma không đủ cho tạo/sửa dòng kho kèm ảnh. */
+const STOCK_TX = { timeout: 15_000, maxWait: 10_000 };
 
 type PriceLayer = {
   kind: 'opening' | 'inbound';
@@ -143,7 +156,10 @@ export class InventoryService {
   private readonly cache = new TtlCache();
   private readonly inflight = new InflightMap();
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cloudinary: CloudinaryService,
+  ) {}
 
   async listWarehouses(user?: AuthUserPayload) {
     const warehouses = await this.cached('warehouses', WAREHOUSES_TTL_MS, () =>
@@ -206,7 +222,7 @@ export class InventoryService {
   async listLookups() {
     const [catalog, users] = await Promise.all([
       this.cached('lookups', LOOKUPS_TTL_MS, async () => {
-        const [units, materialTypes, shapes, colors, suppliers, otherClasses, bodyMetals, btpCategories, productKinds, consumableCategories] =
+        const [units, materialTypes, shapes, colors, suppliers, otherClasses, bodyMetals, btpCategories, productKinds, consumableCategories, platingColors] =
           await Promise.all([
           this.prisma.unit.findMany({
             select: lookupSelect,
@@ -241,6 +257,7 @@ export class InventoryService {
             select: lookupSelect,
             orderBy: { sortOrder: 'asc' },
           }),
+          this.listCatalogChildrenByParent('mau-xi'),
         ]);
         return {
           units,
@@ -253,6 +270,7 @@ export class InventoryService {
           btpCategories,
           productKinds,
           consumableCategories,
+          platingColors,
         };
       }),
       this.cached('lookups:users', USERS_TTL_MS, () =>
@@ -408,8 +426,10 @@ export class InventoryService {
         dto.bodyMetalId,
         dto.productKindId,
         dto.btpCategoryId,
+        dto.platingColorId,
       ),
     ]);
+    const images = this.materialImages(dto.images);
 
     const nameClash = await this.prisma.material.findFirst({
       where: {
@@ -443,7 +463,7 @@ export class InventoryService {
         ? dto.otherClassId || null
         : await this.resolveOtherClassId(dto.otherClassName);
 
-    const created = await this.prisma.$transaction(async (tx) => {
+    const materialId = await this.prisma.$transaction(async (tx) => {
       const sku = await allocateMaterialSku(tx);
       const material = await tx.material.create({
         data: {
@@ -458,6 +478,9 @@ export class InventoryService {
           otherClassId,
           bodyMetalId: dto.bodyMetalId || null,
           productKindId: dto.productKindId || null,
+          platingColorId: dto.platingColorId || null,
+          sizeLabel: dto.sizeLabel?.trim() || null,
+          images: { create: images },
           classification: classificationOf(warehouse.code),
           metalKind: isBtp || otherClassId ? null : (dto.metalKind ?? defaultMetalKind(warehouse.code)),
           note: dto.note?.trim() || null,
@@ -475,12 +498,14 @@ export class InventoryService {
           amount: openingAmount,
         },
       });
-      return tx.material.findUniqueOrThrow({
-        where: { id: material.id },
-        select: materialStockSelect,
-      });
-    });
+      return material.id;
+    }, STOCK_TX);
 
+    // Đọc lại sau commit — select nhiều quan hệ, để trong transaction dễ quá timeout.
+    const created = await this.prisma.material.findUniqueOrThrow({
+      where: { id: materialId },
+      select: materialStockSelect,
+    });
     this.bustWarehouseCaches(code);
     return this.toStockRow(
       created,
@@ -500,7 +525,13 @@ export class InventoryService {
 
     const material = await this.prisma.material.findFirst({
       where: { id: materialId, warehouseId: warehouse.id, isActive: true },
-      select: { id: true, name: true, sku: true, unitId: true },
+      select: {
+        id: true,
+        name: true,
+        sku: true,
+        unitId: true,
+        images: { select: { publicId: true } },
+      },
     });
     if (!material) throw new NotFoundException('Không tìm thấy NVL');
 
@@ -519,7 +550,15 @@ export class InventoryService {
       dto.bodyMetalId,
       dto.productKindId,
       dto.btpCategoryId,
+      dto.platingColorId,
     );
+    const images = dto.images === undefined ? undefined : this.materialImages(dto.images);
+    const removedImages =
+      images === undefined
+        ? []
+        : material.images
+            .map((image) => image.publicId)
+            .filter((publicId) => !images.some((image) => image.publicId === publicId));
 
     if (dto.name?.trim()) {
       const nameClash = await this.prisma.material.findFirst({
@@ -576,6 +615,9 @@ export class InventoryService {
           ...(dto.classification ? { classification: dto.classification } : {}),
           ...(dto.bodyMetalId !== undefined ? { bodyMetalId: dto.bodyMetalId } : {}),
           ...(dto.productKindId !== undefined ? { productKindId: dto.productKindId } : {}),
+          ...(dto.platingColorId !== undefined ? { platingColorId: dto.platingColorId } : {}),
+          ...(dto.sizeLabel !== undefined ? { sizeLabel: dto.sizeLabel?.trim() || null } : {}),
+          ...(images !== undefined ? { images: { deleteMany: {}, create: images } } : {}),
           ...(dto.note !== undefined ? { note: dto.note?.trim() || null } : {}),
         },
       });
@@ -616,7 +658,7 @@ export class InventoryService {
         },
       });
       await this.recomputeStockBalance(tx, warehouse.id, material.id);
-    });
+    }, STOCK_TX);
 
     const [updated, inboundMap, outboundMap, firstInboundMap, layers] = await Promise.all([
       this.prisma.material.findUniqueOrThrow({
@@ -629,6 +671,7 @@ export class InventoryService {
       this.listPriceLayers(this.prisma, warehouse.id, material.id),
     ]);
     this.bustWarehouseCaches(code);
+    await this.cloudinary.destroy(removedImages);
     return this.toStockRow(
       updated,
       inboundMap.get(material.id),
@@ -1092,9 +1135,12 @@ export class InventoryService {
         destInboundId: true,
         destWarehouse: { select: { id: true, code: true } },
         productionOrderId: true,
+        autoIssued: true,
+        productionOrder: { select: { code: true } },
       },
     });
     if (!outbound) throw new NotFoundException('Không tìm thấy dòng xuất kho');
+    assertNotAutoIssued(outbound);
 
     const name = dto.name.trim();
     if (!name) throw new BadRequestException('Tên hàng không được trống');
@@ -1224,9 +1270,12 @@ export class InventoryService {
         materialId: true,
         destInboundId: true,
         destWarehouse: { select: { id: true, code: true } },
+        autoIssued: true,
+        productionOrder: { select: { code: true } },
       },
     });
     if (!outbound) throw new NotFoundException('Không tìm thấy dòng xuất kho');
+    assertNotAutoIssued(outbound);
 
     await this.prisma.$transaction(async (tx) => {
       if (outbound.destInboundId && outbound.destWarehouse) {
@@ -1489,6 +1538,7 @@ export class InventoryService {
     receivedBy: string | null;
     receivedByUserId: string | null;
     materialId: string | null;
+    autoIssued?: boolean;
     destInboundId?: string | null;
     destWarehouse?: { code: string; shortName: string } | null;
     productionOrder?: { code: string } | null;
@@ -1517,6 +1567,7 @@ export class InventoryService {
       destWarehouseCode: row.destWarehouse?.code ?? null,
       destWarehouseName: row.destWarehouse?.shortName ?? null,
       productionOrderCode: row.productionOrder?.code ?? null,
+      autoIssued: row.autoIssued ?? false,
       priceBreakdown: (takes ?? []).map((take) => ({
         qty: decStr(take.qty),
         unitPrice: decStr(take.unitPrice),
@@ -1607,6 +1658,7 @@ export class InventoryService {
     bodyMetalId?: string | null,
     productKindId?: string | null,
     btpCategoryId?: string | null,
+    platingColorId?: string | null,
   ) {
     return Promise.all([
       this.assertLookup('shape', shapeId),
@@ -1615,6 +1667,7 @@ export class InventoryService {
       this.assertCatalogChild('chat-lieu', bodyMetalId),
       this.assertCatalogChild('phan-loai-san-pham', productKindId),
       this.assertCatalogChild('danh-muc-btp', btpCategoryId),
+      this.assertCatalogChild('mau-xi', platingColorId),
     ]);
   }
 
@@ -1669,6 +1722,12 @@ export class InventoryService {
       'danh-muc-btp': [
         { code: 'btp-da', name: 'Đá', sortOrder: 1 },
         { code: 'btp-si-bong', name: 'Si bóng', sortOrder: 2 },
+      ],
+      'mau-xi': [
+        { code: 'mau-xi-trang', name: 'Trắng', sortOrder: 1 },
+        { code: 'mau-xi-vang', name: 'Vàng', sortOrder: 2 },
+        { code: 'mau-xi-vang-hong', name: 'Vàng hồng', sortOrder: 3 },
+        { code: 'mau-xi-den', name: 'Đen', sortOrder: 4 },
       ],
       'phan-loai-san-pham': [
         { code: 'sp-nhan', name: 'Nhẫn', sortOrder: 1 },
@@ -1782,6 +1841,10 @@ export class InventoryService {
       bodyMetal: m.bodyMetal?.name ?? null,
       productKindId: m.productKindId,
       productKind: m.productKind?.name ?? null,
+      platingColorId: m.platingColorId,
+      platingColor: m.platingColor?.name ?? null,
+      sizeLabel: m.sizeLabel,
+      images: m.images,
       classificationCode: m.classification,
       classification: CLASS_LABEL[m.classification] ?? m.classification,
       metalKind: m.metalKind,
@@ -1796,6 +1859,102 @@ export class InventoryService {
     };
   }
 
+  /**
+   * Lên đơn BTP: xuất FIFO đúng số lượng đơn khỏi kho BTP, gắn mã đơn, đánh dấu tự tạo.
+   * Chạy trong transaction của đơn — thiếu tồn thì cả đơn không được tạo.
+   */
+  async issueBtpForOrder(
+    tx: Prisma.TransactionClient,
+    params: {
+      orderId: string;
+      orderCode: string;
+      materialId: string;
+      qty: number;
+      issuedAt: Date;
+      issuedBy: string;
+    },
+  ) {
+    const material = await tx.material.findFirst({
+      where: {
+        id: params.materialId,
+        isActive: true,
+        warehouse: { code: BTP_WAREHOUSE_CODE },
+      },
+      select: {
+        id: true,
+        name: true,
+        sku: true,
+        warehouseId: true,
+        unit: { select: { id: true, name: true } },
+      },
+    });
+    if (!material) throw new BadRequestException('Không tìm thấy mã BTP trong kho BTP');
+    const qty = new Prisma.Decimal(params.qty);
+    const available = await this.availableOnHand(tx, material.warehouseId, material.id);
+    if (qty.gt(available)) {
+      throw new BadRequestException(
+        `BTP ${material.sku ?? material.name} không đủ tồn (còn ${decStr(available)}, đơn cần ${params.qty})`,
+      );
+    }
+    await this.applyFifoOutbound(tx, {
+      warehouseId: material.warehouseId,
+      material: { id: material.id, name: material.name, sku: material.sku },
+      unit: material.unit,
+      unitName: material.unit.name,
+      issuedAt: params.issuedAt,
+      qty,
+      note: `Xuất cho đơn ${params.orderCode}`,
+      issuedBy: params.issuedBy,
+      receivedBy: null,
+      receivedByUserId: null,
+      applyToStock: true,
+      productionOrderId: params.orderId,
+      autoIssued: true,
+    });
+  }
+
+  /** Hoàn lại kho BTP phiếu xuất do đơn tự tạo (xoá đơn, đổi mã BTP / số lượng). */
+  async revokeBtpForOrder(tx: Prisma.TransactionClient, orderId: string) {
+    const rows = await tx.stockOutbound.findMany({
+      where: { productionOrderId: orderId, autoIssued: true },
+      select: { id: true, warehouseId: true, materialId: true },
+    });
+    for (const row of rows) {
+      await tx.stockOutbound.delete({ where: { id: row.id } });
+      await this.recomputeStockBalance(tx, row.warehouseId, row.materialId);
+    }
+  }
+
+  bustBtpStock() {
+    this.bustWarehouseCaches(BTP_WAREHOUSE_CODE);
+  }
+
+  /** Ảnh mới phải nằm trong thư mục Cloudinary của hệ thống. */
+  private materialImages(images: MaterialImageDto[] | undefined) {
+    const seen = new Set<string>();
+    return (images ?? [])
+      .filter((image) => {
+        if (seen.has(image.publicId)) return false;
+        seen.add(image.publicId);
+        return true;
+      })
+      .map((image, index) => {
+        if (
+          new URL(image.url).hostname !== 'res.cloudinary.com' ||
+          !this.cloudinary.ownsPublicId(image.publicId)
+        ) {
+          throw new BadRequestException('Ảnh không thuộc kho ảnh của hệ thống');
+        }
+        return {
+          url: image.url,
+          publicId: image.publicId,
+          width: image.width ?? null,
+          height: image.height ?? null,
+          sortOrder: index,
+        };
+      });
+  }
+
   bustLookups() {
     this.cache.delete('lookups');
     this.cache.delete('lookups:users');
@@ -1806,6 +1965,7 @@ export class InventoryService {
       this.listCatalogChildren('chat-lieu', 'Chất liệu', 9, OtherClassKind.OTHER),
       this.listCatalogChildren('danh-muc-btp', 'Danh mục BTP', 10, OtherClassKind.OTHER),
       this.listCatalogChildren('phan-loai-san-pham', 'Phân loại sản phẩm', 11, OtherClassKind.OTHER),
+      this.listCatalogChildren('mau-xi', 'Màu xi', 12, OtherClassKind.OTHER),
     ]);
   }
 
@@ -2227,6 +2387,7 @@ export class InventoryService {
       receivedByUserId: string | null;
       applyToStock: boolean;
       productionOrderId: string | null;
+      autoIssued?: boolean;
     },
   ) {
     const quote = await this.quoteFifo(tx, params.warehouseId, params.material.id, params.qty);
@@ -2254,6 +2415,7 @@ export class InventoryService {
         receivedByUserId: params.receivedByUserId,
         applyToStock: params.applyToStock,
         productionOrderId: params.productionOrderId,
+        autoIssued: params.autoIssued ?? false,
       },
       include: {
         unit: { select: { id: true, name: true } },
@@ -2362,6 +2524,16 @@ export class InventoryService {
     });
     return material?.unit ?? null;
   }
+}
+
+function assertNotAutoIssued(outbound: {
+  autoIssued: boolean;
+  productionOrder: { code: string } | null;
+}) {
+  if (!outbound.autoIssued) return;
+  throw new BadRequestException(
+    `Phiếu xuất do lên đơn BTP ${outbound.productionOrder?.code} tự tạo — sửa mã BTP / số lượng trên đơn`,
+  );
 }
 
 function classificationOf(warehouseCode: string): MaterialClass {
