@@ -265,78 +265,37 @@ export class InventoryService {
     return { ...catalog, users };
   }
 
-  async listStock(code: string) {
-    return this.cached(`stock:${code}`, STOCK_TTL_MS, () => this.loadStock(code));
+  async listStock(code: string, includeLayers = false) {
+    const key = includeLayers ? `stock:${code}:layers` : `stock:${code}`;
+    return this.cached(key, STOCK_TTL_MS, () => this.loadStock(code, includeLayers));
   }
 
-  private async loadStock(code: string) {
+  private async loadStock(code: string, includeLayers = false) {
     const warehouse = await this.prisma.warehouse.findUnique({
       where: { code },
       select: warehouseSelect,
     });
     if (!warehouse) throw new NotFoundException('Không tìm thấy kho');
     if (code === 'btp-cho-vao-da') {
-      const waiting = await this.prisma.btpWaitingItem.count({
-        where: { warehouseId: warehouse.id },
+      void this.importBtpWaitingToStock(warehouse).then((moved) => {
+        if (moved) this.bustWarehouseCaches(code);
       });
-      if (waiting) await this.importBtpWaitingToStock(warehouse);
     }
 
-    const [materials, firstInboundMap, inboundLots, outboundConsumed] = await Promise.all([
-      this.prisma.material.findMany({
-        where: { warehouseId: warehouse.id, isActive: true },
-        orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
-        select: materialStockSelect,
-      }),
-      this.firstInboundDates(warehouse.id),
-      this.prisma.stockInbound.findMany({
-        where: {
-          warehouseId: warehouse.id,
-          materialId: { not: null },
-          applyToStock: true,
-          qty: { gt: 0 },
-        },
-        orderBy: [{ receivedAt: 'asc' }, { sortOrder: 'asc' }],
-        select: { materialId: true, qty: true, unitPrice: true },
-      }),
-      this.prisma.stockOutbound.groupBy({
-        by: ['materialId'],
-        where: {
-          warehouseId: warehouse.id,
-          materialId: { not: null },
-          applyToStock: true,
-          qty: { gt: 0 },
-        },
-        _sum: { qty: true },
-      }),
-    ]);
+    const materials = await this.prisma.material.findMany({
+      where: { warehouseId: warehouse.id, isActive: true },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      select: materialStockSelect,
+    });
 
-    const zero = new Prisma.Decimal(0);
-    const inboundByMaterial = new Map<string, { qty: Prisma.Decimal; unitPrice: Prisma.Decimal }[]>();
-    for (const row of inboundLots) {
-      if (!row.materialId) continue;
-      const lots = inboundByMaterial.get(row.materialId) ?? [];
-      lots.push({ qty: row.qty, unitPrice: row.unitPrice });
-      inboundByMaterial.set(row.materialId, lots);
-    }
-    const consumedByMaterial = new Map<string, Prisma.Decimal>();
-    for (const row of outboundConsumed) {
-      if (!row.materialId) continue;
-      consumedByMaterial.set(row.materialId, row._sum.qty ?? zero);
-    }
+    const layersByMaterial = includeLayers
+      ? await this.consumedLayersByMaterial(warehouse.id, materials)
+      : undefined;
 
     const items = materials.map((m) =>
-      this.toStockRow(
-        m,
-        undefined,
-        undefined,
-        firstInboundMap.get(m.id),
-        consumeLayers(
-          buildPriceLayers(m.balance, inboundByMaterial.get(m.id) ?? []),
-          consumedByMaterial.get(m.id) ?? zero,
-        ),
-      ),
+      this.toStockRow(m, undefined, undefined, undefined, layersByMaterial?.get(m.id)),
     );
+    const zero = new Prisma.Decimal(0);
     const totals = materials.reduce(
       (acc, m) => {
         const nxt = nxtFromBalance(m.balance);
@@ -1714,7 +1673,7 @@ export class InventoryService {
       outAmount: decStr(nxt.outAmount),
       qty: decStr(nxt.qty),
       amount: decStr(nxt.amount),
-      priceLayers: (layers ?? []).map((layer) => ({
+      priceLayers: layers?.map((layer) => ({
         qty: decStr(layer.remaining),
         unitPrice: decStr(layer.unitPrice),
         source: layer.kind,
@@ -1852,6 +1811,7 @@ export class InventoryService {
     for (const code of codes) {
       if (!code) continue;
       this.cache.delete(`stock:${code}`);
+      this.cache.delete(`stock:${code}:layers`);
       this.cache.delete(`inbounds:${code}`);
       this.cache.delete(`outbounds:${code}`);
     }
@@ -2087,7 +2047,7 @@ export class InventoryService {
         unitName: true,
       },
     });
-    if (!waiting.length) return;
+    if (!waiting.length) return false;
 
     for (const row of waiting) {
       await this.prisma.runTx(async (tx) => {
@@ -2143,6 +2103,7 @@ export class InventoryService {
         await tx.btpWaitingItem.delete({ where: { id: row.id } });
       });
     }
+    return true;
   }
 
   /** Xuất FIFO: hết lớp giá cũ (đầu kỳ) rồi mới đến từng lô nhập. */
@@ -2240,6 +2201,58 @@ export class InventoryService {
     const map = new Map<string, PriceLayer[]>();
     for (const balance of balances) {
       map.set(balance.materialId, buildPriceLayers(balance, inboundByMaterial.get(balance.materialId) ?? []));
+    }
+    return map;
+  }
+
+  private async consumedLayersByMaterial(
+    warehouseId: string,
+    materials: MaterialStock[],
+  ) {
+    const [inboundLots, outboundConsumed] = await Promise.all([
+      this.prisma.stockInbound.findMany({
+        where: {
+          warehouseId,
+          materialId: { not: null },
+          applyToStock: true,
+          qty: { gt: 0 },
+        },
+        orderBy: [{ receivedAt: 'asc' }, { sortOrder: 'asc' }],
+        select: { materialId: true, qty: true, unitPrice: true },
+      }),
+      this.prisma.stockOutbound.groupBy({
+        by: ['materialId'],
+        where: {
+          warehouseId,
+          materialId: { not: null },
+          applyToStock: true,
+          qty: { gt: 0 },
+        },
+        _sum: { qty: true },
+      }),
+    ]);
+    const inboundByMaterial = new Map<string, { qty: Prisma.Decimal; unitPrice: Prisma.Decimal }[]>();
+    for (const row of inboundLots) {
+      if (!row.materialId) continue;
+      const lots = inboundByMaterial.get(row.materialId) ?? [];
+      lots.push({ qty: row.qty, unitPrice: row.unitPrice });
+      inboundByMaterial.set(row.materialId, lots);
+    }
+    const zero = new Prisma.Decimal(0);
+    const consumedByMaterial = new Map<string, Prisma.Decimal>();
+    for (const row of outboundConsumed) {
+      if (!row.materialId) continue;
+      consumedByMaterial.set(row.materialId, row._sum.qty ?? zero);
+    }
+    const map = new Map<string, PriceLayer[]>();
+    for (const m of materials) {
+      map.set(
+        m.id,
+        consumeLayers(
+          buildPriceLayers(m.balance, inboundByMaterial.get(m.id) ?? []),
+          consumedByMaterial.get(m.id) ?? zero,
+        ),
+      );
     }
     return map;
   }

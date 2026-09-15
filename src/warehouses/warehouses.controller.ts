@@ -8,6 +8,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { CurrentUser } from '../auth/decorators';
@@ -92,8 +93,8 @@ export class WarehousesController {
   }
 
   @Get(':code/stock')
-  stock(@Param('code') code: string) {
-    return this.inventory.listStock(code);
+  stock(@Param('code') code: string, @Query('layers') layers?: string) {
+    return this.inventory.listStock(code, layers === '1' || layers === 'true');
   }
 
   @Post(':code/stock')
