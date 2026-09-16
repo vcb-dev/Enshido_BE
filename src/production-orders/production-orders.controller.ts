@@ -15,11 +15,13 @@ import type { AuthUserPayload } from '../auth/types';
 import {
   CastingDto,
   ChangeStatusDto,
+  FinishOrderDto,
   HandoverStageDto,
   ListProductionOrdersQuery,
   OrderCostDto,
   OrderOptionsQuery,
   ReturnStageDto,
+  StageLaborDto,
   StartStageDto,
   UpsertProductionOrderDto,
 } from './dto/production-order.dto';
@@ -77,6 +79,15 @@ export class ProductionOrdersController {
     return this.orders.updateCost(code, costId, dto);
   }
 
+  @Patch(':code/stages/:stageId/labor')
+  updateStageLabor(
+    @Param('code') code: string,
+    @Param('stageId', ParseUUIDPipe) stageId: string,
+    @Body() dto: StageLaborDto,
+  ) {
+    return this.orders.updateStageLabor(code, stageId, dto);
+  }
+
   @Delete(':code/costs/:costId')
   removeCost(
     @Param('code') code: string,
@@ -129,6 +140,24 @@ export class ProductionOrdersController {
     @CurrentUser() user: AuthUserPayload,
   ) {
     return this.orders.updateCasting(code, dto, user);
+  }
+
+  @Post(':code/finish')
+  finish(
+    @Param('code') code: string,
+    @Body() dto: FinishOrderDto,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.orders.finish(code, dto, user);
+  }
+
+  @Delete(':code/finish')
+  @Roles(RoleCode.ADMIN)
+  undoFinish(
+    @Param('code') code: string,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.orders.undoFinish(code, user);
   }
 
   @Post(':code/stages')

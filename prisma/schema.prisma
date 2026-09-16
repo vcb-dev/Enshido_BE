@@ -410,17 +410,19 @@ model BtpWaitingItem {
   @@map("btp_waiting_items")
 }
 
-/// Trạng thái đơn sản xuất (theo view Lark Base). Khắc + Ngoại Quan trên phiếu thuộc FINISHING.
+/// Trạng thái đơn sản xuất, xếp theo luồng: Nguội → Vào đá → Khắc → Bóng → Xi → Lỗi / Hoàn thiện.
 enum ProductionStatus {
   NEW
   REDO_3D
   CASTING
   FILING
   STONE_SETTING
-  POLISH_PLATING
+  ENGRAVING
+  POLISHING
+  PLATING
+  DEFECT
   FINISHING
   DELIVERED
-  DEFECT
 }
 
 /// Yêu cầu làm hàng: Dựng mẫu / Đơn khách lẻ / SX SLL.
@@ -441,13 +443,13 @@ enum ProductionImageKind {
   PRODUCT
 }
 
-/// Cột "Quá trình sản xuất" trên phiếu thợ. Đúc không phải cột — nằm ở đầu phiếu.
+/// Khâu giao thợ trên phiếu. Đúc nằm ở đầu phiếu; Lỗi / Hoàn thiện là kết cục cuối phiếu, không phải khâu.
 enum ProductionStage {
   FILING
   STONE_SETTING
-  POLISH_PLATING
   ENGRAVING
-  APPEARANCE
+  POLISHING
+  PLATING
 }
 
 /// Đơn sản xuất — một dòng trên danh sách đơn, in ra một phiếu cho thợ.
@@ -544,8 +546,9 @@ model ProductionStageEntry {
   handedByUserId        String?         @map("handed_by_user_id") @db.Uuid
   handedByName          String          @map("handed_by_name")
   handedAt              DateTime        @map("handed_at")
-  /// Trọng lượng giao: tổng (cả đá) và riêng bạc.
-  handedTotalWeight     Decimal?        @map("handed_total_weight") @db.Decimal(18, 4)
+  /// Số lượng sản phẩm giao cho thợ (mặc định cả đơn).
+  handedQty             Int?            @map("handed_qty")
+  /// Trọng lượng bạc giao (hao hụt chỉ tính trên bạc).
   handedSilverWeight    Decimal?        @map("handed_silver_weight") @db.Decimal(18, 4)
   craftsmanUserId       String?         @map("craftsman_user_id") @db.Uuid
   craftsmanName         String          @map("craftsman_name")
@@ -553,7 +556,8 @@ model ProductionStageEntry {
   /// Người KCS — nhân viên cân lại bạc khi thợ nộp lại.
   returnedByName        String?         @map("returned_by_name")
   returnedAt            DateTime?       @map("returned_at")
-  returnedTotalWeight   Decimal?        @map("returned_total_weight") @db.Decimal(18, 4)
+  /// Số lượng KCS nhận lại — ít hơn số giao khi có hàng hỏng ở khâu.
+  returnedQty           Int?            @map("returned_qty")
   returnedSilverWeight  Decimal?        @map("returned_silver_weight") @db.Decimal(18, 4)
   btpRecoveredWeight    Decimal?        @map("btp_recovered_weight") @db.Decimal(18, 4)
   silverRecoveredWeight Decimal?        @map("silver_recovered_weight") @db.Decimal(18, 4)

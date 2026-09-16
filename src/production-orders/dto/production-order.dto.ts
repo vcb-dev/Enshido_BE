@@ -239,6 +239,19 @@ export class ChangeStatusDto {
   note?: string;
 }
 
+/** Chốt hàng đạt: đơn sang Hoàn thiện và vào kho thành phẩm. */
+export class FinishOrderDto {
+  @IsOptional()
+  @Transform(emptyToNull)
+  @IsDateString()
+  finishedAt?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  note?: string;
+}
+
 /** Báo Đúc / Đúc về. */
 export class CastingDto {
   @IsDateString()
@@ -259,10 +272,13 @@ export class HandoverStageDto {
   @IsDateString()
   handedAt!: string;
 
+  /** Số lượng giao cho thợ; bỏ trống thì hiểu là giao cả đơn. */
   @IsOptional()
   @Transform(emptyToNull)
-  @Matches(DECIMAL, { message: 'Trọng lượng giao (tổng) không hợp lệ' })
-  handedTotalWeight?: string | null;
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  handedQty?: number | null;
 
   @Transform(emptyToNull)
   @Matches(DECIMAL, { message: 'Trọng lượng giao (bạc) không hợp lệ' })
@@ -284,10 +300,13 @@ export class ReturnStageDto {
   @IsDateString()
   returnedAt!: string;
 
+  /** Số lượng nhận lại; bỏ trống thì hiểu là nhận lại đủ số đã giao. */
   @IsOptional()
   @Transform(emptyToNull)
-  @Matches(DECIMAL, { message: 'Trọng lượng nhận lại (tổng) không hợp lệ' })
-  returnedTotalWeight?: string | null;
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  returnedQty?: number | null;
 
   @Transform(emptyToNull)
   @Matches(DECIMAL, { message: 'Trọng lượng nhận lại (bạc) không hợp lệ' })
@@ -312,6 +331,14 @@ export class ReturnStageDto {
   @IsString()
   @MaxLength(1000)
   note?: string;
+}
+
+/** Sửa tiền công của một khâu ở phần chi phí (đã nhập lần đầu lúc KCS nhận lại). */
+export class StageLaborDto {
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Matches(MONEY, { message: 'Tiền công không hợp lệ' })
+  laborCost?: string | null;
 }
 
 export class OrderOptionsQuery {
