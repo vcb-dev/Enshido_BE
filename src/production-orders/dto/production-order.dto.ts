@@ -187,6 +187,12 @@ export class UpsertProductionOrderDto {
   @Matches(DECIMAL, { message: 'Trọng lượng đá không hợp lệ' })
   stoneWeight?: string | null;
 
+  /** Tổng TL bạc của đơn (g) — mốc chia gram cho phiếu con. */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Matches(DECIMAL, { message: 'Tổng TL bạc không hợp lệ' })
+  silverWeight?: string | null;
+
   @IsOptional()
   @IsString()
   @MaxLength(500)
@@ -261,14 +267,16 @@ export class CastingDto {
   @Transform(emptyToNull)
   @IsDateString()
   returnedDate?: string | null;
+
+  /** Tổng TL bạc (g) cân lúc Đúc về; bỏ trống thì giữ giá trị cũ. */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Matches(DECIMAL, { message: 'Tổng TL bạc không hợp lệ' })
+  silverWeight?: string | null;
 }
 
-/** Giao khâu cho thợ — người giao là tài khoản đăng nhập. */
-export class HandoverStageDto {
-  @Transform(emptyToNull)
-  @IsUUID()
-  craftsmanUserId!: string;
-
+/** Thông tin một lần giao khâu — người giao là tài khoản đăng nhập. */
+export class HandoverInfoDto {
   @IsDateString()
   handedAt!: string;
 
@@ -288,6 +296,13 @@ export class HandoverStageDto {
   @IsString()
   @MaxLength(1000)
   note?: string;
+}
+
+/** Giao khâu cho thợ (đơn chưa chia phiếu con). */
+export class HandoverStageDto extends HandoverInfoDto {
+  @Transform(emptyToNull)
+  @IsUUID()
+  craftsmanUserId!: string;
 }
 
 export class StartStageDto extends HandoverStageDto {
@@ -360,5 +375,44 @@ export class OrderCostDto {
   @IsOptional()
   @IsString()
   @MaxLength(500)
+  note?: string;
+}
+
+/** Phiếu con: phần số lượng + gram bạc chia cho thợ. */
+export class SubTicketDto {
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  qty!: number;
+
+  @Transform(emptyToNull)
+  @Matches(DECIMAL, { message: 'Gram bạc của phiếu con không hợp lệ' })
+  silverWeight!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
+}
+
+/** Mở một khâu cho thợ tự nhận trên các phiếu con. Bỏ trống `nos` = mọi phiếu con đang rảnh. */
+export class OpenSubTicketStageDto {
+  @IsEnum(ProductionStage)
+  stage!: ProductionStage;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(200)
+  @Type(() => Number)
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  nos?: number[];
+}
+
+/** Chốt phiếu con ở nhánh Lỗi (bắt buộc lý do) hoặc Hoàn thiện. */
+export class SubTicketOutcomeDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
   note?: string;
 }

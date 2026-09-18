@@ -8,6 +8,8 @@ export const Permission = {
   SCREEN_WAREHOUSE_TIEU_HAO: 'screen.warehouse.nvl-tieu-hao',
   SCREEN_LOCATIONS: 'screen.locations',
   SCREEN_CATALOGS: 'screen.catalogs',
+  /** Thợ sản xuất: tự nhận phiếu con ở màn "Phiếu của tôi". */
+  PRODUCTION_WORKER: 'production.worker',
 } as const;
 
 export type PermissionCode = (typeof Permission)[keyof typeof Permission];
@@ -17,6 +19,8 @@ export const ALL_PERMISSIONS: PermissionCode[] = Object.values(Permission);
 const ROLE_PERMISSIONS: Record<RoleCode, readonly PermissionCode[]> = {
   [RoleCode.ADMIN]: ALL_PERMISSIONS,
   [RoleCode.USER]: [],
+  // Thợ có sẵn quyền nhận phiếu con, không phải tick tay ở màn Nhân sự.
+  [RoleCode.WORKER]: [Permission.PRODUCTION_WORKER],
 };
 
 export function rolesOf(
@@ -48,13 +52,24 @@ export function sanitizeScreens(
   );
 }
 
+/**
+ * Quyền thực tế của một tài khoản: gộp quyền kèm theo role và quyền màn hình được tick.
+ * Admin có mọi quyền, kể cả khi ADMIN chỉ nằm ở `extraRoles`.
+ */
 export function permissionsForUser(
   roleCode: RoleCode,
   extraRoles: readonly RoleCode[] = [],
   allowedScreens: readonly string[] = [],
 ): PermissionCode[] {
-  if (roleCode === RoleCode.ADMIN) return [...ALL_PERMISSIONS];
-  return sanitizeScreens(allowedScreens);
+  if (userHasRole(roleCode, extraRoles, RoleCode.ADMIN)) {
+    return [...ALL_PERMISSIONS];
+  }
+  return Array.from(
+    new Set([
+      ...permissionsForRoles(roleCode, extraRoles),
+      ...sanitizeScreens(allowedScreens),
+    ]),
+  );
 }
 
 export function userHasPermission(
@@ -79,7 +94,22 @@ export function userHasRole(
 export const ROLE_LABELS: Record<RoleCode, string> = {
   [RoleCode.ADMIN]: 'Admin',
   [RoleCode.USER]: 'Nhân viên',
+  [RoleCode.WORKER]: 'Thợ',
 };
+
+/**
+ * Tài khoản chỉ làm thợ — dùng để CHẶN các màn quản lý đơn. Hệ quyền màn hình chỉ biết
+ * "cho thêm" nên việc cấm phải hỏi tường minh ở đây. Thợ kiêm admin thì không bị chặn.
+ */
+export function isWorkerOnly(
+  roleCode: RoleCode,
+  extraRoles: readonly RoleCode[] = [],
+): boolean {
+  return (
+    userHasRole(roleCode, extraRoles, RoleCode.WORKER) &&
+    !userHasRole(roleCode, extraRoles, RoleCode.ADMIN)
+  );
+}
 
 export function roleLabelFor(
   roleCode: RoleCode,

@@ -6,15 +6,15 @@ import {
 import {
   Prisma,
   ProductionSource,
-  ProductionStage,
   ProductionStatus,
+  RoleCode,
 } from '@prisma/client';
+import { Permission } from '../auth/permissions';
 import type { AuthUserPayload } from '../auth/types';
 import { InventoryService } from '../inventory/inventory.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CloudinaryService } from '../uploads/cloudinary.service';
 import { decStr } from '../util/money';
-import { silverLossOf } from './stage-math';
 import {
   CastingDto,
   ChangeStatusDto,
@@ -28,58 +28,27 @@ import {
   StartStageDto,
   UpsertProductionOrderDto,
 } from './dto/production-order.dto';
+import {
+  actorName,
+  decimalOrNull,
+  detailInclude,
+  entriesOf,
+  IN_STAGE_STATUSES,
+  normalizeCode,
+  type OrderDetail,
+  requireStage,
+  STAGE_LABEL,
+  STAGE_ORDER,
+  STAGE_STATUS,
+  type StageEntry,
+  STATUS_LABEL,
+  subTicketCode,
+  subTicketState,
+  toDetail,
+  ymd,
+} from './order-detail';
 
 const S = ProductionStatus;
-const G = ProductionStage;
-
-/** Thứ tự khâu giao thợ trên phiếu: Nguội → Vào đá → Khắc → Đánh bóng → Xi. */
-export const STAGE_ORDER: ProductionStage[] = [
-  G.FILING,
-  G.STONE_SETTING,
-  G.ENGRAVING,
-  G.POLISHING,
-  G.PLATING,
-];
-
-/** Khâu trên phiếu → trạng thái đơn. Mỗi khâu một trạng thái. */
-const STAGE_STATUS: Record<ProductionStage, ProductionStatus> = {
-  FILING: S.FILING,
-  STONE_SETTING: S.STONE_SETTING,
-  ENGRAVING: S.ENGRAVING,
-  POLISHING: S.POLISHING,
-  PLATING: S.PLATING,
-};
-
-export const STATUS_LABEL: Record<ProductionStatus, string> = {
-  NEW: 'Mới',
-  REDO_3D: 'Sửa 3D',
-  CASTING: 'Đúc',
-  FILING: 'Nguội',
-  STONE_SETTING: 'Vào đá',
-  ENGRAVING: 'Khắc',
-  POLISHING: 'Bóng',
-  PLATING: 'Xi',
-  DEFECT: 'Sản xuất lỗi',
-  FINISHING: 'Hoàn thiện',
-  DELIVERED: 'Đã giao',
-};
-
-export const STAGE_LABEL: Record<ProductionStage, string> = {
-  FILING: 'Nguội',
-  STONE_SETTING: 'Vào đá',
-  ENGRAVING: 'Khắc',
-  POLISHING: 'Đánh bóng',
-  PLATING: 'Xi',
-};
-
-/** Trạng thái đơn đang nằm ở một khâu trên phiếu (có thợ đang giữ hàng hoặc vừa nộp lại). */
-const IN_STAGE_STATUSES: ProductionStatus[] = [
-  S.FILING,
-  S.STONE_SETTING,
-  S.ENGRAVING,
-  S.POLISHING,
-  S.PLATING,
-];
 
 /**
  * Đổi tay được. Đúc đi qua báo Đúc, các khâu đi qua giao thợ, Đã giao đến từ phiếu xuất
@@ -94,34 +63,6 @@ const SUGGEST_COLUMNS = {
   leadTime: 'lead_time',
   debtStatus: 'debt_status',
 } as const;
-
-const detailInclude = {
-  images: { orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }] },
-  stages: { orderBy: { createdAt: 'asc' } },
-  statusLogs: { orderBy: { changedAt: 'desc' } },
-  parent: {
-    select: {
-      code: true,
-      children: { select: { id: true }, orderBy: { seq: 'asc' } },
-    },
-  },
-  children: { select: { code: true, status: true }, orderBy: { seq: 'asc' } },
-  receipt: true,
-  btpMaterial: { select: { id: true, sku: true, name: true } },
-  shipmentLines: {
-    select: {
-      qty: true,
-      shipment: { select: { code: true, shippedAt: true, customerName: true } },
-    },
-    orderBy: { shipment: { seq: 'asc' } },
-  },
-  _count: { select: { outbounds: true } },
-} satisfies Prisma.ProductionOrderInclude;
-
-type OrderDetail = Prisma.ProductionOrderGetPayload<{
-  include: typeof detailInclude;
-}>;
-type StageEntry = OrderDetail['stages'][number];
 
 const CREATE_RETRIES = 3;
 
@@ -229,7 +170,14 @@ export class ProductionOrdersService {
       await Promise.all([
         this.prisma.user.findMany({
           where: { isActive: true },
-          select: { id: true, username: true, fullName: true },
+          select: {
+            id: true,
+            username: true,
+            fullName: true,
+            roleCode: true,
+            extraRoles: true,
+            allowedScreens: true,
+          },
           orderBy: { fullName: 'asc' },
         }),
         this.prisma.materialType.findMany({
@@ -245,7 +193,22 @@ export class ProductionOrdersService {
       ]);
 
     return {
-      users,
+      users: users.map((user) => ({
+        id: user.id,
+        username: user.username,
+        fullName: user.fullName,
+      })),
+      // Tài khoản được nhận phiếu con: role Thợ, quyền Thợ sản xuất tick tay, hoặc admin.
+      workerIds: users
+        .filter(
+          (user) =>
+            user.roleCode === RoleCode.ADMIN ||
+            user.extraRoles.includes(RoleCode.ADMIN) ||
+            user.roleCode === RoleCode.WORKER ||
+            user.extraRoles.includes(RoleCode.WORKER) ||
+            user.allowedScreens.includes(Permission.PRODUCTION_WORKER),
+        )
+        .map((user) => user.id),
       closers: uniqueSorted([
         ...users.map((user) => user.fullName),
         ...closers,
@@ -426,6 +389,47 @@ export class ProductionOrdersService {
     return toDetail(await this.requireOrder(code));
   }
 
+  /**
+   * Thông tin đơn cho thợ quét QR trên phiếu giấy: đủ để làm hàng và tìm đúng phiếu con
+   * của mình. Không có chi phí, kho thành phẩm, khách hàng hay lịch sử khâu của người khác.
+   */
+  async reference(code: string) {
+    const order = await this.requireOrder(code);
+    return {
+      code: order.code,
+      status: order.status,
+      qty: order.qty,
+      description: order.description,
+      dueDate: order.dueDate ? ymd(order.dueDate) : null,
+      size: order.size,
+      sizeLabel: order.sizeLabel,
+      mainMaterial: order.mainMaterial,
+      platingColor: order.platingColor,
+      stoneColor: order.stoneColor,
+      stoneTypes: order.stoneTypes,
+      stoneCount: order.stoneCount,
+      laserEngraving: order.laserEngraving,
+      otherRequirements: order.otherRequirements,
+      images: order.images.map((image) => ({
+        id: image.id,
+        kind: image.kind,
+        url: image.url,
+      })),
+      subTickets: order.subTickets.map((ticket) => {
+        const entries = entriesOf(order, ticket.id);
+        const { state, activeStage } = subTicketState(ticket, entries);
+        return {
+          code: subTicketCode(order.code, ticket.no),
+          no: ticket.no,
+          qty: ticket.qty,
+          state,
+          activeStage,
+          claimedByName: ticket.claimedByName,
+        };
+      }),
+    };
+  }
+
   async create(dto: UpsertProductionOrderDto, actor: AuthUserPayload) {
     const fields = await this.orderFields(dto);
     const images = this.newImages(dto.images, new Set());
@@ -444,6 +448,7 @@ export class ProductionOrdersService {
               seq,
               code: orderCode(seq),
               createdBy: changedBy,
+              createdByUserId: actor.id,
               images: { create: images },
               statusLogs: { create: { toStatus: S.NEW, changedBy } },
             },
@@ -487,6 +492,7 @@ export class ProductionOrdersService {
       );
     }
     const fields = await this.orderFields(dto, order.id);
+    assertCoversSubTickets(order, fields.qty, fields.silverWeight);
     // Đổi loại đơn / mã BTP / số lượng của Đơn BTP thì hoàn phiếu xuất BTP cũ và xuất lại.
     const reissue =
       fields.source !== order.source ||
@@ -562,7 +568,7 @@ export class ProductionOrdersService {
     }
     // Mã SX = số lớn nhất + 1 nên mã của đơn bị xóa có thể được cấp lại; không cho
     // xóa đơn đã có phiếu giấy để tránh hai phiếu cùng mã.
-    if (order.lastPrintedAt) {
+    if (order.lastPrintedAt || order.subTickets.some((t) => t.lastPrintedAt)) {
       throw new BadRequestException('Đơn đã in phiếu cho thợ, không xóa được');
     }
     // Phiếu xuất BTP do lên đơn tự tạo được hoàn kho cùng lúc xoá đơn.
@@ -639,6 +645,15 @@ export class ProductionOrdersService {
     }
     // Hàng trong kho thành phẩm (chưa xuất) bị lỗi thì rút khỏi kho để làm lại.
     const leaveStock = target === S.DEFECT && order.receipt != null;
+    // Đơn ra khỏi khâu thì các khâu đang mở chờ thợ nhận trên phiếu con cũng huỷ theo.
+    const pending = order.subTickets.filter((t) => t.pendingStage).length;
+    const logNote = [
+      note,
+      leaveStock ? '(rút khỏi kho thành phẩm)' : null,
+      pending > 0 ? `(huỷ ${pending} phiếu con đang chờ nhận khâu)` : null,
+    ]
+      .filter(Boolean)
+      .join(' ');
 
     const updated = await this.prisma.productionOrder.update({
       where: { id: order.id },
@@ -646,11 +661,28 @@ export class ProductionOrdersService {
         status: target,
         dataChangedAt: new Date(),
         ...(leaveStock ? { receipt: { delete: true } } : null),
+        ...(pending > 0
+          ? {
+              subTickets: {
+                updateMany: {
+                  where: { pendingStage: { not: null } },
+                  data: {
+                    pendingStage: null,
+                    pendingAt: null,
+                    pendingByName: null,
+                    claimedByUserId: null,
+                    claimedByName: null,
+                    claimedAt: null,
+                  },
+                },
+              },
+            }
+          : null),
         statusLogs: {
           create: {
             fromStatus: order.status,
             toStatus: target,
-            note: leaveStock ? `${note} (rút khỏi kho thành phẩm)` : note,
+            note: logNote || null,
             changedBy: actorName(actor),
           },
         },
@@ -681,6 +713,14 @@ export class ProductionOrdersService {
         'Đơn đã giao khâu cho thợ, không bỏ ngày Đúc về được',
       );
     }
+    if (!returnedDate && order.subTickets.length > 0) {
+      throw new BadRequestException(
+        'Đơn đã chia phiếu con, không bỏ ngày Đúc về được',
+      );
+    }
+    // Bỏ trống Tổng TL bạc thì giữ số cũ.
+    const silverWeight = decimalOrNull(dto.silverWeight);
+    if (silverWeight) assertCoversSubTickets(order, order.qty, silverWeight);
     // Báo Đúc lần đầu hoặc đúc lại sau lỗi thì đơn chuyển sang Đúc.
     const toCasting = (
       [S.NEW, S.REDO_3D, S.DEFECT] as ProductionStatus[]
@@ -691,6 +731,7 @@ export class ProductionOrdersService {
       data: {
         castingSentDate: sentDate,
         castingReturnedDate: returnedDate,
+        ...(silverWeight ? { silverWeight } : null),
         dataChangedAt: new Date(),
         ...(toCasting
           ? {
@@ -729,6 +770,11 @@ export class ProductionOrdersService {
     if (order.receipt) {
       throw new BadRequestException(
         'Đơn đã hoàn thiện và vào kho thành phẩm — chuyển sang Sản xuất lỗi để rút khỏi kho trước khi làm lại',
+      );
+    }
+    if (order.subTickets.length > 0) {
+      throw new BadRequestException(
+        'Đơn đã chia phiếu con — mở khâu và giao theo từng phiếu con',
       );
     }
     const open = order.stages.find((entry) => !entry.returnedAt);
@@ -801,6 +847,12 @@ export class ProductionOrdersService {
     if (entry.returnedAt) {
       throw new BadRequestException('KCS đã nhận lại khâu này, không sửa được');
     }
+    // Thợ của phiếu con là người đã tự nhận khâu — không đổi ở đây.
+    if (entry.subTicketId && dto.craftsmanUserId !== entry.craftsmanUserId) {
+      throw new BadRequestException(
+        'Khâu của phiếu con giữ nguyên thợ đã nhận, chỉ sửa được thời gian, số lượng, trọng lượng',
+      );
+    }
     const craftsman = await this.resolveUser(dto.craftsmanUserId);
 
     const updated = await this.prisma.productionOrder.update({
@@ -814,7 +866,9 @@ export class ProductionOrdersService {
               craftsmanUserId: craftsman.id,
               craftsmanName: craftsman.name,
               handedAt: new Date(dto.handedAt),
-              handedQty: dto.handedQty ?? order.qty,
+              handedQty:
+                dto.handedQty ??
+                (entry.subTicketId ? entry.handedQty : order.qty),
               handedSilverWeight: new Prisma.Decimal(dto.handedSilverWeight),
               note: dto.note?.trim() || null,
             },
@@ -899,10 +953,21 @@ export class ProductionOrdersService {
         'Đơn chưa vào sản xuất, chưa hoàn thiện được',
       );
     }
+    if (order.subTickets.length > 0) {
+      throw new BadRequestException(
+        'Đơn đã chia phiếu con — chốt Hoàn thiện ở từng phiếu con',
+      );
+    }
     const open = order.stages.find((entry) => !entry.returnedAt);
     if (open) {
       throw new BadRequestException(
         `Khâu ${STAGE_LABEL[open.stage]} chưa được KCS nhận lại, chưa hoàn thiện được`,
+      );
+    }
+    const pending = order.subTickets.find((t) => t.pendingStage);
+    if (pending?.pendingStage) {
+      throw new BadRequestException(
+        `Phiếu ${subTicketCode(order.code, pending.no)} đang mở khâu ${STAGE_LABEL[pending.pendingStage]} — huỷ mở khâu trước khi hoàn thiện`,
       );
     }
     const finishedAt = dto.finishedAt ? new Date(dto.finishedAt) : new Date();
@@ -941,6 +1006,12 @@ export class ProductionOrdersService {
     if (!order.receipt) {
       throw new BadRequestException('Đơn chưa hoàn thiện');
     }
+    // Đơn chia phiếu con: kho thành phẩm cộng từ kết cục từng phiếu, gỡ ở phiếu con.
+    if (order.subTickets.some((ticket) => ticket.outcome)) {
+      throw new BadRequestException(
+        'Đơn hoàn thiện theo phiếu con — gỡ kết cục ở từng phiếu con',
+      );
+    }
     if (order.shipmentLines.length > 0) {
       throw new BadRequestException(
         'Đơn đã có phiếu xuất hàng, xóa phiếu xuất trước khi gỡ hoàn thiện',
@@ -976,8 +1047,32 @@ export class ProductionOrdersService {
     if (!entry.returnedAt) {
       throw new BadRequestException('KCS chưa nhận lại khâu này');
     }
-    if (lastStage(order)?.id !== entry.id) {
-      throw new BadRequestException('Chỉ gỡ nhận lại được khâu cuối cùng');
+    // Khâu cuối tính trong từng phiếu con (hoặc trong các khâu cấp đơn).
+    const scope = order.stages.filter(
+      (item) => item.subTicketId === entry.subTicketId,
+    );
+    if (scope[scope.length - 1]?.id !== entry.id) {
+      throw new BadRequestException(
+        entry.subTicketId
+          ? 'Chỉ gỡ nhận lại được khâu cuối cùng của phiếu con'
+          : 'Chỉ gỡ nhận lại được khâu cuối cùng',
+      );
+    }
+    if (!entry.subTicketId && order.subTickets.length > 0) {
+      throw new BadRequestException(
+        'Đơn đã chia phiếu con, không gỡ nhận lại khâu của cả đơn được',
+      );
+    }
+    const ticket = order.subTickets.find((t) => t.id === entry.subTicketId);
+    if (ticket?.outcome) {
+      throw new BadRequestException(
+        `Phiếu ${subTicketCode(order.code, ticket.no)} đã chốt lỗi / hoàn thiện — gỡ kết cục phiếu con trước khi gỡ nhận lại`,
+      );
+    }
+    if (ticket?.pendingStage) {
+      throw new BadRequestException(
+        `Phiếu ${subTicketCode(order.code, ticket.no)} đã mở khâu ${STAGE_LABEL[ticket.pendingStage]} — huỷ mở khâu trước khi gỡ nhận lại`,
+      );
     }
     if (order.status === S.DELIVERED) {
       throw new BadRequestException('Đơn đã giao, không gỡ nhận lại được');
@@ -1024,10 +1119,11 @@ export class ProductionOrdersService {
   async markPrinted(code: string) {
     const order = await this.prisma.productionOrder.findUnique({
       where: { code: normalizeCode(code) },
-      select: { id: true, castingSentDate: true },
+      select: { id: true, source: true, castingSentDate: true },
     });
     if (!order) throw new NotFoundException('Không tìm thấy đơn sản xuất');
-    if (!order.castingSentDate) {
+    // Đơn BTP lấy hàng đúc sẵn nên in được ngay.
+    if (order.source === ProductionSource.NVL && !order.castingSentDate) {
       throw new BadRequestException('Chỉ in phiếu thợ khi đơn đã báo Đúc');
     }
     const updated = await this.prisma.productionOrder.update({
@@ -1121,6 +1217,7 @@ export class ProductionOrdersService {
       ),
       stoneCount: dto.stoneCount ?? null,
       stoneWeight: decimalOrNull(dto.stoneWeight),
+      silverWeight: decimalOrNull(dto.silverWeight),
       size: optional(dto.size),
       sizeLabel: optional(dto.sizeLabel),
       mainMaterial: optional(dto.mainMaterial),
@@ -1205,141 +1302,37 @@ export class ProductionOrdersService {
   }
 }
 
-function toDetail(order: OrderDetail) {
-  // Phân đơn: đơn con đánh số theo thứ tự tạo trong các đơn con của cùng đơn mẹ.
-  const siblings = order.parent?.children ?? [];
-  const splitIndex = siblings.findIndex((child) => child.id === order.id);
-  const split =
-    splitIndex >= 0
-      ? { no: splitIndex + 1, total: siblings.length }
-      : { no: 1, total: 1 };
-
-  return {
-    id: order.id,
-    code: order.code,
-    status: order.status,
-    source: order.source,
-    btp: order.btpMaterial,
-    btpSku: order.btpMaterial?.sku ?? null,
-    requestType: order.requestType,
-    qty: order.qty,
-    returnedQty: order.returnedQty,
-    model3dCode: order.model3dCode,
-    model3dUrl: order.model3dUrl,
-    leadTime: order.leadTime,
-    trackingCode: order.trackingCode,
-    closedBy: order.closedBy,
-    description: order.description,
-    stoneColor: order.stoneColor,
-    stoneTypes: order.stoneTypes,
-    stoneCount: order.stoneCount,
-    stoneWeight: order.stoneWeight != null ? decStr(order.stoneWeight) : null,
-    size: order.size,
-    sizeLabel: order.sizeLabel,
-    mainMaterial: order.mainMaterial,
-    platingColor: order.platingColor,
-    laserEngraving: order.laserEngraving,
-    otherRequirements: order.otherRequirements,
-    askedUserId: order.askedUserId,
-    askedUserName: order.askedUserName,
-    receivedDate: ymd(order.receivedDate),
-    dueDate: order.dueDate ? ymd(order.dueDate) : null,
-    castingSentDate: order.castingSentDate ? ymd(order.castingSentDate) : null,
-    castingReturnedDate: order.castingReturnedDate
-      ? ymd(order.castingReturnedDate)
-      : null,
-    debtStatus: order.debtStatus,
-    parentCode: order.parent?.code ?? null,
-    split,
-    children: order.children,
-    linkedOutbounds: order._count.outbounds,
-    finishedGoods: order.receipt
-      ? {
-          qty: order.receipt.qty,
-          receivedAt: order.receipt.receivedAt.toISOString(),
-          receivedByName: order.receipt.receivedByName,
-          shippedQty: order.shipmentLines.reduce(
-            (sum, line) => sum + line.qty,
-            0,
-          ),
-          remainingQty:
-            order.receipt.qty -
-            order.shipmentLines.reduce((sum, line) => sum + line.qty, 0),
-          shipments: order.shipmentLines.map((line) => ({
-            code: line.shipment.code,
-            shippedAt: ymd(line.shipment.shippedAt),
-            customerName: line.shipment.customerName,
-            qty: line.qty,
-          })),
-        }
-      : null,
-    lastPrintedAt: order.lastPrintedAt?.toISOString() ?? null,
-    dataChangedAt: order.dataChangedAt.toISOString(),
-    createdBy: order.createdBy,
-    createdAt: order.createdAt.toISOString(),
-    updatedAt: order.updatedAt.toISOString(),
-    images: order.images.map((image) => ({
-      id: image.id,
-      kind: image.kind,
-      url: image.url,
-      publicId: image.publicId,
-      width: image.width,
-      height: image.height,
-    })),
-    stages: order.stages.map(toStage),
-    statusLogs: order.statusLogs.map((log) => ({
-      id: log.id,
-      fromStatus: log.fromStatus,
-      toStatus: log.toStatus,
-      note: log.note,
-      changedBy: log.changedBy,
-      changedAt: log.changedAt.toISOString(),
-    })),
-  };
-}
-
-function toStage(entry: StageEntry) {
-  const silverLoss = silverLossOf(entry);
-  const silverLossPercent =
-    silverLoss != null &&
-    entry.handedSilverWeight != null &&
-    entry.handedSilverWeight.gt(0)
-      ? silverLoss.div(entry.handedSilverWeight).mul(100).toDecimalPlaces(2)
-      : null;
-  const dec = (value: Prisma.Decimal | null) =>
-    value != null ? decStr(value) : null;
-
-  return {
-    id: entry.id,
-    stage: entry.stage,
-    attempt: entry.attempt,
-    handedByName: entry.handedByName,
-    handedAt: entry.handedAt.toISOString(),
-    handedQty: entry.handedQty,
-    handedSilverWeight: dec(entry.handedSilverWeight),
-    craftsmanUserId: entry.craftsmanUserId,
-    craftsmanName: entry.craftsmanName,
-    returnedByName: entry.returnedByName,
-    returnedAt: entry.returnedAt?.toISOString() ?? null,
-    returnedQty: entry.returnedQty,
-    returnedSilverWeight: dec(entry.returnedSilverWeight),
-    btpRecoveredWeight: dec(entry.btpRecoveredWeight),
-    silverRecoveredWeight: dec(entry.silverRecoveredWeight),
-    silverLoss: dec(silverLoss),
-    silverLossPercent: dec(silverLossPercent),
-    laborCost: dec(entry.laborCost),
-    note: entry.note,
-  };
-}
-
 function lastStage(order: OrderDetail): StageEntry | undefined {
   return order.stages[order.stages.length - 1];
 }
 
-function requireStage(order: OrderDetail, stageId: string) {
-  const entry = order.stages.find((item) => item.id === stageId);
-  if (!entry) throw new NotFoundException('Không tìm thấy khâu trên đơn');
-  return entry;
+/** Số lượng / Tổng TL bạc của đơn không được nhỏ hơn phần đã chia cho phiếu con. */
+function assertCoversSubTickets(
+  order: OrderDetail,
+  qty: number,
+  silverWeight: Prisma.Decimal | null,
+) {
+  if (order.subTickets.length === 0) return;
+  const splitQty = order.subTickets.reduce((sum, t) => sum + t.qty, 0);
+  const splitSilver = order.subTickets.reduce(
+    (sum, t) => sum.add(t.silverWeight),
+    new Prisma.Decimal(0),
+  );
+  if (qty < splitQty) {
+    throw new BadRequestException(
+      `Số lượng đơn không được nhỏ hơn tổng số lượng đã chia phiếu con (${splitQty})`,
+    );
+  }
+  if (!silverWeight) {
+    throw new BadRequestException(
+      'Đơn đã chia phiếu con, không bỏ trống Tổng TL bạc được',
+    );
+  }
+  if (silverWeight.lt(splitSilver)) {
+    throw new BadRequestException(
+      `Tổng TL bạc không được nhỏ hơn tổng gram đã chia phiếu con (${decStr(splitSilver)} g)`,
+    );
+  }
 }
 
 function requireText(value: string, message: string) {
@@ -1354,16 +1347,8 @@ function joinNotes(previous: string | null, next: string | undefined) {
   return previous ? `${previous}\n${added}` : added;
 }
 
-function decimalOrNull(value: string | null | undefined) {
-  return value != null && value !== '' ? new Prisma.Decimal(value) : null;
-}
-
 export function orderCode(seq: number) {
   return `A${String(seq).padStart(3, '0')}`;
-}
-
-function normalizeCode(code: string) {
-  return code.trim().toUpperCase();
 }
 
 function optional(value: string | null | undefined) {
@@ -1380,16 +1365,8 @@ function uniqueSorted(values: string[]) {
   );
 }
 
-function ymd(value: Date) {
-  return value.toISOString().slice(0, 10);
-}
-
 function dateOnly(value: string) {
   return new Date(`${value.slice(0, 10)}T00:00:00.000Z`);
-}
-
-function actorName(actor: { fullName: string; username: string }) {
-  return actor.fullName.trim() || actor.username;
 }
 
 function isUniqueViolation(error: unknown) {
