@@ -585,6 +585,7 @@ model ProductionStageEntry {
 
   order     ProductionOrder      @relation(fields: [orderId], references: [id], onDelete: Cascade)
   subTicket ProductionSubTicket? @relation(fields: [subTicketId], references: [id], onDelete: Restrict)
+  topUps    ProductionSubTicketTopUp[]
 
   // Không lặp khâu + lần trong cùng phiếu. Trên DB index này có thêm NULLS NOT DISTINCT
   // (xem prisma/sql/2026-09-17_sub_tickets.sql) — Prisma 6 chưa khai báo được phần đó.
@@ -630,11 +631,34 @@ model ProductionSubTicket {
 
   order  ProductionOrder        @relation(fields: [orderId], references: [id], onDelete: Cascade)
   stages ProductionStageEntry[]
+  topUps ProductionSubTicketTopUp[]
 
   @@unique([orderId, no])
   @@index([pendingStage, claimedByUserId])
   @@index([claimedByUserId])
   @@map("production_sub_tickets")
+}
+
+/// Cấp thêm số lượng / bạc cho phiếu con khi thợ làm thiếu giữa chừng. Mỗi lần cấp là một
+/// lần giao vật tư thật giữa hai người nên ghi riêng từng dòng, không cộng gộp.
+model ProductionSubTicketTopUp {
+  id              String   @id @default(uuid()) @db.Uuid
+  subTicketId     String   @map("sub_ticket_id") @db.Uuid
+  /// Khâu đã nhận phần cấp thêm này. Null = cấp lúc phiếu đang rảnh, phần này vào khâu sau.
+  stageEntryId    String?  @map("stage_entry_id") @db.Uuid
+  qty             Int      @default(0)
+  silverWeight    Decimal  @default(0) @map("silver_weight") @db.Decimal(18, 4)
+  reason          String?
+  createdByUserId String?  @map("created_by_user_id") @db.Uuid
+  createdByName   String   @map("created_by_name")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  subTicket  ProductionSubTicket   @relation(fields: [subTicketId], references: [id], onDelete: Cascade)
+  stageEntry ProductionStageEntry? @relation(fields: [stageEntryId], references: [id], onDelete: SetNull)
+
+  @@index([subTicketId])
+  @@index([stageEntryId])
+  @@map("production_sub_ticket_top_ups")
 }
 
 /// Phiếu con kết thúc ở một trong hai nhánh, giống hai cột cuối của phiếu thợ.

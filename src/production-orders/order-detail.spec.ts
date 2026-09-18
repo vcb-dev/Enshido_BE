@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import {
   entriesOf,
+  looseTopUps,
   subTicketAvailable,
   subTicketCode,
   subTicketState,
@@ -125,6 +126,72 @@ describe('subTicketAvailable — số lượng / bạc còn lại để giao kh�
     expect(subTicketAvailable(ticket(), [entry()])).toEqual({
       qty: 6,
       silver: dec('600'),
+    });
+  });
+});
+
+describe('cấp thêm cho phiếu con', () => {
+  const loose = (qty: number, silver: string) => ({
+    stageEntryId: null,
+    qty,
+    silverWeight: dec(silver),
+  });
+  const applied = (qty: number, silver: string) => ({
+    stageEntryId: 'e1',
+    qty,
+    silverWeight: dec(silver),
+  });
+
+  it('chỉ cộng phần chưa vào khâu nào', () => {
+    expect(looseTopUps([loose(1, '100'), applied(2, '200')])).toEqual({
+      qty: 1,
+      silver: dec('100'),
+    });
+  });
+
+  it('cấp thêm khi chưa làm khâu nào: đã nằm trong phần đã chia, KHÔNG cộng lần nữa', () => {
+    // ticket.qty được service cộng lên ngay khi cấp thêm, nên cộng tiếp là đếm trùng.
+    const t = ticket({ qty: 7, silverWeight: dec('700') });
+    expect(subTicketAvailable(t, [], [loose(1, '100')])).toEqual({
+      qty: 7,
+      silver: dec('700'),
+    });
+  });
+
+  it('cấp thêm giữa lúc thợ đang làm: đã cộng vào số giao của khâu', () => {
+    // Bắt buộc phải vậy, nếu không hao hụt = giao − nhận lại sẽ ra số âm.
+    const open = entry({ handedQty: 7, handedSilverWeight: dec('700') });
+    expect(
+      subTicketAvailable(ticket({ qty: 7, silverWeight: dec('700') }), [open], [
+        applied(1, '100'),
+      ]),
+    ).toEqual({ qty: 7, silver: dec('700') });
+  });
+
+  it('cấp thêm sau khi KCS nhận lại: cộng vào số đang có để giao khâu sau', () => {
+    const closed = entry({
+      returnedAt: new Date(),
+      returnedQty: 7,
+      returnedSilverWeight: dec('690'),
+    });
+    // Hao hụt 10 g ở khâu trước vẫn mất, phần cấp thêm 50 g cộng lên trên đó.
+    expect(
+      subTicketAvailable(ticket({ qty: 7, silverWeight: dec('750') }), [closed], [
+        applied(1, '100'),
+        loose(0, '50'),
+      ]),
+    ).toEqual({ qty: 7, silver: dec('740') });
+  });
+
+  it('không có lần cấp thêm nào thì kết quả như cũ', () => {
+    const closed = entry({
+      returnedAt: new Date(),
+      returnedQty: 5,
+      returnedSilverWeight: dec('596'),
+    });
+    expect(subTicketAvailable(ticket(), [closed], [])).toEqual({
+      qty: 5,
+      silver: dec('596'),
     });
   });
 });

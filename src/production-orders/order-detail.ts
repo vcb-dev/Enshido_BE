@@ -58,7 +58,10 @@ export const IN_STAGE_STATUSES: ProductionStatus[] = [
 export const detailInclude = {
   images: { orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }] },
   stages: { orderBy: { createdAt: 'asc' } },
-  subTickets: { orderBy: { no: 'asc' } },
+  subTickets: {
+    orderBy: { no: 'asc' },
+    include: { topUps: { orderBy: { createdAt: 'asc' } } },
+  },
   statusLogs: { orderBy: { changedAt: 'desc' } },
   parent: {
     select: {
@@ -84,6 +87,7 @@ export type OrderDetail = Prisma.ProductionOrderGetPayload<{
 }>;
 export type StageEntry = OrderDetail['stages'][number];
 export type SubTicket = OrderDetail['subTickets'][number];
+export type SubTicketTopUp = SubTicket['topUps'][number];
 
 /**
  * Phiếu con đang ở đâu trong khâu hiện tại:
@@ -135,25 +139,45 @@ export function subTicketState(
 }
 
 /**
- * Số lượng / bạc phiếu con đang có để giao khâu sau: đúng số KCS nhận lại ở khâu gần nhất,
- * chưa làm khâu nào thì là phần đã chia.
+ * Số lượng / bạc phiếu con đang có trong tay.
+ *
+ * - Chưa làm khâu nào: phần đã chia — `ticket.qty` đã gồm mọi lần cấp thêm tới giờ.
+ * - Đang làm dở: số đã giao — cấp thêm giữa khâu đã cộng thẳng vào khâu đó.
+ * - Khâu trước xong rồi: số KCS trả lại, cộng phần cấp thêm sau đó chưa vào khâu nào.
  */
 export function subTicketAvailable(
   ticket: Pick<SubTicket, 'qty' | 'silverWeight'>,
   entries: StageEntry[],
+  topUps: readonly Pick<SubTicketTopUp, 'stageEntryId' | 'qty' | 'silverWeight'>[] = [],
 ) {
   const last = entries[entries.length - 1];
   if (!last) return { qty: ticket.qty, silver: ticket.silverWeight };
-  if (last.returnedAt) {
+  if (!last.returnedAt) {
     return {
-      qty: last.returnedQty ?? last.handedQty ?? ticket.qty,
-      silver: last.returnedSilverWeight ?? ticket.silverWeight,
+      qty: last.handedQty ?? ticket.qty,
+      silver: last.handedSilverWeight ?? ticket.silverWeight,
     };
   }
+  const loose = looseTopUps(topUps);
   return {
-    qty: last.handedQty ?? ticket.qty,
-    silver: last.handedSilverWeight ?? ticket.silverWeight,
+    qty: (last.returnedQty ?? last.handedQty ?? ticket.qty) + loose.qty,
+    silver: (last.returnedSilverWeight ?? ticket.silverWeight).add(loose.silver),
   };
+}
+
+/** Phần cấp thêm chưa được giao vào khâu nào — vẫn đang nằm trong tay chờ khâu sau. */
+export function looseTopUps(
+  topUps: readonly Pick<SubTicketTopUp, 'stageEntryId' | 'qty' | 'silverWeight'>[],
+) {
+  return topUps
+    .filter((item) => item.stageEntryId == null)
+    .reduce(
+      (sum, item) => ({
+        qty: sum.qty + item.qty,
+        silver: sum.silver.add(item.silverWeight),
+      }),
+      { qty: 0, silver: new Prisma.Decimal(0) },
+    );
 }
 
 /** Khâu cấp đơn (không thuộc phiếu con) đang chờ KCS nhận lại. */
@@ -276,7 +300,7 @@ export function toDetail(order: OrderDetail) {
 function toSubTicket(order: OrderDetail, ticket: SubTicket) {
   const entries = entriesOf(order, ticket.id);
   const { state, activeStage } = subTicketState(ticket, entries);
-  const available = subTicketAvailable(ticket, entries);
+  const available = subTicketAvailable(ticket, entries, ticket.topUps);
   const open = entries.find((entry) => !entry.returnedAt);
   return {
     id: ticket.id,
@@ -295,6 +319,16 @@ function toSubTicket(order: OrderDetail, ticket: SubTicket) {
     claimedAt: ticket.claimedAt?.toISOString() ?? null,
     openEntryId: open?.id ?? null,
     entryCount: entries.length,
+    topUps: ticket.topUps.map((item) => ({
+      id: item.id,
+      qty: item.qty,
+      silverWeight: decStr(item.silverWeight),
+      reason: item.reason,
+      createdByName: item.createdByName,
+      createdAt: item.createdAt.toISOString(),
+      /** Đã vào một khâu rồi hay còn chờ giao khâu sau. */
+      applied: item.stageEntryId != null,
+    })),
     outcome: ticket.outcome,
     outcomeAt: ticket.outcomeAt?.toISOString() ?? null,
     outcomeByName: ticket.outcomeByName,

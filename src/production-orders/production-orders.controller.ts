@@ -34,6 +34,7 @@ import {
   StartStageDto,
   SubTicketDto,
   SubTicketOutcomeDto,
+  SubTicketTopUpDto,
   UpsertProductionOrderDto,
 } from './dto/production-order.dto';
 import { ProductionCostingService } from './production-costing.service';
@@ -313,6 +314,18 @@ export class ProductionOrdersController {
     @CurrentUser() user: AuthUserPayload,
   ) {
     return this.subTickets.unclaim(code, no, user);
+  }
+
+  /** Cấp thêm SL / bạc cho phiếu con khi thợ làm giữa chừng phát hiện thiếu. */
+  @Post(':code/sub-tickets/:no/top-up')
+  @BlockWorker()
+  topUpSubTicket(
+    @Param('code') code: string,
+    @Param('no', ParseIntPipe) no: number,
+    @Body() dto: SubTicketTopUpDto,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.subTickets.topUp(code, no, dto, user);
   }
 
   /** Thợ báo đã làm xong khâu đang giữ, nộp hàng cho KCS. */

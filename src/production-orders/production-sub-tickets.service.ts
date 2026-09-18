@@ -19,6 +19,7 @@ import {
   OpenSubTicketStageDto,
   SubTicketDto,
   SubTicketOutcomeDto,
+  SubTicketTopUpDto,
 } from './dto/production-order.dto';
 import {
   actorName,
@@ -71,6 +72,7 @@ const myTicketInclude = {
     },
   },
   stages: { orderBy: { createdAt: 'asc' } },
+  topUps: { orderBy: { createdAt: 'asc' } },
 } satisfies Prisma.ProductionSubTicketInclude;
 
 type MyTicketRow = Prisma.ProductionSubTicketGetPayload<{
@@ -361,7 +363,7 @@ export class ProductionSubTicketsService {
           'Tài khoản thợ đã nhận phiếu không còn hoạt động — gỡ lượt nhận để thợ khác nhận',
         );
       }
-      const available = subTicketAvailable(ticket, entries);
+      const available = subTicketAvailable(ticket, entries, ticket.topUps);
       const handedQty = dto.handedQty ?? available.qty;
       if (handedQty > available.qty) {
         throw new BadRequestException(
@@ -383,7 +385,7 @@ export class ProductionSubTicketsService {
         where: { id: ticket.id },
         data: CLEAR_PENDING,
       });
-      await tx.productionStageEntry.create({
+      const created = await tx.productionStageEntry.create({
         data: {
           orderId: order.id,
           subTicketId: ticket.id,
@@ -398,6 +400,11 @@ export class ProductionSubTicketsService {
           craftsmanName,
           note: dto.note?.trim() || null,
         },
+      });
+      // Phần cấp thêm lúc phiếu đang rảnh nay đã nằm trong số giao của khâu này.
+      await tx.productionSubTicketTopUp.updateMany({
+        where: { subTicketId: ticket.id, stageEntryId: null },
+        data: { stageEntryId: created.id },
       });
       await tx.productionOrder.update({
         where: { id: order.id },
@@ -458,7 +465,7 @@ export class ProductionSubTicketsService {
         throw new BadRequestException('Ghi lý do lỗi');
       }
 
-      const available = subTicketAvailable(ticket, entries);
+      const available = subTicketAvailable(ticket, entries, ticket.topUps);
       await tx.productionSubTicket.update({
         where: { id: ticket.id },
         data: {
@@ -663,6 +670,118 @@ export class ProductionSubTicketsService {
         },
       });
       await touch(tx, order.id);
+    });
+  }
+
+  /**
+   * Cấp thêm số lượng / bạc cho phiếu con khi thợ làm giữa chừng phát hiện thiếu.
+   *
+   * Đang có khâu mở thì cộng thẳng vào số giao của khâu đó — nếu không, công thức hao hụt
+   * (giao − nhận lại − thu hồi) sẽ ra số âm. Phiếu đang rảnh thì phần này vào khâu kế tiếp.
+   * Vượt tổng của đơn thì nâng tổng đơn theo, vì đơn thực tế tốn nhiều hơn dự kiến.
+   */
+  async topUp(
+    code: string,
+    no: number,
+    dto: SubTicketTopUpDto,
+    actor: AuthUserPayload,
+  ) {
+    return this.mutate(code, async (tx, order) => {
+      assertOrderActive(order);
+      const ticket = requireSubTicket(order, no);
+      if (ticket.outcome) {
+        throw new BadRequestException(
+          `Phiếu ${ticketCode(order, ticket)} đã chốt ${OUTCOME_LABEL[ticket.outcome]}, không cấp thêm được`,
+        );
+      }
+      const addQty = dto.qty ?? 0;
+      const addSilver = new Prisma.Decimal(dto.silverWeight ?? '0');
+      if (addQty < 0 || addSilver.lt(0)) {
+        throw new BadRequestException('Số cấp thêm không được âm');
+      }
+      if (addQty === 0 && addSilver.isZero()) {
+        throw new BadRequestException('Nhập số lượng hoặc gram bạc cấp thêm');
+      }
+
+      const entries = entriesOf(order, ticket.id);
+      const open = entries.find((entry) => !entry.returnedAt);
+      const changedBy = actorName(actor);
+
+      // Phiếu con giữ tổng đã cấp; số đang có trong tay tính ở subTicketAvailable.
+      await tx.productionSubTicket.update({
+        where: { id: ticket.id },
+        data: {
+          qty: ticket.qty + addQty,
+          silverWeight: ticket.silverWeight.add(addSilver),
+        },
+      });
+      if (open) {
+        await tx.productionStageEntry.update({
+          where: { id: open.id },
+          data: {
+            handedQty: (open.handedQty ?? 0) + addQty,
+            handedSilverWeight: (
+              open.handedSilverWeight ?? new Prisma.Decimal(0)
+            ).add(addSilver),
+          },
+        });
+      }
+      await tx.productionSubTicketTopUp.create({
+        data: {
+          subTicketId: ticket.id,
+          stageEntryId: open?.id ?? null,
+          qty: addQty,
+          silverWeight: addSilver,
+          reason: dto.reason?.trim() || null,
+          createdByUserId: actor.id,
+          createdByName: changedBy,
+        },
+      });
+
+      await this.raiseOrderTotals(tx, order, addQty, addSilver, changedBy, ticket);
+    });
+  }
+
+  /** Tổng phiếu con vượt tổng đơn thì nâng tổng đơn lên vừa đủ và ghi vào lịch sử trạng thái. */
+  private async raiseOrderTotals(
+    tx: Prisma.TransactionClient,
+    order: OrderDetail,
+    addQty: number,
+    addSilver: Prisma.Decimal,
+    changedBy: string,
+    ticket: SubTicket,
+  ) {
+    const totalQty =
+      order.subTickets.reduce((sum, item) => sum + item.qty, 0) + addQty;
+    const totalSilver = order.subTickets
+      .reduce((sum, item) => sum.add(item.silverWeight), new Prisma.Decimal(0))
+      .add(addSilver);
+
+    const nextQty = Math.max(order.qty, totalQty);
+    const nextSilver =
+      order.silverWeight == null || order.silverWeight.lt(totalSilver)
+        ? totalSilver
+        : order.silverWeight;
+    const raised =
+      nextQty !== order.qty || !nextSilver.equals(order.silverWeight ?? nextSilver);
+
+    await tx.productionOrder.update({
+      where: { id: order.id },
+      data: {
+        qty: nextQty,
+        silverWeight: nextSilver,
+        dataChangedAt: new Date(),
+        statusLogs: raised
+          ? {
+              create: {
+                fromStatus: order.status,
+                toStatus: order.status,
+                note: `Cấp thêm cho phiếu ${ticketCode(order, ticket)} vượt dự kiến — đơn nâng lên ${nextQty} sp · ${decStr(nextSilver)} g bạc`,
+                changedBy,
+              },
+            }
+          : undefined,
+      },
     });
   }
 
@@ -908,7 +1027,7 @@ function baseItem(row: MyTicketRow) {
 
 function pendingItem(row: MyTicketRow) {
   const { state } = subTicketState(row, row.stages);
-  const available = subTicketAvailable(row, row.stages);
+  const available = subTicketAvailable(row, row.stages, row.topUps);
   return {
     ...baseItem(row),
     state,

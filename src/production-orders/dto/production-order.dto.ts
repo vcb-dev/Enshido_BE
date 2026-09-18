@@ -416,3 +416,23 @@ export class SubTicketOutcomeDto {
   @MaxLength(1000)
   note?: string;
 }
+
+/** Cấp thêm SL / gram bạc cho phiếu con khi thợ làm giữa chừng phát hiện thiếu. */
+export class SubTicketTopUpDto {
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  qty?: number | null;
+
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Matches(DECIMAL, { message: 'Gram bạc cấp thêm không hợp lệ' })
+  silverWeight?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
+}
