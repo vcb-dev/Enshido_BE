@@ -6,6 +6,7 @@ import {
   IsEnum,
   IsIn,
   IsInt,
+  IsNotEmpty,
   IsOptional,
   IsString,
   IsUrl,
@@ -110,6 +111,19 @@ export class UpsertProductionOrderDto {
   @IsUUID()
   btpMaterialId?: string | null;
 
+  /** Dòng kho NVL — bắt buộc với Đơn mới. */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @IsUUID()
+  nvlMaterialId?: string | null;
+
+  /** Mã thành phẩm trong kho thành phẩm — bắt buộc với Đơn mới. */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @IsString()
+  @MaxLength(20)
+  finishedProductCode?: string | null;
+
   @IsEnum(ProductionRequestType)
   requestType!: ProductionRequestType;
 
@@ -120,14 +134,29 @@ export class UpsertProductionOrderDto {
   @MaxLength(120)
   closedBy!: string;
 
+  @IsOptional()
   @IsString()
   @MaxLength(5000)
-  description!: string;
+  description?: string;
 
   @Type(() => Number)
   @IsInt()
   @Min(1)
   qty!: number;
+
+  /** Đơn vị số lượng cần làm — chiếc hoặc đôi. */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @IsIn(['chiếc', 'đôi'])
+  qtyUnit?: string | null;
+
+  /** Số lượng thành phẩm cần lên đơn. */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  finishedProductQty?: number | null;
 
   @IsOptional()
   @IsString()
@@ -139,15 +168,15 @@ export class UpsertProductionOrderDto {
   @IsUrl({ require_protocol: true })
   model3dUrl?: string | null;
 
-  @IsOptional()
   @IsString()
+  @IsNotEmpty()
   @MaxLength(60)
-  leadTime?: string;
+  leadTime!: string;
 
-  @IsOptional()
   @IsString()
+  @IsNotEmpty()
   @MaxLength(60)
-  trackingCode?: string;
+  trackingCode!: string;
 
   @IsOptional()
   @IsString()
@@ -160,10 +189,8 @@ export class UpsertProductionOrderDto {
   @IsString({ each: true })
   stoneTypes?: string[];
 
-  @IsOptional()
-  @Transform(emptyToNull)
   @IsDateString()
-  dueDate?: string | null;
+  dueDate!: string;
 
   @IsOptional()
   @IsString()
@@ -206,6 +233,18 @@ export class UpsertProductionOrderDto {
   @IsString()
   @MaxLength(120)
   platingColor?: string;
+
+  /** Danh mục BTP. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  btpCategory?: string;
+
+  /** Phân loại sản phẩm (kho BTP). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  productKind?: string;
 
   @IsOptional()
   @Transform(emptyToNull)

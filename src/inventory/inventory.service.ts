@@ -22,6 +22,7 @@ const USERS_TTL_MS = 60_000;
 const WAREHOUSES_TTL_MS = 2 * 60_000;
 const STOCK_TTL_MS = 60_000;
 const BTP_WAREHOUSE_CODE = 'btp-cho-vao-da';
+const NVL_WAREHOUSE_CODE = 'nvl-chinh';
 
 const warehouseSelect = {
   id: true,
@@ -282,6 +283,7 @@ export class InventoryService {
   }
 
   async listStock(code: string, includeLayers = false) {
+    assertNvlWarehouse(code);
     const key = includeLayers ? `stock:${code}:layers` : `stock:${code}`;
     return this.cached(key, STOCK_TTL_MS, () => this.loadStock(code, includeLayers));
   }
@@ -355,6 +357,7 @@ export class InventoryService {
   }
 
   async createStock(code: string, dto: CreateStockDto) {
+    assertNvlWarehouse(code);
     const warehouse = await this.prisma.warehouse.findUnique({
       where: { code },
       select: { id: true, code: true },
@@ -473,6 +476,7 @@ export class InventoryService {
   }
 
   async updateStock(code: string, materialId: string, dto: UpdateStockDto) {
+    assertNvlWarehouse(code);
     const warehouse = await this.prisma.warehouse.findUnique({
       where: { code },
       select: { id: true },
@@ -638,6 +642,7 @@ export class InventoryService {
   }
 
   async listInbounds(code: string) {
+    assertNvlWarehouse(code);
     return this.cached(`inbounds:${code}`, STOCK_TTL_MS, () => this.loadInbounds(code));
   }
 
@@ -671,6 +676,7 @@ export class InventoryService {
   }
 
   async createInbound(code: string, dto: CreateInboundDto, actor: AuthUserPayload) {
+    assertNvlWarehouse(code);
     const warehouse = await this.prisma.warehouse.findUnique({
       where: { code },
       select: { id: true, code: true },
@@ -769,6 +775,7 @@ export class InventoryService {
   }
 
   async updateInbound(code: string, inboundId: string, dto: CreateInboundDto) {
+    assertNvlWarehouse(code);
     const warehouse = await this.prisma.warehouse.findUnique({
       where: { code },
       select: { id: true, code: true },
@@ -877,6 +884,7 @@ export class InventoryService {
   }
 
   async deleteInbound(code: string, inboundId: string) {
+    assertNvlWarehouse(code);
     const warehouse = await this.prisma.warehouse.findUnique({
       where: { code },
       select: { id: true },
@@ -942,6 +950,7 @@ export class InventoryService {
   }
 
   async listOutbounds(code: string) {
+    assertNvlWarehouse(code);
     return this.cached(`outbounds:${code}`, STOCK_TTL_MS, () => this.loadOutbounds(code));
   }
 
@@ -977,6 +986,7 @@ export class InventoryService {
   }
 
   async createOutbound(code: string, dto: CreateOutboundDto, actor: AuthUserPayload) {
+    assertNvlWarehouse(code);
     const warehouse = await this.prisma.warehouse.findUnique({
       where: { code },
       select: { id: true, code: true, shortName: true },
@@ -1065,6 +1075,7 @@ export class InventoryService {
   }
 
   async updateOutbound(code: string, outboundId: string, dto: CreateOutboundDto) {
+    assertNvlWarehouse(code);
     const warehouse = await this.prisma.warehouse.findUnique({
       where: { code },
       select: { id: true, code: true },
@@ -1204,6 +1215,7 @@ export class InventoryService {
   }
 
   async deleteOutbound(code: string, outboundId: string) {
+    assertNvlWarehouse(code);
     const warehouse = await this.prisma.warehouse.findUnique({
       where: { code },
       select: { id: true },
@@ -1804,60 +1816,66 @@ export class InventoryService {
   }
 
   /**
-   * Lên đơn BTP: xuất FIFO đúng số lượng đơn khỏi kho BTP, gắn mã đơn, đánh dấu tự tạo.
+   * Lên đơn: xuất FIFO khỏi kho (BTP hoặc NVL), gắn mã đơn, đánh dấu tự tạo.
    * Chạy trong transaction của đơn — thiếu tồn thì cả đơn không được tạo.
    */
-  async issueBtpForOrder(
+  async issueStockForOrder(
     tx: Prisma.TransactionClient,
     params: {
       orderId: string;
       orderCode: string;
-      materialId: string;
+      material: {
+        id: string;
+        name: string;
+        sku: string | null;
+        warehouseId: string;
+        unit: { id: string; name: string };
+      };
       qty: number;
       issuedAt: Date;
       issuedBy: string;
     },
   ) {
-    const material = await tx.material.findFirst({
-      where: {
-        id: params.materialId,
-        isActive: true,
-        warehouse: { code: BTP_WAREHOUSE_CODE },
-      },
-      select: {
-        id: true,
-        name: true,
-        sku: true,
-        warehouseId: true,
-        unit: { select: { id: true, name: true } },
-      },
-    });
-    if (!material) throw new BadRequestException('Không tìm thấy mã BTP trong kho BTP');
+    const material = params.material;
     const qty = new Prisma.Decimal(params.qty);
-    const available = await this.availableOnHand(tx, material.warehouseId, material.id);
-    if (qty.gt(available)) {
-      throw new BadRequestException(
-        `BTP ${material.sku ?? material.name} không đủ tồn (còn ${decStr(available)}, đơn cần ${params.qty})`,
-      );
+    if (qty.lte(0)) {
+      throw new BadRequestException('Số lượng xuất phải lớn hơn 0');
     }
-    await this.applyFifoOutbound(tx, {
-      warehouseId: material.warehouseId,
-      material: { id: material.id, name: material.name, sku: material.sku },
-      unit: material.unit,
-      unitName: material.unit.name,
-      issuedAt: params.issuedAt,
-      qty,
-      note: `Xuất cho đơn ${params.orderCode}`,
-      issuedBy: params.issuedBy,
-      receivedBy: null,
-      receivedByUserId: null,
-      applyToStock: true,
-      productionOrderId: params.orderId,
-      autoIssued: true,
-    });
+    try {
+      await this.applyFifoOutbound(tx, {
+        warehouseId: material.warehouseId,
+        material: { id: material.id, name: material.name, sku: material.sku },
+        unit: material.unit,
+        unitName: material.unit.name,
+        issuedAt: params.issuedAt,
+        qty,
+        note: `Xuất cho đơn ${params.orderCode}`,
+        issuedBy: params.issuedBy,
+        receivedBy: null,
+        receivedByUserId: null,
+        applyToStock: true,
+        productionOrderId: params.orderId,
+        autoIssued: true,
+      });
+    } catch (error) {
+      if (isLockTimeout(error)) {
+        throw new BadRequestException(
+          'Kho đang xử lý phiếu khác cho mã này, thử lại sau vài giây',
+        );
+      }
+      throw error;
+    }
   }
 
-  /** Hoàn lại kho BTP phiếu xuất do đơn tự tạo (xoá đơn, đổi mã BTP / số lượng). */
+  /** @deprecated dùng issueStockForOrder — giữ tên cũ cho chỗ gọi Đơn BTP. */
+  async issueBtpForOrder(
+    tx: Prisma.TransactionClient,
+    params: Parameters<InventoryService['issueStockForOrder']>[1],
+  ) {
+    await this.issueStockForOrder(tx, params);
+  }
+
+  /** Hoàn lại kho phiếu xuất do đơn tự tạo (xoá đơn, đổi mã / số lượng). */
   async revokeBtpForOrder(tx: Prisma.TransactionClient, orderId: string) {
     const rows = await tx.stockOutbound.findMany({
       where: { productionOrderId: orderId, autoIssued: true },
@@ -1871,6 +1889,10 @@ export class InventoryService {
 
   bustBtpStock() {
     this.bustWarehouseCaches(BTP_WAREHOUSE_CODE);
+  }
+
+  bustNvlStock() {
+    this.bustWarehouseCaches(NVL_WAREHOUSE_CODE);
   }
 
   /** Ảnh mới phải nằm trong thư mục Cloudinary của hệ thống. */
@@ -2144,6 +2166,11 @@ export class InventoryService {
     if (code === sourceCode) {
       throw new BadRequestException('Kho nhận phải khác kho đang xuất');
     }
+    if (code === 'thanh-pham') {
+      throw new BadRequestException(
+        'Kho thành phẩm không nhận chuyển kho NVL. Dùng phiếu xuất khách.',
+      );
+    }
     const dest = await this.prisma.warehouse.findUnique({
       where: { code },
       select: { id: true, code: true, shortName: true, isActive: true },
@@ -2323,16 +2350,19 @@ export class InventoryService {
       autoIssued?: boolean;
     },
   ) {
-    const quote = await this.quoteFifo(tx, params.warehouseId, params.material.id, params.qty);
-    const last = await tx.stockOutbound.aggregate({
-      where: { warehouseId: params.warehouseId },
-      _max: { sortOrder: true },
-    });
+    const [quote, last] = await Promise.all([
+      this.quoteFifo(tx, params.warehouseId, params.material.id, params.qty),
+      tx.stockOutbound.findFirst({
+        where: { warehouseId: params.warehouseId },
+        orderBy: { sortOrder: 'desc' },
+        select: { sortOrder: true },
+      }),
+    ]);
     const row = await tx.stockOutbound.create({
       data: {
         warehouseId: params.warehouseId,
         materialId: params.material.id,
-        sortOrder: (last._max.sortOrder ?? 0) + 1,
+        sortOrder: (last?.sortOrder ?? 0) + 1,
         issuedAt: params.issuedAt,
         name: params.material.name,
         sku: params.material.sku,
@@ -2363,6 +2393,15 @@ export class InventoryService {
     exceptOutboundId?: string,
   ) {
     const layers = await this.listPriceLayers(tx, warehouseId, materialId, exceptOutboundId);
+    const available = layers.reduce(
+      (sum, layer) => sum.add(layer.remaining),
+      new Prisma.Decimal(0),
+    );
+    if (qty.gt(available)) {
+      throw new BadRequestException(
+        `Không đủ tồn để xuất (sẵn có ${decStr(available)}, xuất ${decStr(qty)})`,
+      );
+    }
     return takeFifo(layers, qty);
   }
 
@@ -2465,25 +2504,27 @@ export class InventoryService {
     materialId: string,
     exceptOutboundId?: string,
   ) {
-    const balance = await tx.stockBalance.findUnique({
-      where: { materialId },
-      select: { openingQty: true, openingAmount: true, stockUnitPrice: true },
-    });
-    const inbounds = await tx.stockInbound.findMany({
-      where: { warehouseId, materialId, applyToStock: true, qty: { gt: 0 } },
-      orderBy: [{ receivedAt: 'asc' }, { sortOrder: 'asc' }],
-      select: { qty: true, unitPrice: true },
-    });
-    const outbound = await tx.stockOutbound.aggregate({
-      where: {
-        warehouseId,
-        materialId,
-        applyToStock: true,
-        qty: { gt: 0 },
-        ...(exceptOutboundId ? { NOT: { id: exceptOutboundId } } : {}),
-      },
-      _sum: { qty: true },
-    });
+    const [balance, inbounds, outbound] = await Promise.all([
+      tx.stockBalance.findUnique({
+        where: { materialId },
+        select: { openingQty: true, openingAmount: true, stockUnitPrice: true },
+      }),
+      tx.stockInbound.findMany({
+        where: { warehouseId, materialId, applyToStock: true, qty: { gt: 0 } },
+        orderBy: [{ receivedAt: 'asc' }, { sortOrder: 'asc' }],
+        select: { qty: true, unitPrice: true },
+      }),
+      tx.stockOutbound.aggregate({
+        where: {
+          warehouseId,
+          materialId,
+          applyToStock: true,
+          qty: { gt: 0 },
+          ...(exceptOutboundId ? { NOT: { id: exceptOutboundId } } : {}),
+        },
+        _sum: { qty: true },
+      }),
+    ]);
     return consumeLayers(
       buildPriceLayers(balance, inbounds),
       outbound._sum.qty ?? new Prisma.Decimal(0),
@@ -2504,13 +2545,27 @@ export class InventoryService {
   }
 }
 
+function isLockTimeout(error: unknown) {
+  const msg =
+    error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  return msg.includes('lock timeout') || msg.includes('55P03');
+}
+
+function assertNvlWarehouse(code: string) {
+  if (code === 'thanh-pham') {
+    throw new BadRequestException(
+      'Kho thành phẩm không dùng tồn / nhập / xuất NVL. Dùng phiếu KCS và phiếu xuất khách.',
+    );
+  }
+}
+
 function assertNotAutoIssued(outbound: {
   autoIssued: boolean;
   productionOrder: { code: string } | null;
 }) {
   if (!outbound.autoIssued) return;
   throw new BadRequestException(
-    `Phiếu xuất do lên đơn BTP ${outbound.productionOrder?.code} tự tạo — sửa mã BTP / số lượng trên đơn`,
+    `Phiếu xuất do lên đơn ${outbound.productionOrder?.code} tự tạo — sửa mã / số lượng trên đơn`,
   );
 }
 

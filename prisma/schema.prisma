@@ -222,7 +222,8 @@ model Material {
   inbounds     StockInbound[]
   outbounds    StockOutbound[]
   images       MaterialImage[]
-  btpOrders    ProductionOrder[]
+  btpOrders    ProductionOrder[] @relation("OrderBtpMaterial")
+  nvlOrders    ProductionOrder[] @relation("OrderNvlMaterial")
 
   @@unique([warehouseId, sku])
   @@unique([sku], map: "materials_sku_key")
@@ -460,8 +461,16 @@ model ProductionOrder {
   source              ProductionSource      @default(NVL)
   /// Mã BTP lấy ra làm đơn (đơn BTP). Phiếu xuất BTP tự tạo gắn mã đơn, `autoIssued = true`.
   btpMaterialId       String?               @map("btp_material_id") @db.Uuid
+  /// Mã NVL lấy ra làm Đơn mới. Phiếu xuất NVL tự tạo gắn mã đơn, `autoIssued = true`.
+  nvlMaterialId       String?               @map("nvl_material_id") @db.Uuid
+  /// Mã thành phẩm lấy từ kho thành phẩm khi lên Đơn mới.
+  sourceOrderCode     String?               @map("source_order_code")
   requestType         ProductionRequestType @map("request_type")
   qty                 Int                   @default(1)
+  /// Đơn vị số lượng cần làm: chiếc | đôi.
+  qtyUnit             String?               @map("qty_unit")
+  /// Số lượng thành phẩm cần lên đơn (form Đơn mới).
+  finishedProductQty  Int?                  @map("finished_product_qty")
   /// Cột "Đã trả" trên Lark.
   returnedQty         Int                   @default(0) @map("returned_qty")
   model3dCode         String?               @map("model_3d_code")
@@ -482,6 +491,10 @@ model ProductionOrder {
   otherRequirements   String?               @map("other_requirements")
   mainMaterial        String?               @map("main_material")
   platingColor        String?               @map("plating_color")
+  /// Danh mục BTP (form Đơn BTP).
+  btpCategory         String?               @map("btp_category")
+  /// Phân loại sản phẩm kho BTP.
+  productKind         String?               @map("product_kind")
   askedUserId         String?               @map("asked_user_id") @db.Uuid
   askedUserName       String?               @map("asked_user_name")
   /// Ngày đặt đơn trên phiếu.
@@ -500,7 +513,8 @@ model ProductionOrder {
   updatedAt           DateTime              @updatedAt @map("updated_at")
 
   parent        ProductionOrder?       @relation("ProductionOrderTree", fields: [parentId], references: [id], onDelete: SetNull)
-  btpMaterial   Material?              @relation(fields: [btpMaterialId], references: [id], onDelete: SetNull)
+  btpMaterial   Material?              @relation("OrderBtpMaterial", fields: [btpMaterialId], references: [id], onDelete: SetNull)
+  nvlMaterial   Material?              @relation("OrderNvlMaterial", fields: [nvlMaterialId], references: [id], onDelete: SetNull)
   children      ProductionOrder[]      @relation("ProductionOrderTree")
   images        ProductionOrderImage[]
   stages        ProductionStageEntry[]
@@ -509,11 +523,13 @@ model ProductionOrder {
   costs         ProductionOrderCost[]
   receipt       FinishedGoodsReceipt?
   shipmentLines ShipmentLine[]
+  autoShipments Shipment[]             @relation("OrderAutoShipment")
 
   @@index([status, createdAt])
   @@index([requestType])
   @@index([parentId])
   @@index([btpMaterialId])
+  @@index([nvlMaterialId])
   @@map("production_orders")
 }
 
@@ -633,10 +649,15 @@ model Shipment {
   dataChangedAt   DateTime  @default(now()) @map("data_changed_at")
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @updatedAt @map("updated_at")
+  /// Phiếu xuất tự tạo khi lên Đơn mới (lấy thành phẩm có sẵn).
+  autoIssued      Boolean   @default(false) @map("auto_issued")
+  createdByOrderId String?  @map("created_by_order_id") @db.Uuid
 
-  lines ShipmentLine[]
+  lines          ShipmentLine[]
+  createdByOrder ProductionOrder? @relation("OrderAutoShipment", fields: [createdByOrderId], references: [id], onDelete: SetNull)
 
   @@index([shippedAt])
+  @@index([createdByOrderId])
   @@map("shipments")
 }
 

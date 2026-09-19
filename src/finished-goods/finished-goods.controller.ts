@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   Query,
@@ -14,6 +15,7 @@ import type { AuthUserPayload } from '../auth/types';
 import {
   ListShipmentsQuery,
   StockQuery,
+  UpsertReceiptDto,
   UpsertShipmentDto,
 } from './dto/shipment.dto';
 import { FinishedGoodsService } from './finished-goods.service';
@@ -25,6 +27,38 @@ export class FinishedGoodsController {
   @Get('stock')
   stock(@Query() query: StockQuery) {
     return this.finishedGoods.stock(query.search);
+  }
+
+  @Get('receipts')
+  receipts(@Query() query: StockQuery) {
+    return this.finishedGoods.receipts(query.search);
+  }
+
+  @Get('order-options')
+  orderOptions(@Query() query: StockQuery) {
+    return this.finishedGoods.orderOptions(query.search);
+  }
+
+  @Post('receipts')
+  createReceipt(
+    @Body() dto: UpsertReceiptDto,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.finishedGoods.createReceipt(dto, user);
+  }
+
+  @Patch('receipts/:id')
+  updateReceipt(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpsertReceiptDto,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.finishedGoods.updateReceipt(id, dto, user);
+  }
+
+  @Delete('receipts/:id')
+  deleteReceipt(@Param('id', ParseUUIDPipe) id: string) {
+    return this.finishedGoods.deleteReceipt(id);
   }
 
   @Get('lookups')

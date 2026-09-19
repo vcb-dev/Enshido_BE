@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   ArrayMinSize,
@@ -87,4 +87,45 @@ export class StockQuery {
   @IsString()
   @MaxLength(200)
   search?: string;
+}
+
+export class UpsertReceiptDto {
+  /** Bỏ trống khi nhập mới trên Tồn — hệ thống tự cấp mã. */
+  @IsOptional()
+  @Transform(({ value }) => (value === '' ? undefined : value))
+  @IsString()
+  @MaxLength(20)
+  orderCode?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  description?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  mainMaterial?: string;
+
+  @IsOptional()
+  @Matches(MONEY, { message: 'Đơn giá tồn không hợp lệ' })
+  stockUnitPrice?: string;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  qty!: number;
+
+  @IsDateString()
+  receivedAt!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  sizeLabel?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  qtyUnit?: string;
 }
