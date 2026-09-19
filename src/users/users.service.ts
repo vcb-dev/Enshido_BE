@@ -11,6 +11,7 @@ import { AuthService, BCRYPT_COST } from '../auth/auth.service';
 import { sanitizeScreens } from '../auth/permissions';
 import { DEFAULT_STAFF_SCREENS } from '../auth/screens';
 import { InventoryService } from '../inventory/inventory.service';
+import { InflightMap, TtlCache } from '../util/ttl-cache';
 
 const userSelect = {
   id: true,
@@ -25,8 +26,13 @@ const userSelect = {
   createdAt: true,
 } as const;
 
+const USERS_TTL_MS = 60_000;
+
 @Injectable()
 export class UsersService {
+  private readonly cache = new TtlCache();
+  private readonly inflight = new InflightMap();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly inventory: InventoryService,
@@ -34,10 +40,26 @@ export class UsersService {
   ) {}
 
   list() {
+    const hit = this.cache.get<Awaited<ReturnType<UsersService['loadUsers']>>>('users');
+    if (hit) return Promise.resolve(hit);
+    return this.inflight.run('users', async () => {
+      const again = this.cache.get<Awaited<ReturnType<UsersService['loadUsers']>>>('users');
+      if (again) return again;
+      const value = await this.loadUsers();
+      this.cache.set('users', value, USERS_TTL_MS);
+      return value;
+    });
+  }
+
+  private loadUsers() {
     return this.prisma.user.findMany({
       orderBy: { createdAt: 'asc' },
       select: userSelect,
     });
+  }
+
+  private bustUsers() {
+    this.cache.delete('users');
   }
 
   async create(dto: CreateUserDto) {
@@ -71,6 +93,7 @@ export class UsersService {
       select: userSelect,
     });
     this.inventory.bustLookups();
+    this.bustUsers();
     return created;
   }
 
@@ -112,6 +135,7 @@ export class UsersService {
       select: userSelect,
     });
     this.inventory.bustLookups();
+    this.bustUsers();
     this.auth.bustSession(id);
     return updated;
   }

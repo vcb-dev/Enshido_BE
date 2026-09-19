@@ -71,6 +71,16 @@ export class ProductionOrdersController {
     return this.orders.btpOptions(query.search);
   }
 
+  @Get('finished-product-options')
+  finishedProductOptions(@Query() query: OrderOptionsQuery) {
+    return this.orders.finishedProductOptions(query.search);
+  }
+
+  @Get('nvl-options')
+  nvlOptions(@Query() query: OrderOptionsQuery) {
+    return this.orders.nvlOptions(query.search);
+  }
+
   /** Màn "Phiếu của tôi" của thợ. */
   @Get('my-tickets')
   @RequirePermissions(Permission.PRODUCTION_WORKER)

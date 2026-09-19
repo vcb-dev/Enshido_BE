@@ -6,6 +6,7 @@ export const Permission = {
   SCREEN_WAREHOUSE_NVL_CHINH: 'screen.warehouse.nvl-chinh',
   SCREEN_WAREHOUSE_BTP: 'screen.warehouse.btp-cho-vao-da',
   SCREEN_WAREHOUSE_TIEU_HAO: 'screen.warehouse.nvl-tieu-hao',
+  SCREEN_WAREHOUSE_THANH_PHAM: 'screen.warehouse.thanh-pham',
   SCREEN_LOCATIONS: 'screen.locations',
   SCREEN_CATALOGS: 'screen.catalogs',
   /** Thợ sản xuất: tự nhận phiếu con ở màn "Phiếu của tôi". */

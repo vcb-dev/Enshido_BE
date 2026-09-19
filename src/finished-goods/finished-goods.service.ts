@@ -3,18 +3,28 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, ProductionImageKind, ProductionStatus } from '@prisma/client';
+import {
+  Prisma,
+  ProductionImageKind,
+  ProductionRequestType,
+  ProductionSource,
+  ProductionStatus,
+} from '@prisma/client';
 import type { AuthUserPayload } from '../auth/types';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProductionCostingService } from '../production-orders/production-costing.service';
-import { decStr } from '../util/money';
+import { orderCode } from '../production-orders/production-orders.service';
+import { availabilityOf, decStr } from '../util/money';
 import {
   ListShipmentsQuery,
   ShipmentLineDto,
+  UpsertReceiptDto,
   UpsertShipmentDto,
 } from './dto/shipment.dto';
 
 const DEFAULT_PAYMENT_METHODS = ['Tiền mặt', 'Chuyển khoản', 'VCB'];
+const OPENING_COST_NAME = 'Giá vốn đầu kỳ';
+const STOCK_TRACKING_PREFIX = 'KHO-';
 
 const CREATE_RETRIES = 3;
 
@@ -53,7 +63,11 @@ export class FinishedGoodsService {
     private readonly costing: ProductionCostingService,
   ) {}
 
-  /** Đơn đang có hàng trong kho thành phẩm: tồn = nhập − đã xuất. */
+  /**
+   * Sổ tồn thành phẩm:
+   * Tồn đầu kỳ = nhập trên tab Tồn; Nhập = phiếu tab Nhập / KCS; Xuất = phiếu khách.
+   * Lên đơn trừ cột Tồn (đầu kỳ + nhập − xuất).
+   */
   async stock(search?: string) {
     const keyword = search?.trim();
     const receipts = await this.prisma.finishedGoodsReceipt.findMany({
@@ -75,7 +89,144 @@ export class FinishedGoodsService {
             code: true,
             description: true,
             requestType: true,
-            status: true,
+            qtyUnit: true,
+            sizeLabel: true,
+            mainMaterial: true,
+            trackingCode: true,
+            images: {
+              where: { kind: ProductionImageKind.PRODUCT },
+              select: { url: true },
+              orderBy: { sortOrder: 'asc' },
+              take: 1,
+            },
+            shipmentLines: { select: { qty: true } },
+          },
+        },
+      },
+    });
+
+    const zero = new Prisma.Decimal(0);
+    const totals = {
+      openingQty: zero,
+      openingAmount: zero,
+      inQty: zero,
+      inAmount: zero,
+      outQty: zero,
+      outAmount: zero,
+      qty: zero,
+      amount: zero,
+    };
+    const items = [];
+    for (const receipt of receipts) {
+      const shippedQty = receipt.order.shipmentLines.reduce(
+        (sum, line) => sum + line.qty,
+        0,
+      );
+      const remainingQty = receipt.qty - shippedQty;
+      const cost = await this.costing.costing(receipt.order.id);
+      const isOpening = (receipt.order.trackingCode ?? '').startsWith(
+        STOCK_TRACKING_PREFIX,
+      );
+      const openingQty = isOpening
+        ? new Prisma.Decimal(receipt.qty)
+        : zero;
+      const inQty = isOpening ? zero : new Prisma.Decimal(receipt.qty);
+      const outQty = new Prisma.Decimal(shippedQty);
+      const qty = new Prisma.Decimal(remainingQty);
+      const openingAmount = cost.unitCostDecimal
+        .mul(openingQty)
+        .toDecimalPlaces(2);
+      const inAmount = cost.unitCostDecimal.mul(inQty).toDecimalPlaces(2);
+      const outAmount = cost.unitCostDecimal.mul(outQty).toDecimalPlaces(2);
+      const amount = cost.unitCostDecimal.mul(qty).toDecimalPlaces(2);
+      const availability = availabilityOf(qty, 1);
+      totals.openingQty = totals.openingQty.add(openingQty);
+      totals.openingAmount = totals.openingAmount.add(openingAmount);
+      totals.inQty = totals.inQty.add(inQty);
+      totals.inAmount = totals.inAmount.add(inAmount);
+      totals.outQty = totals.outQty.add(outQty);
+      totals.outAmount = totals.outAmount.add(outAmount);
+      totals.qty = totals.qty.add(qty);
+      totals.amount = totals.amount.add(amount);
+      items.push({
+        id: receipt.id,
+        orderCode: receipt.order.code,
+        description: receipt.order.description,
+        requestType: receipt.order.requestType,
+        qtyUnit: receipt.order.qtyUnit,
+        sizeLabel: receipt.order.sizeLabel,
+        mainMaterial: receipt.order.mainMaterial,
+        imageUrl: receipt.order.images[0]?.url ?? null,
+        isOpening,
+        openingQty: decStr(openingQty),
+        openingAmount: decStr(openingAmount),
+        inQty: decStr(inQty),
+        inAmount: decStr(inAmount),
+        outQty: decStr(outQty),
+        outAmount: decStr(outAmount),
+        qty: decStr(qty),
+        amount: decStr(amount),
+        receivedQty: receipt.qty,
+        shippedQty,
+        remainingQty,
+        receivedAt: receipt.receivedAt.toISOString(),
+        receivedByName: receipt.receivedByName,
+        unitCost: cost.unitCost,
+        stockValue: decStr(amount),
+        costWarnings: cost.warnings.length,
+        availability: availability.code,
+        availabilityLabel: availability.label,
+      });
+    }
+    return {
+      totals: {
+        openingQty: decStr(totals.openingQty),
+        openingAmount: decStr(totals.openingAmount),
+        inQty: decStr(totals.inQty),
+        inAmount: decStr(totals.inAmount),
+        outQty: decStr(totals.outQty),
+        outAmount: decStr(totals.outAmount),
+        qty: decStr(totals.qty),
+        amount: decStr(totals.amount),
+      },
+      items,
+    };
+  }
+
+  /** Phiếu tab Nhập / KCS — không gồm tồn đầu kỳ tạo trên Tồn. */
+  async receipts(search?: string) {
+    const keyword = search?.trim();
+    const receipts = await this.prisma.finishedGoodsReceipt.findMany({
+      where: {
+        order: {
+          AND: [
+            {
+              OR: [
+                { trackingCode: null },
+                { NOT: { trackingCode: { startsWith: STOCK_TRACKING_PREFIX } } },
+              ],
+            },
+            ...(keyword
+              ? [
+                  {
+                    OR: [
+                      { code: { contains: keyword, mode: 'insensitive' as const } },
+                      { description: { contains: keyword, mode: 'insensitive' as const } },
+                    ],
+                  },
+                ]
+              : []),
+          ],
+        },
+      },
+      orderBy: { receivedAt: 'desc' },
+      include: {
+        order: {
+          select: {
+            id: true,
+            code: true,
+            description: true,
+            qtyUnit: true,
             sizeLabel: true,
             mainMaterial: true,
             images: {
@@ -89,41 +240,291 @@ export class FinishedGoodsService {
         },
       },
     });
-
-    const inStock = receipts
-      .map((receipt) => {
-        const shippedQty = receipt.order.shipmentLines.reduce(
-          (sum, line) => sum + line.qty,
-          0,
-        );
-        return { receipt, shippedQty, remainingQty: receipt.qty - shippedQty };
-      })
-      .filter((item) => item.remainingQty > 0);
-
-    // Tính tuần tự: pool kết nối nhỏ, mỗi đơn cần vài truy vấn chi phí.
     const items = [];
-    for (const { receipt, shippedQty, remainingQty } of inStock) {
+    for (const receipt of receipts) {
+      const shippedQty = receipt.order.shipmentLines.reduce(
+        (sum, line) => sum + line.qty,
+        0,
+      );
       const cost = await this.costing.costing(receipt.order.id);
+      const qty = new Prisma.Decimal(receipt.qty);
+      const amount = cost.unitCostDecimal.mul(qty).toDecimalPlaces(2);
       items.push({
+        id: receipt.id,
         orderCode: receipt.order.code,
         description: receipt.order.description,
-        requestType: receipt.order.requestType,
+        qtyUnit: receipt.order.qtyUnit,
         sizeLabel: receipt.order.sizeLabel,
         mainMaterial: receipt.order.mainMaterial,
         imageUrl: receipt.order.images[0]?.url ?? null,
-        receivedQty: receipt.qty,
+        qty: decStr(qty),
+        unitPrice: cost.unitCost,
+        amount: decStr(amount),
         shippedQty,
-        remainingQty,
-        receivedAt: receipt.receivedAt.toISOString(),
+        remainingQty: receipt.qty - shippedQty,
+        receivedAt: ymd(receipt.receivedAt),
         receivedByName: receipt.receivedByName,
-        unitCost: cost.unitCost,
-        stockValue: decStr(
-          cost.unitCostDecimal.mul(remainingQty).toDecimalPlaces(2),
-        ),
-        costWarnings: cost.warnings.length,
+        note: null,
       });
     }
     return { items };
+  }
+
+  /** Đơn chưa vào kho thành phẩm — chọn khi Nhập thành phẩm. */
+  async orderOptions(search?: string) {
+    const keyword = search?.trim();
+    const rows = await this.prisma.productionOrder.findMany({
+      where: {
+        receipt: { is: null },
+        NOT: { trackingCode: { startsWith: STOCK_TRACKING_PREFIX } },
+        ...(keyword
+          ? {
+              OR: [
+                { code: { contains: keyword, mode: 'insensitive' } },
+                { description: { contains: keyword, mode: 'insensitive' } },
+                { trackingCode: { contains: keyword, mode: 'insensitive' } },
+              ],
+            }
+          : undefined),
+      },
+      orderBy: { seq: 'desc' },
+      take: 200,
+      select: {
+        code: true,
+        description: true,
+        qty: true,
+        qtyUnit: true,
+        sizeLabel: true,
+        mainMaterial: true,
+      },
+    });
+    return { items: rows };
+  }
+
+  async createReceipt(dto: UpsertReceiptDto, actor: AuthUserPayload) {
+    if (!dto.orderCode?.trim()) {
+      return this.createStockEntry(dto, actor);
+    }
+    if (dto.qty < 1) {
+      throw new BadRequestException('Số lượng nhập phải lớn hơn 0');
+    }
+    const order = await this.requireReceiptOrder(dto.orderCode);
+    if (order.receipt) {
+      throw new BadRequestException('Đơn đã có trong kho thành phẩm');
+    }
+    await this.prisma.productionOrder.update({
+      where: { id: order.id },
+      data: {
+        ...(dto.sizeLabel !== undefined ? { sizeLabel: dto.sizeLabel.trim() || null } : {}),
+        ...(dto.qtyUnit !== undefined ? { qtyUnit: dto.qtyUnit.trim() || null } : {}),
+        receipt: {
+          create: {
+            qty: dto.qty,
+            receivedAt: receiptDate(dto.receivedAt),
+            receivedByUserId: actor.id,
+            receivedByName: actorName(actor),
+          },
+        },
+      },
+    });
+    return { success: true };
+  }
+
+  async updateReceipt(id: string, dto: UpsertReceiptDto, actor: AuthUserPayload) {
+    const receipt = await this.prisma.finishedGoodsReceipt.findUnique({
+      where: { id },
+      include: {
+        order: {
+          select: {
+            id: true,
+            code: true,
+            shipmentLines: { select: { qty: true } },
+          },
+        },
+      },
+    });
+    if (!receipt) throw new NotFoundException('Không tìm thấy phiếu nhập');
+    if (
+      dto.orderCode &&
+      receipt.order.code !== dto.orderCode.trim().toUpperCase()
+    ) {
+      throw new BadRequestException('Không đổi mã đơn trên phiếu nhập đã có');
+    }
+    const shippedQty = receipt.order.shipmentLines.reduce(
+      (sum, line) => sum + line.qty,
+      0,
+    );
+    if (dto.qty < shippedQty) {
+      throw new BadRequestException(
+        `Đã xuất ${shippedQty} — số lượng nhập không được nhỏ hơn số đã xuất`,
+      );
+    }
+    const changedBy = actorName(actor);
+    await this.prisma.productionOrder.update({
+      where: { id: receipt.order.id },
+      data: {
+        ...(dto.description !== undefined
+          ? { description: dto.description.trim() }
+          : {}),
+        ...(dto.mainMaterial !== undefined
+          ? { mainMaterial: dto.mainMaterial.trim() || null }
+          : {}),
+        ...(dto.sizeLabel !== undefined ? { sizeLabel: dto.sizeLabel.trim() || null } : {}),
+        ...(dto.qtyUnit !== undefined ? { qtyUnit: dto.qtyUnit.trim() || null } : {}),
+        receipt: {
+          update: {
+            qty: dto.qty,
+            receivedAt: receiptDate(dto.receivedAt),
+            receivedByUserId: actor.id,
+            receivedByName: changedBy,
+          },
+        },
+      },
+    });
+    if (dto.stockUnitPrice != null) {
+      await this.upsertOpeningCost(
+        receipt.order.id,
+        dto.qty,
+        dto.stockUnitPrice,
+        changedBy,
+      );
+    }
+    return { success: true };
+  }
+
+  async deleteReceipt(id: string) {
+    const receipt = await this.prisma.finishedGoodsReceipt.findUnique({
+      where: { id },
+      include: {
+        order: { select: { shipmentLines: { select: { qty: true } } } },
+      },
+    });
+    if (!receipt) throw new NotFoundException('Không tìm thấy phiếu nhập');
+    const shippedQty = receipt.order.shipmentLines.reduce(
+      (sum, line) => sum + line.qty,
+      0,
+    );
+    if (shippedQty > 0) {
+      throw new BadRequestException(
+        `Đã xuất ${shippedQty} — không xóa phiếu nhập được`,
+      );
+    }
+    await this.prisma.finishedGoodsReceipt.delete({ where: { id } });
+    return { success: true };
+  }
+
+  /** Nhập mới trên Tồn — tự tạo mã đơn, không hiện trên danh sách sản xuất. */
+  private async createStockEntry(dto: UpsertReceiptDto, actor: AuthUserPayload) {
+    const description = dto.description?.trim();
+    if (!description) throw new BadRequestException('Nhập tên thành phẩm');
+    const changedBy = actorName(actor);
+    const receivedAt = receiptDate(dto.receivedAt);
+    const unitPrice = dto.stockUnitPrice
+      ? new Prisma.Decimal(dto.stockUnitPrice)
+      : new Prisma.Decimal(0);
+    const costAmount = unitPrice.mul(dto.qty).toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP);
+
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await this.prisma.runTx(async (tx) => {
+          const last = await tx.productionOrder.aggregate({ _max: { seq: true } });
+          const seq = (last._max.seq ?? 0) + 1;
+          const code = orderCode(seq);
+          await tx.productionOrder.create({
+            data: {
+              seq,
+              code,
+              status: ProductionStatus.FINISHING,
+              source: ProductionSource.NVL,
+              requestType: ProductionRequestType.RETAIL,
+              qty: Math.max(dto.qty, 1),
+              qtyUnit: dto.qtyUnit?.trim() || null,
+              description,
+              mainMaterial: dto.mainMaterial?.trim() || null,
+              sizeLabel: dto.sizeLabel?.trim() || null,
+              closedBy: changedBy,
+              createdBy: changedBy,
+              receivedDate: receivedAt,
+              dueDate: receivedAt,
+              leadTime: '—',
+              trackingCode: `${STOCK_TRACKING_PREFIX}${code}`,
+              receipt: {
+                create: {
+                  qty: dto.qty,
+                  receivedAt,
+                  receivedByUserId: actor.id,
+                  receivedByName: changedBy,
+                },
+              },
+              ...(costAmount.gt(0)
+                ? {
+                    costs: {
+                      create: {
+                        name: OPENING_COST_NAME,
+                        amount: costAmount,
+                        createdByName: changedBy,
+                      },
+                    },
+                  }
+                : {}),
+            },
+          });
+        });
+        return { success: true };
+      } catch (error) {
+        if (isUniqueViolation(error) && attempt < CREATE_RETRIES) continue;
+        throw error;
+      }
+    }
+  }
+
+  private async upsertOpeningCost(
+    orderId: string,
+    qty: number,
+    unitPrice: string,
+    changedBy: string,
+  ) {
+    const amount = new Prisma.Decimal(unitPrice)
+      .mul(qty)
+      .toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP);
+    const existing = await this.prisma.productionOrderCost.findFirst({
+      where: { orderId, name: OPENING_COST_NAME },
+      select: { id: true },
+    });
+    if (amount.lte(0)) {
+      if (existing) {
+        await this.prisma.productionOrderCost.delete({ where: { id: existing.id } });
+      }
+      return;
+    }
+    if (existing) {
+      await this.prisma.productionOrderCost.update({
+        where: { id: existing.id },
+        data: { amount, createdByName: changedBy },
+      });
+      return;
+    }
+    await this.prisma.productionOrderCost.create({
+      data: {
+        orderId,
+        name: OPENING_COST_NAME,
+        amount,
+        createdByName: changedBy,
+      },
+    });
+  }
+
+  private async requireReceiptOrder(code: string) {
+    const order = await this.prisma.productionOrder.findUnique({
+      where: { code: code.trim().toUpperCase() },
+      select: {
+        id: true,
+        code: true,
+        receipt: { select: { id: true } },
+      },
+    });
+    if (!order) throw new NotFoundException('Không tìm thấy đơn sản xuất');
+    return order;
   }
 
   async lookups() {
@@ -180,11 +581,22 @@ export class FinishedGoodsService {
         take: pageSize,
         include: {
           lines: {
+            orderBy: { sortOrder: 'asc' },
             select: {
+              id: true,
               qty: true,
+              unitPrice: true,
               amount: true,
               costAmount: true,
-              order: { select: { code: true } },
+              note: true,
+              order: {
+                select: {
+                  code: true,
+                  description: true,
+                  sizeLabel: true,
+                  mainMaterial: true,
+                },
+              },
             },
           },
         },
@@ -200,6 +612,7 @@ export class FinishedGoodsService {
         shippedAt: ymd(row.shippedAt),
         customerName: row.customerName,
         paymentMethod: row.paymentMethod,
+        note: row.note,
         orderCodes: Array.from(
           new Set(row.lines.map((line) => line.order.code)),
         ),
@@ -210,8 +623,20 @@ export class FinishedGoodsService {
         costAmount: decStr(
           row.lines.reduce((sum, line) => sum.add(line.costAmount), zero),
         ),
+        autoIssued: row.autoIssued,
         createdByName: row.createdByName,
         createdAt: row.createdAt.toISOString(),
+        lines: row.lines.map((line) => ({
+          id: line.id,
+          orderCode: line.order.code,
+          description: line.order.description,
+          sizeLabel: line.order.sizeLabel,
+          mainMaterial: line.order.mainMaterial,
+          qty: String(line.qty),
+          unitPrice: decStr(line.unitPrice),
+          amount: decStr(line.amount),
+          note: line.note,
+        })),
       })),
     };
   }
@@ -260,6 +685,11 @@ export class FinishedGoodsService {
 
   async update(code: string, dto: UpsertShipmentDto, actor: AuthUserPayload) {
     const existing = await this.requireShipment(code);
+    if (existing.autoIssued) {
+      throw new BadRequestException(
+        'Phiếu xuất do lên đơn tự tạo — sửa mã / số lượng trên đơn',
+      );
+    }
     const header = shipmentHeader(dto);
     const changedBy = actorName(actor);
 
@@ -290,6 +720,11 @@ export class FinishedGoodsService {
 
   async remove(code: string, actor: AuthUserPayload) {
     const existing = await this.requireShipment(code);
+    if (existing.autoIssued) {
+      throw new BadRequestException(
+        'Phiếu xuất do lên đơn tự tạo — xóa trên đơn',
+      );
+    }
     await this.prisma.$transaction(async (tx) => {
       await tx.shipment.delete({ where: { id: existing.id } });
       await this.syncOrders(
@@ -461,6 +896,7 @@ function toShipment(row: ShipmentDetail) {
     customerName: row.customerName,
     paymentMethod: row.paymentMethod,
     note: row.note,
+    autoIssued: row.autoIssued,
     createdByName: row.createdByName,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -510,6 +946,10 @@ export function shipmentCode(seq: number) {
 
 function ymd(value: Date) {
   return value.toISOString().slice(0, 10);
+}
+
+function receiptDate(value: string) {
+  return new Date(`${value.slice(0, 10)}T00:00:00.000Z`);
 }
 
 function actorName(actor: { fullName: string; username: string }) {

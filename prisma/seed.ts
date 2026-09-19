@@ -34,6 +34,7 @@ async function seedUsers() {
         'screen.warehouse.nvl-chinh',
         'screen.warehouse.btp-cho-vao-da',
         'screen.warehouse.nvl-tieu-hao',
+        'screen.warehouse.thanh-pham',
         'screen.locations',
       ],
     },
@@ -48,6 +49,7 @@ async function seedUsers() {
         'screen.warehouse.nvl-chinh',
         'screen.warehouse.btp-cho-vao-da',
         'screen.warehouse.nvl-tieu-hao',
+        'screen.warehouse.thanh-pham',
       ],
     },
     {
@@ -364,6 +366,24 @@ async function seedWarehouses() {
       shortName: 'Kho BTP',
       description: 'Nhập, xuất và tồn bán thành phẩm. Xuất từ kho khác có thể chuyển sang đây.',
       sortOrder: 2,
+    },
+  });
+
+  await prisma.warehouse.upsert({
+    where: { code: 'thanh-pham' },
+    update: {
+      name: 'Kho thành phẩm',
+      shortName: 'Kho thành phẩm',
+      description: 'Nhập khi KCS nhận lại khâu Ngoại Quan. Xuất hàng cho khách.',
+      sortOrder: 4,
+      isActive: true,
+    },
+    create: {
+      code: 'thanh-pham',
+      name: 'Kho thành phẩm',
+      shortName: 'Kho thành phẩm',
+      description: 'Nhập khi KCS nhận lại khâu Ngoại Quan. Xuất hàng cho khách.',
+      sortOrder: 4,
     },
   });
 }

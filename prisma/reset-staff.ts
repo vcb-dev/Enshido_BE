@@ -37,6 +37,7 @@ async function main() {
         'screen.warehouse.nvl-chinh',
         'screen.warehouse.btp-cho-vao-da',
         'screen.warehouse.nvl-tieu-hao',
+        'screen.warehouse.thanh-pham',
         'screen.locations',
       ],
     },
@@ -51,6 +52,7 @@ async function main() {
         'screen.warehouse.nvl-chinh',
         'screen.warehouse.btp-cho-vao-da',
         'screen.warehouse.nvl-tieu-hao',
+        'screen.warehouse.thanh-pham',
       ],
     },
     {
