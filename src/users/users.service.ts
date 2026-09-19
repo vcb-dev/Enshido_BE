@@ -70,10 +70,13 @@ export class UsersService {
     }
 
     const passwordHash = await bcrypt.hash(dto.password, BCRYPT_COST);
+    // Admin xem hết nên bỏ qua cột này; thợ đã có quyền kèm role, không cần preset văn phòng.
     const allowedScreens =
       dto.roleCode === RoleCode.ADMIN
         ? []
-        : sanitizeScreens(dto.allowedScreens ?? DEFAULT_STAFF_SCREENS);
+        : dto.roleCode === RoleCode.WORKER
+          ? sanitizeScreens(dto.allowedScreens ?? [])
+          : sanitizeScreens(dto.allowedScreens ?? DEFAULT_STAFF_SCREENS);
 
     const created = await this.prisma.user.create({
       data: {

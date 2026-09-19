@@ -3,7 +3,7 @@ import { MetalKind, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { decStr } from '../util/money';
 import { recoveredOf, silverLossOf } from './stage-math';
-import { STAGE_LABEL } from './production-orders.service';
+import { STAGE_LABEL, subTicketCode } from './order-detail';
 
 type Db = Prisma.TransactionClient | PrismaService;
 
@@ -44,11 +44,13 @@ export class ProductionCostingService {
       db.productionOrder.findUnique({
         where: { id: orderId },
         select: {
+          code: true,
           qty: true,
           stages: {
             orderBy: { createdAt: 'asc' },
             select: {
               id: true,
+              subTicket: { select: { no: true } },
               stage: true,
               attempt: true,
               craftsmanName: true,
@@ -138,6 +140,9 @@ export class ProductionCostingService {
         stage: entry.stage,
         stageLabel: STAGE_LABEL[entry.stage],
         attempt: entry.attempt,
+        ticketCode: entry.subTicket
+          ? subTicketCode(order.code, entry.subTicket.no)
+          : null,
         craftsmanName: entry.craftsmanName,
         amount: entry.laborCost as Prisma.Decimal,
       }));

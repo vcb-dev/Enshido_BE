@@ -12,7 +12,7 @@ async function main() {
   `);
 
   const passwordHash = await bcrypt.hash(DEMO_PASSWORD, BCRYPT_COST);
-  const keepUsernames = ['admin', 'phuong-mai', 'hai-yen'];
+  const keepUsernames = ['admin', 'phuong-mai', 'hai-yen', 'thuy-linh'];
   await prisma.user.deleteMany({
     where: { username: { notIn: keepUsernames } },
   });
@@ -54,6 +54,15 @@ async function main() {
         'screen.warehouse.nvl-tieu-hao',
         'screen.warehouse.thanh-pham',
       ],
+    },
+    {
+      username: 'thuy-linh',
+      fullName: 'Thuỳ Linh',
+      roleCode: RoleCode.WORKER,
+      extraRoles: [] as RoleCode[],
+      department: 'Xưởng sản xuất',
+      // Role Thợ đã kèm quyền nhận phiếu con nên không tick màn hình nào.
+      allowedScreens: [] as string[],
     },
   ];
 

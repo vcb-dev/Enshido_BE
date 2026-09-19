@@ -214,6 +214,12 @@ export class UpsertProductionOrderDto {
   @Matches(DECIMAL, { message: 'Trọng lượng đá không hợp lệ' })
   stoneWeight?: string | null;
 
+  /** Tổng TL bạc của đơn (g) — mốc chia gram cho phiếu con. */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Matches(DECIMAL, { message: 'Tổng TL bạc không hợp lệ' })
+  silverWeight?: string | null;
+
   @IsOptional()
   @IsString()
   @MaxLength(500)
@@ -278,6 +284,19 @@ export class ChangeStatusDto {
   note?: string;
 }
 
+/** Chốt hàng đạt: đơn sang Hoàn thiện và vào kho thành phẩm. */
+export class FinishOrderDto {
+  @IsOptional()
+  @Transform(emptyToNull)
+  @IsDateString()
+  finishedAt?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  note?: string;
+}
+
 /** Báo Đúc / Đúc về. */
 export class CastingDto {
   @IsDateString()
@@ -287,21 +306,26 @@ export class CastingDto {
   @Transform(emptyToNull)
   @IsDateString()
   returnedDate?: string | null;
+
+  /** Tổng TL bạc (g) cân lúc Đúc về; bỏ trống thì giữ giá trị cũ. */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Matches(DECIMAL, { message: 'Tổng TL bạc không hợp lệ' })
+  silverWeight?: string | null;
 }
 
-/** Giao khâu cho thợ — người giao là tài khoản đăng nhập. */
-export class HandoverStageDto {
-  @Transform(emptyToNull)
-  @IsUUID()
-  craftsmanUserId!: string;
-
+/** Thông tin một lần giao khâu — người giao là tài khoản đăng nhập. */
+export class HandoverInfoDto {
   @IsDateString()
   handedAt!: string;
 
+  /** Số lượng giao cho thợ; bỏ trống thì hiểu là giao cả đơn. */
   @IsOptional()
   @Transform(emptyToNull)
-  @Matches(DECIMAL, { message: 'Trọng lượng giao (tổng) không hợp lệ' })
-  handedTotalWeight?: string | null;
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  handedQty?: number | null;
 
   @Transform(emptyToNull)
   @Matches(DECIMAL, { message: 'Trọng lượng giao (bạc) không hợp lệ' })
@@ -311,6 +335,13 @@ export class HandoverStageDto {
   @IsString()
   @MaxLength(1000)
   note?: string;
+}
+
+/** Giao khâu cho thợ (đơn chưa chia phiếu con). */
+export class HandoverStageDto extends HandoverInfoDto {
+  @Transform(emptyToNull)
+  @IsUUID()
+  craftsmanUserId!: string;
 }
 
 export class StartStageDto extends HandoverStageDto {
@@ -323,10 +354,13 @@ export class ReturnStageDto {
   @IsDateString()
   returnedAt!: string;
 
+  /** Số lượng nhận lại; bỏ trống thì hiểu là nhận lại đủ số đã giao. */
   @IsOptional()
   @Transform(emptyToNull)
-  @Matches(DECIMAL, { message: 'Trọng lượng nhận lại (tổng) không hợp lệ' })
-  returnedTotalWeight?: string | null;
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  returnedQty?: number | null;
 
   @Transform(emptyToNull)
   @Matches(DECIMAL, { message: 'Trọng lượng nhận lại (bạc) không hợp lệ' })
@@ -353,6 +387,14 @@ export class ReturnStageDto {
   note?: string;
 }
 
+/** Sửa tiền công của một khâu ở phần chi phí (đã nhập lần đầu lúc KCS nhận lại). */
+export class StageLaborDto {
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Matches(MONEY, { message: 'Tiền công không hợp lệ' })
+  laborCost?: string | null;
+}
+
 export class OrderOptionsQuery {
   @IsOptional()
   @IsString()
@@ -373,4 +415,63 @@ export class OrderCostDto {
   @IsString()
   @MaxLength(500)
   note?: string;
+}
+
+/** Phiếu con: phần số lượng + gram bạc chia cho thợ. */
+export class SubTicketDto {
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  qty!: number;
+
+  @Transform(emptyToNull)
+  @Matches(DECIMAL, { message: 'Gram bạc của phiếu con không hợp lệ' })
+  silverWeight!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
+}
+
+/** Mở một khâu cho thợ tự nhận trên các phiếu con. Bỏ trống `nos` = mọi phiếu con đang rảnh. */
+export class OpenSubTicketStageDto {
+  @IsEnum(ProductionStage)
+  stage!: ProductionStage;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(200)
+  @Type(() => Number)
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  nos?: number[];
+}
+
+/** Chốt phiếu con ở nhánh Lỗi (bắt buộc lý do) hoặc Hoàn thiện. */
+export class SubTicketOutcomeDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  note?: string;
+}
+
+/** Cấp thêm SL / gram bạc cho phiếu con khi thợ làm giữa chừng phát hiện thiếu. */
+export class SubTicketTopUpDto {
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  qty?: number | null;
+
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Matches(DECIMAL, { message: 'Gram bạc cấp thêm không hợp lệ' })
+  silverWeight?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
 }
