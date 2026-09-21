@@ -59,6 +59,16 @@ export class ListProductionOrdersQuery {
   search?: string;
 
   @IsOptional()
+  @Transform(emptyToNull)
+  @IsDateString()
+  receivedDate?: string;
+
+  @IsOptional()
+  @Transform(emptyToNull)
+  @IsDateString()
+  dueDate?: string;
+
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)

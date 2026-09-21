@@ -158,6 +158,8 @@ export class ProductionOrdersService {
     };
     if (query.requestType) base.requestType = query.requestType;
     if (query.source) base.source = query.source;
+    if (query.receivedDate) base.receivedDate = dateOnly(query.receivedDate);
+    if (query.dueDate) base.dueDate = dateOnly(query.dueDate);
     const search = query.search?.trim();
     if (search) {
       const contains = { contains: search, mode: 'insensitive' as const };
