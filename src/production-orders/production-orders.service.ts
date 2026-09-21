@@ -6,7 +6,6 @@ import {
 } from '@nestjs/common';
 import {
   Prisma,
-  ProductionImageKind,
   ProductionSource,
   ProductionStatus,
   RoleCode,
@@ -388,7 +387,6 @@ export class ProductionOrdersService {
         images: {
           select: { url: true, publicId: true, width: true, height: true },
           orderBy: { sortOrder: 'asc' },
-          take: 1,
         },
       },
     });
@@ -442,8 +440,9 @@ export class ProductionOrdersService {
             stoneWeight: true,
             laserEngraving: true,
             otherRequirements: true,
+            // Trả đủ ảnh mọi loại: form lên đơn chép cả bộ ảnh sản phẩm (không có thì lấy ảnh
+            // loại khác) sang đơn mới, không chỉ lấy ảnh đại diện.
             images: {
-              where: { kind: ProductionImageKind.PRODUCT },
               select: {
                 kind: true,
                 url: true,
@@ -452,7 +451,6 @@ export class ProductionOrdersService {
                 height: true,
               },
               orderBy: { sortOrder: 'asc' },
-              take: 1,
             },
             shipmentLines: { select: { qty: true } },
           },
@@ -524,7 +522,6 @@ export class ProductionOrdersService {
         images: {
           select: { url: true, publicId: true, width: true, height: true },
           orderBy: { sortOrder: 'asc' },
-          take: 1,
         },
       },
     });
