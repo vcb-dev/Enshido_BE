@@ -117,9 +117,12 @@ export function entriesOf(
   return order.stages.filter((entry) => entry.subTicketId === ticketId);
 }
 
+/** Các trường của một lần giao khâu mà việc tính trạng thái phiếu con cần tới. */
+type StateEntry = Pick<StageEntry, 'stage' | 'returnedAt' | 'submittedAt'>;
+
 export function subTicketState(
   ticket: Pick<SubTicket, 'pendingStage' | 'claimedByUserId' | 'outcome'>,
-  entries: StageEntry[],
+  entries: readonly StateEntry[],
 ): { state: SubTicketState; activeStage: ProductionStage | null } {
   // Phiếu đã chốt lỗi / hoàn thiện thì không còn khâu nào chạy.
   if (ticket.outcome) return { state: ticket.outcome, activeStage: null };
@@ -137,6 +140,85 @@ export function subTicketState(
     };
   }
   return { state: 'IDLE', activeStage: null };
+}
+
+/**
+ * Phiếu con đang đứng ở khâu nào: khâu đang chạy (chờ thợ nhận, đã nhận, đang làm), hoặc
+ * khâu vừa xong nếu đang rảnh — hàng vẫn còn phải qua các khâu sau. Phiếu chưa làm khâu
+ * nào thì tính theo khâu cuối của cả đơn trước lúc chia. Phiếu đã chốt Lỗi / Hoàn thiện
+ * thì không còn đứng ở khâu nào.
+ */
+export function ticketPosition(
+  ticket: Pick<SubTicket, 'pendingStage' | 'claimedByUserId' | 'outcome'>,
+  entries: readonly StateEntry[],
+  orderLast: ProductionStage | null = null,
+): ProductionStage | null {
+  if (ticket.outcome) return null;
+  const { activeStage } = subTicketState(ticket, entries);
+  return activeStage ?? entries[entries.length - 1]?.stage ?? orderLast;
+}
+
+/**
+ * Tóm tắt một phiếu con cho danh sách đơn: đang ở khâu nào, trạng thái gì, ai đang giữ hàng.
+ * Khâu lấy giống cột Khâu ở bảng phiếu con trong trang đơn — khâu đang chạy, hoặc khâu vừa
+ * xong nếu đang rảnh / đã chốt. Thợ chỉ ghi người đang giữ (đã nhận hoặc đang làm); đang chờ
+ * nhận thì chưa có ai. `entries` phải theo thứ tự giao.
+ */
+export function subTicketSummary(
+  orderCode: string,
+  ticket: Pick<
+    SubTicket,
+    | 'no'
+    | 'qty'
+    | 'silverWeight'
+    | 'note'
+    | 'createdAt'
+    | 'pendingStage'
+    | 'claimedByUserId'
+    | 'claimedByName'
+    | 'outcome'
+  >,
+  entries: readonly (StateEntry & Pick<StageEntry, 'craftsmanName'>)[],
+) {
+  const { state, activeStage } = subTicketState(ticket, entries);
+  const open = entries.find((entry) => !entry.returnedAt);
+  return {
+    code: subTicketCode(orderCode, ticket.no),
+    no: ticket.no,
+    qty: ticket.qty,
+    silverWeight: decStr(ticket.silverWeight),
+    note: ticket.note,
+    createdAt: ticket.createdAt.toISOString(),
+    state,
+    stage: activeStage ?? entries[entries.length - 1]?.stage ?? null,
+    workerName:
+      state === 'CLAIMED'
+        ? ticket.claimedByName
+        : state === 'WORKING' || state === 'SUBMITTED'
+          ? (open?.craftsmanName ?? null)
+          : null,
+  };
+}
+
+/**
+ * Phiếu con được đi lệch khâu nhau, nhưng đơn chỉ có một trạng thái: lấy khâu của phần chậm
+ * nhất. Đơn đứng ở "Nguội" nghĩa là vẫn còn hàng chưa qua Nguội — không báo tiến độ vượt
+ * quá phần hàng thật sự đã tới.
+ */
+export function slowestStage(
+  stages: readonly (ProductionStage | null)[],
+): ProductionStage | null {
+  let slowest: ProductionStage | null = null;
+  for (const stage of stages) {
+    if (
+      stage &&
+      (slowest === null ||
+        STAGE_ORDER.indexOf(stage) < STAGE_ORDER.indexOf(slowest))
+    ) {
+      slowest = stage;
+    }
+  }
+  return slowest;
 }
 
 /**

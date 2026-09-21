@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import {
   Prisma,
+  ProductionStage,
   ProductionStatus,
   RoleCode,
   SubTicketOutcome,
@@ -31,6 +32,7 @@ import {
   openOrderEntry,
   type OrderDetail,
   requireSubTicket,
+  slowestStage,
   STAGE_LABEL,
   STAGE_ORDER,
   STAGE_STATUS,
@@ -39,6 +41,7 @@ import {
   subTicketAvailable,
   subTicketCode,
   subTicketState,
+  ticketPosition,
   toDetail,
 } from './order-detail';
 import { silverLossOf } from './stage-math';
@@ -104,7 +107,7 @@ export class ProductionSubTicketsService {
       const silver = positiveSilver(dto.silverWeight);
       assertWithinTotals(order, dto.qty, silver);
 
-      // Phiếu mới đi cùng khâu các phiếu con khác đang làm.
+      // Phiếu mới đi cùng khâu các phiếu con khác đang làm, nếu chúng đang cùng một khâu.
       const stage = currentStage(order);
       const no = order.subTicketSeq + 1;
       const name = actorName(actor);
@@ -203,19 +206,14 @@ export class ProductionSubTicketsService {
       if (order.subTickets.length === 0) {
         throw new BadRequestException('Đơn chưa chia phiếu con');
       }
+      // Mỗi phiếu con đi khâu của riêng nó: phiếu nào xong trước thì mở khâu sau cho phiếu
+      // đó luôn, không phải đợi các phiếu còn lại. Trạng thái đơn theo phần chậm nhất —
+      // xem slowestStage.
       const rows = order.subTickets.map((ticket) => ({
         ticket,
         entries: entriesOf(order, ticket.id),
         ...subTicketState(ticket, entriesOf(order, ticket.id)),
       }));
-      const other = rows.find(
-        (row) => row.activeStage && row.activeStage !== dto.stage,
-      );
-      if (other?.activeStage) {
-        throw new BadRequestException(
-          `Phiếu ${ticketCode(order, other.ticket)} đang ở khâu ${STAGE_LABEL[other.activeStage]} — xong khâu đó mới mở khâu khác`,
-        );
-      }
       const targets = dto.nos?.length
         ? unique(dto.nos).map((no) => {
             const ticket = requireSubTicket(order, no);
@@ -363,7 +361,10 @@ export class ProductionSubTicketsService {
           `Phiếu ${ticketCode(order, ticket)} chưa có thợ nhận khâu nào để giao`,
         );
       }
-      if (ticket.claimedByUserId === actor.id) {
+      // Cân bạc lúc giao cần hai người: người giao và thợ nhận. Riêng admin được tự xác
+      // nhận cho mình — bản ghi khâu vẫn ghi người giao = thợ nên xem lại vẫn biết lần đó
+      // chỉ có một người cân.
+      if (ticket.claimedByUserId === actor.id && !isAdmin(actor)) {
         throw new ForbiddenException(
           'Thợ không tự xác nhận giao cho mình — nhờ người giao cân bạc và xác nhận',
         );
@@ -394,7 +395,21 @@ export class ProductionSubTicketsService {
 
       const craftsmanName = actorName(craftsman);
       const changedBy = actorName(actor);
-      const nextStatus = STAGE_STATUS[stage];
+      // Phiếu con đi lệch khâu nhau nên không đặt trạng thái đơn theo phiếu vừa giao —
+      // phiếu nhanh giao Vào đá trong khi phiếu khác còn Nguội thì đơn vẫn là Nguội.
+      const orderLast =
+        lastOf(order.stages.filter((entry) => !entry.subTicketId))?.stage ??
+        null;
+      const nextStatus =
+        STAGE_STATUS[
+          slowestStage(
+            order.subTickets.map((other) =>
+              other.id === ticket.id
+                ? stage
+                : ticketPosition(other, entriesOf(order, other.id), orderLast),
+            ),
+          ) ?? stage
+        ];
       await tx.productionSubTicket.update({
         where: { id: ticket.id },
         data: CLEAR_PENDING,
@@ -538,9 +553,17 @@ export class ProductionSubTicketsService {
     order: OrderDetail,
     actor: AuthUserPayload,
   ) {
+    // Đọc lại từ DB: `order` là bản trước khi chốt / gỡ kết cục trong transaction này.
     const tickets = await tx.productionSubTicket.findMany({
       where: { orderId: order.id },
-      select: { qty: true, outcome: true, outcomeQty: true },
+      select: {
+        id: true,
+        qty: true,
+        outcome: true,
+        outcomeQty: true,
+        pendingStage: true,
+        claimedByUserId: true,
+      },
     });
     const finished = tickets.filter(
       (ticket) => ticket.outcome === SubTicketOutcome.FINISH,
@@ -575,9 +598,17 @@ export class ProductionSubTicketsService {
       status = finishedQty > 0 ? S.FINISHING : S.DEFECT;
       note = `${finished.length}/${tickets.length} phiếu con hoàn thiện — ${finishedQty} sp vào kho thành phẩm`;
     } else if (order.status === S.FINISHING || order.status === S.DEFECT) {
-      // Gỡ kết cục một phiếu: đơn quay lại khâu gần nhất đã làm.
-      const last = lastOf(order.stages);
-      status = last ? STAGE_STATUS[last.stage] : S.CASTING;
+      // Gỡ kết cục một phiếu: đơn quay lại khâu của phần chậm nhất còn đang làm — không lấy
+      // khâu mới tạo gần nhất, vì phiếu con đi lệch khâu nhau thì đó là khâu của phiếu nhanh.
+      const orderLast =
+        lastOf(order.stages.filter((entry) => !entry.subTicketId))?.stage ??
+        null;
+      const stage = slowestStage(
+        tickets.map((ticket) =>
+          ticketPosition(ticket, entriesOf(order, ticket.id), orderLast),
+        ),
+      );
+      status = stage ? STAGE_STATUS[stage] : S.CASTING;
       note = 'Gỡ kết cục phiếu con — đơn quay lại sản xuất';
     }
 
@@ -992,13 +1023,18 @@ function assertWithinTotals(
   }
 }
 
-/** Khâu các phiếu con đang chờ nhận / đang làm (mỗi lúc chỉ một khâu). */
+/**
+ * Khâu chung mà các phiếu con đang chờ nhận / đang làm. Phiếu con được đi lệch khâu nhau
+ * nên có thể không có khâu chung — lúc đó trả null, phiếu mới để rảnh cho người lên đơn tự
+ * chọn khâu thay vì đoán theo phiếu nào đó.
+ */
 function currentStage(order: OrderDetail) {
-  for (const ticket of order.subTickets) {
-    const { activeStage } = subTicketState(ticket, entriesOf(order, ticket.id));
-    if (activeStage) return activeStage;
-  }
-  return null;
+  const active = new Set(
+    order.subTickets
+      .map((ticket) => subTicketState(ticket, entriesOf(order, ticket.id)).activeStage)
+      .filter((stage): stage is ProductionStage => stage != null),
+  );
+  return active.size === 1 ? [...active][0] : null;
 }
 
 /** Tách mã phiếu con "A012-2" → đơn A012, phiếu số 2. */

@@ -47,6 +47,7 @@ import {
   STATUS_LABEL,
   subTicketCode,
   subTicketState,
+  subTicketSummary,
   toDetail,
   ymd,
 } from './order-detail';
@@ -128,6 +129,34 @@ export class ProductionOrdersService {
         take: pageSize,
         include: {
           btpMaterial: { select: { sku: true } },
+          // Phiếu con kèm các khâu của chúng — vừa đủ để tính trạng thái từng phiếu cho cột
+          // "Phiếu con" ở danh sách, không kéo cả chi tiết đơn.
+          subTickets: {
+            orderBy: { no: 'asc' },
+            select: {
+              id: true,
+              no: true,
+              qty: true,
+              silverWeight: true,
+              note: true,
+              createdAt: true,
+              pendingStage: true,
+              claimedByUserId: true,
+              claimedByName: true,
+              outcome: true,
+            },
+          },
+          stages: {
+            where: { subTicketId: { not: null } },
+            orderBy: { createdAt: 'asc' },
+            select: {
+              subTicketId: true,
+              stage: true,
+              returnedAt: true,
+              submittedAt: true,
+              craftsmanName: true,
+            },
+          },
         },
       }),
       this.prisma.productionOrder.count({ where }),
@@ -182,6 +211,13 @@ export class ProductionOrdersService {
         createdAt: row.createdAt.toISOString(),
         updatedAt: row.updatedAt.toISOString(),
         images: [],
+        subTickets: row.subTickets.map((ticket) =>
+          subTicketSummary(
+            row.code,
+            ticket,
+            row.stages.filter((entry) => entry.subTicketId === ticket.id),
+          ),
+        ),
       })),
     };
   }
@@ -1135,6 +1171,13 @@ export class ProductionOrdersService {
     const entry = requireStage(order, stageId);
     if (entry.returnedAt) {
       throw new BadRequestException('KCS đã nhận lại khâu này');
+    }
+    // Phiếu con: thợ phải báo đã làm xong thì KCS mới nhận lại. Khâu của cả đơn (giao trước
+    // lúc chia phiếu con) không có bước báo xong nên không áp luật này, kẻo kẹt vĩnh viễn.
+    if (entry.subTicketId && !entry.submittedAt) {
+      throw new BadRequestException(
+        'Thợ chưa báo làm xong khâu này — chờ thợ bấm "Đã làm xong" rồi KCS mới nhận lại',
+      );
     }
     const returnedAt = new Date(dto.returnedAt);
     if (returnedAt < entry.handedAt) {
