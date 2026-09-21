@@ -13,6 +13,10 @@ export const Public = () => SetMetadata(IS_PUBLIC_KEY, true);
 export const ROLES_KEY = 'roles';
 export const Roles = (...roles: RoleCode[]) => SetMetadata(ROLES_KEY, roles);
 
+/** Đánh dấu endpoint thuộc màn quản lý đơn — tài khoản chỉ làm thợ không gọi được. */
+export const BLOCK_WORKER_KEY = 'blockWorker';
+export const BlockWorker = () => SetMetadata(BLOCK_WORKER_KEY, true);
+
 export const PERMISSIONS_KEY = 'permissions';
 export const RequirePermissions = (...permissions: PermissionCode[]) =>
   SetMetadata(PERMISSIONS_KEY, permissions);

@@ -8,6 +8,7 @@ import { AuthModule } from './auth/auth.module';
 import { CsrfGuard } from './auth/guards/csrf.guard';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { PermissionsGuard } from './auth/guards/permissions.guard';
+import { WorkerRestrictedGuard } from './auth/guards/worker-restricted.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
 import { PrismaModule } from './prisma/prisma.module';
 import { CookieModule } from './cookie/cookie.module';
@@ -54,6 +55,7 @@ import { FinishedGoodsModule } from './finished-goods/finished-goods.module';
     { provide: APP_GUARD, useClass: CsrfGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
     { provide: APP_GUARD, useClass: PermissionsGuard },
+    { provide: APP_GUARD, useClass: WorkerRestrictedGuard },
   ],
 })
 export class AppModule {}

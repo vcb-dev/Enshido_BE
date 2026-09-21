@@ -12,6 +12,8 @@ datasource db {
 enum RoleCode {
   ADMIN
   USER
+  /// Thợ sản xuất: chỉ làm việc trên phiếu con của mình, không vào màn quản lý đơn.
+  WORKER
 }
 
 model User {
@@ -411,17 +413,19 @@ model BtpWaitingItem {
   @@map("btp_waiting_items")
 }
 
-/// Trạng thái đơn sản xuất (theo view Lark Base). Khắc + Ngoại Quan trên phiếu thuộc FINISHING.
+/// Trạng thái đơn sản xuất, xếp theo luồng: Nguội → Vào đá → Khắc → Bóng → Xi → Lỗi / Hoàn thiện.
 enum ProductionStatus {
   NEW
   REDO_3D
   CASTING
   FILING
   STONE_SETTING
-  POLISH_PLATING
+  ENGRAVING
+  POLISHING
+  PLATING
+  DEFECT
   FINISHING
   DELIVERED
-  DEFECT
 }
 
 /// Yêu cầu làm hàng: Dựng mẫu / Đơn khách lẻ / SX SLL.
@@ -442,13 +446,13 @@ enum ProductionImageKind {
   PRODUCT
 }
 
-/// Cột "Quá trình sản xuất" trên phiếu thợ. Đúc không phải cột — nằm ở đầu phiếu.
+/// Khâu giao thợ trên phiếu. Đúc nằm ở đầu phiếu; Lỗi / Hoàn thiện là kết cục cuối phiếu, không phải khâu.
 enum ProductionStage {
   FILING
   STONE_SETTING
-  POLISH_PLATING
   ENGRAVING
-  APPEARANCE
+  POLISHING
+  PLATING
 }
 
 /// Đơn sản xuất — một dòng trên danh sách đơn, in ra một phiếu cho thợ.
@@ -504,11 +508,17 @@ model ProductionOrder {
   castingSentDate     DateTime?             @map("casting_sent_date") @db.Date
   castingReturnedDate DateTime?             @map("casting_returned_date") @db.Date
   debtStatus          String?               @map("debt_status")
+  /// Tổng trọng lượng bạc của đơn (g) — mốc chia gram bạc cho các phiếu con.
+  silverWeight        Decimal?              @map("silver_weight") @db.Decimal(18, 4)
   parentId            String?               @map("parent_id") @db.Uuid
   lastPrintedAt       DateTime?             @map("last_printed_at")
   /// Lần cuối nội dung in trên phiếu thay đổi. Tách khỏi updatedAt vì đánh dấu "đã in" cũng làm updatedAt đổi.
   dataChangedAt       DateTime              @default(now()) @map("data_changed_at")
   createdBy           String?               @map("created_by")
+  /// Người lên đơn — có quyền chia phiếu con. Đơn tạo trước khi có cột này để trống.
+  createdByUserId     String?               @map("created_by_user_id") @db.Uuid
+  /// Số phiếu con đã cấp (A012-1, A012-2…). Chỉ tăng, số của phiếu đã xoá không cấp lại.
+  subTicketSeq        Int                   @default(0) @map("sub_ticket_seq")
   createdAt           DateTime              @default(now()) @map("created_at")
   updatedAt           DateTime              @updatedAt @map("updated_at")
 
@@ -518,6 +528,7 @@ model ProductionOrder {
   children      ProductionOrder[]      @relation("ProductionOrderTree")
   images        ProductionOrderImage[]
   stages        ProductionStageEntry[]
+  subTickets    ProductionSubTicket[]
   statusLogs    ProductionStatusLog[]
   outbounds     StockOutbound[]
   costs         ProductionOrderCost[]
@@ -555,21 +566,30 @@ model ProductionOrderImage {
 model ProductionStageEntry {
   id                    String          @id @default(uuid()) @db.Uuid
   orderId               String          @map("order_id") @db.Uuid
+  /// Phiếu con của thợ; null = khâu giao cho cả đơn (đơn chưa chia phiếu con).
+  subTicketId           String?         @map("sub_ticket_id") @db.Uuid
   stage                 ProductionStage
+  /// Lần làm của khâu, đếm riêng trong từng phiếu con.
   attempt               Int             @default(1)
   handedByUserId        String?         @map("handed_by_user_id") @db.Uuid
   handedByName          String          @map("handed_by_name")
   handedAt              DateTime        @map("handed_at")
-  /// Trọng lượng giao: tổng (cả đá) và riêng bạc.
-  handedTotalWeight     Decimal?        @map("handed_total_weight") @db.Decimal(18, 4)
+  /// Số lượng sản phẩm giao cho thợ (mặc định cả đơn).
+  handedQty             Int?            @map("handed_qty")
+  /// Trọng lượng bạc giao (hao hụt chỉ tính trên bạc).
   handedSilverWeight    Decimal?        @map("handed_silver_weight") @db.Decimal(18, 4)
   craftsmanUserId       String?         @map("craftsman_user_id") @db.Uuid
   craftsmanName         String          @map("craftsman_name")
+  /// Thợ bấm "Đã làm xong" — tín hiệu cho KCS, không chặn bước nhận lại.
+  submittedAt           DateTime?       @map("submitted_at")
+  submittedByUserId     String?         @map("submitted_by_user_id") @db.Uuid
+  submittedByName       String?         @map("submitted_by_name")
   returnedByUserId      String?         @map("returned_by_user_id") @db.Uuid
   /// Người KCS — nhân viên cân lại bạc khi thợ nộp lại.
   returnedByName        String?         @map("returned_by_name")
   returnedAt            DateTime?       @map("returned_at")
-  returnedTotalWeight   Decimal?        @map("returned_total_weight") @db.Decimal(18, 4)
+  /// Số lượng KCS nhận lại — ít hơn số giao khi có hàng hỏng ở khâu.
+  returnedQty           Int?            @map("returned_qty")
   returnedSilverWeight  Decimal?        @map("returned_silver_weight") @db.Decimal(18, 4)
   btpRecoveredWeight    Decimal?        @map("btp_recovered_weight") @db.Decimal(18, 4)
   silverRecoveredWeight Decimal?        @map("silver_recovered_weight") @db.Decimal(18, 4)
@@ -579,11 +599,88 @@ model ProductionStageEntry {
   createdAt             DateTime        @default(now()) @map("created_at")
   updatedAt             DateTime        @updatedAt @map("updated_at")
 
-  order ProductionOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  order     ProductionOrder      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  subTicket ProductionSubTicket? @relation(fields: [subTicketId], references: [id], onDelete: Restrict)
+  topUps    ProductionSubTicketTopUp[]
 
-  @@unique([orderId, stage, attempt])
+  // Không lặp khâu + lần trong cùng phiếu. Trên DB index này có thêm NULLS NOT DISTINCT
+  // (xem prisma/sql/2026-09-17_sub_tickets.sql) — Prisma 6 chưa khai báo được phần đó.
+  @@unique([orderId, subTicketId, stage, attempt], map: "production_stage_entries_order_ticket_stage_attempt_key")
   @@index([orderId, createdAt])
+  @@index([subTicketId])
   @@map("production_stage_entries")
+}
+
+/// Phiếu con chia từ đơn cho thợ: mỗi phiếu một phần số lượng + gram bạc, đi cùng các khâu
+/// của đơn. Mỗi khâu được mở cho thợ tự nhận, người giao xác nhận giao rồi KCS nhận lại
+/// như phiếu thường. Trạng thái (chờ nhận / đã nhận / đang làm) suy ra khi đọc, không lưu.
+model ProductionSubTicket {
+  id              String           @id @default(uuid()) @db.Uuid
+  orderId         String           @map("order_id") @db.Uuid
+  no              Int
+  qty             Int
+  silverWeight    Decimal          @map("silver_weight") @db.Decimal(18, 4)
+  note            String?
+  /// Khâu đang mở cho thợ nhận; về null khi người giao xác nhận giao hoặc huỷ mở khâu.
+  pendingStage    ProductionStage? @map("pending_stage")
+  pendingAt       DateTime?        @map("pending_at")
+  pendingByName   String?          @map("pending_by_name")
+  /// Thợ đã bấm nhận khâu đang mở, chờ người giao xác nhận.
+  claimedByUserId String?          @map("claimed_by_user_id") @db.Uuid
+  claimedByName   String?          @map("claimed_by_name")
+  claimedAt       DateTime?        @map("claimed_at")
+  /// Kết cục của riêng phiếu con: lỗi hoặc hoàn thiện. Còn null là phiếu vẫn đang chạy.
+  outcome         SubTicketOutcome?
+  outcomeAt       DateTime?        @map("outcome_at")
+  outcomeByUserId String?          @map("outcome_by_user_id") @db.Uuid
+  outcomeByName   String?          @map("outcome_by_name")
+  /// Khâu phiếu đang ở lúc chốt kết cục — cột "Lỗi" trên phiếu ghi khâu nào lỗi.
+  outcomeStage    ProductionStage? @map("outcome_stage")
+  /// Số lượng chốt: hoàn thiện thì đây là số vào kho thành phẩm.
+  outcomeQty      Int?             @map("outcome_qty")
+  outcomeNote     String?          @map("outcome_note")
+  lastPrintedAt   DateTime?        @map("last_printed_at")
+  createdByUserId String?          @map("created_by_user_id") @db.Uuid
+  createdByName   String           @map("created_by_name")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @updatedAt @map("updated_at")
+
+  order  ProductionOrder        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  stages ProductionStageEntry[]
+  topUps ProductionSubTicketTopUp[]
+
+  @@unique([orderId, no])
+  @@index([pendingStage, claimedByUserId])
+  @@index([claimedByUserId])
+  @@map("production_sub_tickets")
+}
+
+/// Cấp thêm số lượng / bạc cho phiếu con khi thợ làm thiếu giữa chừng. Mỗi lần cấp là một
+/// lần giao vật tư thật giữa hai người nên ghi riêng từng dòng, không cộng gộp.
+model ProductionSubTicketTopUp {
+  id              String   @id @default(uuid()) @db.Uuid
+  subTicketId     String   @map("sub_ticket_id") @db.Uuid
+  /// Khâu đã nhận phần cấp thêm này. Null = cấp lúc phiếu đang rảnh, phần này vào khâu sau.
+  stageEntryId    String?  @map("stage_entry_id") @db.Uuid
+  qty             Int      @default(0)
+  silverWeight    Decimal  @default(0) @map("silver_weight") @db.Decimal(18, 4)
+  reason          String?
+  createdByUserId String?  @map("created_by_user_id") @db.Uuid
+  createdByName   String   @map("created_by_name")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  subTicket  ProductionSubTicket   @relation(fields: [subTicketId], references: [id], onDelete: Cascade)
+  stageEntry ProductionStageEntry? @relation(fields: [stageEntryId], references: [id], onDelete: SetNull)
+
+  @@index([subTicketId])
+  @@index([stageEntryId])
+  @@map("production_sub_ticket_top_ups")
+}
+
+/// Phiếu con kết thúc ở một trong hai nhánh, giống hai cột cuối của phiếu thợ.
+enum SubTicketOutcome {
+  DEFECT
+  FINISH
 }
 
 model ProductionStatusLog {
