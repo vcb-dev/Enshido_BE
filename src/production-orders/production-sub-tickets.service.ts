@@ -147,6 +147,13 @@ export class ProductionSubTicketsService {
           `Phiếu ${ticketCode(order, ticket)} đã giao khâu, không đổi số lượng / gram được`,
         );
       }
+      // Số lượng / gram của phiếu đã cộng phần cấp thêm; ghi đè ở đây là xoá sổ phần
+      // vật tư đã giao thật cho thợ, trong khi lịch sử cấp thêm vẫn ghi là có.
+      if (changed && ticket.topUps.length > 0) {
+        throw new BadRequestException(
+          `Phiếu ${ticketCode(order, ticket)} đã được cấp thêm, không đổi số lượng / gram được`,
+        );
+      }
       assertWithinTotals(order, dto.qty, silver, ticket.id);
       await tx.productionSubTicket.update({
         where: { id: ticket.id },
@@ -167,6 +174,13 @@ export class ProductionSubTicketsService {
       if (entriesOf(order, ticket.id).length > 0) {
         throw new BadRequestException(
           `Phiếu ${ticketCode(order, ticket)} đã giao khâu, không xoá được`,
+        );
+      }
+      // Cấp thêm có thể đã nâng tổng của đơn; xoá phiếu đi thì tổng đơn treo lại ở mức
+      // cao mà không còn gì giải thích, sau đó chia được nhiều hơn mức từng dự kiến.
+      if (ticket.topUps.length > 0) {
+        throw new BadRequestException(
+          `Phiếu ${ticketCode(order, ticket)} đã được cấp thêm vật tư, không xoá được`,
         );
       }
       await tx.productionSubTicket.delete({ where: { id: ticket.id } });
