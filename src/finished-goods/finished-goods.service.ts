@@ -15,7 +15,6 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ProductionCostingService } from '../production-orders/production-costing.service';
 import { orderCode } from '../production-orders/production-orders.service';
 import { availabilityOf, decStr } from '../util/money';
-import { InflightMap, TtlCache } from '../util/ttl-cache';
 import {
   ListShipmentsQuery,
   ShipmentLineDto,
@@ -28,7 +27,6 @@ const OPENING_COST_NAME = 'Giá vốn đầu kỳ';
 const STOCK_TRACKING_PREFIX = 'KHO-';
 
 const CREATE_RETRIES = 3;
-const STOCK_TTL_MS = 15_000;
 
 const shipmentInclude = {
   lines: {
@@ -60,29 +58,13 @@ type ShipmentDetail = Prisma.ShipmentGetPayload<{
 
 @Injectable()
 export class FinishedGoodsService {
-  private readonly cache = new TtlCache();
-  private readonly inflight = new InflightMap();
-
+  // Không cache sổ tồn / phiếu nhập ở đây: KCS, lên đơn NVL từ thành phẩm và mọi thay đổi
+  // giá vốn (tiền công khâu, chi phí khác, phiếu xuất gắn đơn) đều ghi từ service khác,
+  // cache sẽ trả số cũ sau các thao tác đó.
   constructor(
     private readonly prisma: PrismaService,
     private readonly costing: ProductionCostingService,
   ) {}
-
-  private cached<T>(key: string, load: () => Promise<T>): Promise<T> {
-    const hit = this.cache.get<T>(key);
-    if (hit) return Promise.resolve(hit);
-    return this.inflight.run(key, async () => {
-      const again = this.cache.get<T>(key);
-      if (again) return again;
-      const value = await load();
-      this.cache.set(key, value, STOCK_TTL_MS);
-      return value;
-    });
-  }
-
-  private bust() {
-    this.cache.clear();
-  }
 
   /**
    * Sổ tồn thành phẩm:
@@ -90,11 +72,7 @@ export class FinishedGoodsService {
    * Lên đơn trừ cột Tồn (đầu kỳ + nhập − xuất).
    */
   async stock(search?: string) {
-    const keyword = search?.trim() || '';
-    return this.cached(`stock:${keyword}`, () => this.loadStock(keyword));
-  }
-
-  private async loadStock(keyword: string) {
+    const keyword = search?.trim();
     const receipts = await this.prisma.finishedGoodsReceipt.findMany({
       where: keyword
         ? {
@@ -224,11 +202,7 @@ export class FinishedGoodsService {
 
   /** Phiếu tab Nhập / KCS — không gồm tồn đầu kỳ tạo trên Tồn. */
   async receipts(search?: string) {
-    const keyword = search?.trim() || '';
-    return this.cached(`receipts:${keyword}`, () => this.loadReceipts(keyword));
-  }
-
-  private async loadReceipts(keyword: string) {
+    const keyword = search?.trim();
     const receipts = await this.prisma.finishedGoodsReceipt.findMany({
       where: {
         order: {
@@ -364,7 +338,6 @@ export class FinishedGoodsService {
         },
       },
     });
-    this.bust();
     return { success: true };
   }
 
@@ -427,7 +400,6 @@ export class FinishedGoodsService {
         changedBy,
       );
     }
-    this.bust();
     return { success: true };
   }
 
@@ -449,7 +421,6 @@ export class FinishedGoodsService {
       );
     }
     await this.prisma.finishedGoodsReceipt.delete({ where: { id } });
-    this.bust();
     return { success: true };
   }
 
@@ -510,7 +481,6 @@ export class FinishedGoodsService {
             },
           });
         });
-        this.bust();
         return { success: true };
       } catch (error) {
         if (isUniqueViolation(error) && attempt < CREATE_RETRIES) continue;
@@ -715,7 +685,6 @@ export class FinishedGoodsService {
           );
           return shipment;
         });
-        this.bust();
         return this.shipment(created.code);
       } catch (error) {
         // Hai người lập phiếu cùng lúc có thể lấy trùng số — thử lại với số kế tiếp.
@@ -757,7 +726,6 @@ export class FinishedGoodsService {
         changedBy,
       );
     });
-    this.bust();
     return this.shipment(existing.code);
   }
 
@@ -778,7 +746,6 @@ export class FinishedGoodsService {
         true,
       );
     });
-    this.bust();
     return { success: true };
   }
 
