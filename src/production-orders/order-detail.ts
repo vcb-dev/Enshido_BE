@@ -159,6 +159,48 @@ export function ticketPosition(
 }
 
 /**
+ * Tóm tắt một phiếu con cho danh sách đơn: đang ở khâu nào, trạng thái gì, ai đang giữ hàng.
+ * Khâu lấy giống cột Khâu ở bảng phiếu con trong trang đơn — khâu đang chạy, hoặc khâu vừa
+ * xong nếu đang rảnh / đã chốt. Thợ chỉ ghi người đang giữ (đã nhận hoặc đang làm); đang chờ
+ * nhận thì chưa có ai. `entries` phải theo thứ tự giao.
+ */
+export function subTicketSummary(
+  orderCode: string,
+  ticket: Pick<
+    SubTicket,
+    | 'no'
+    | 'qty'
+    | 'silverWeight'
+    | 'note'
+    | 'createdAt'
+    | 'pendingStage'
+    | 'claimedByUserId'
+    | 'claimedByName'
+    | 'outcome'
+  >,
+  entries: readonly (StateEntry & Pick<StageEntry, 'craftsmanName'>)[],
+) {
+  const { state, activeStage } = subTicketState(ticket, entries);
+  const open = entries.find((entry) => !entry.returnedAt);
+  return {
+    code: subTicketCode(orderCode, ticket.no),
+    no: ticket.no,
+    qty: ticket.qty,
+    silverWeight: decStr(ticket.silverWeight),
+    note: ticket.note,
+    createdAt: ticket.createdAt.toISOString(),
+    state,
+    stage: activeStage ?? entries[entries.length - 1]?.stage ?? null,
+    workerName:
+      state === 'CLAIMED'
+        ? ticket.claimedByName
+        : state === 'WORKING' || state === 'SUBMITTED'
+          ? (open?.craftsmanName ?? null)
+          : null,
+  };
+}
+
+/**
  * Phiếu con được đi lệch khâu nhau, nhưng đơn chỉ có một trạng thái: lấy khâu của phần chậm
  * nhất. Đơn đứng ở "Nguội" nghĩa là vẫn còn hàng chưa qua Nguội — không báo tiến độ vượt
  * quá phần hàng thật sự đã tới.

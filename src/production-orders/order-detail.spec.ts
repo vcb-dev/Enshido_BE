@@ -6,6 +6,7 @@ import {
   subTicketAvailable,
   subTicketCode,
   subTicketState,
+  subTicketSummary,
   ticketPosition,
   type StageEntry,
   type SubTicket,
@@ -39,6 +40,8 @@ function ticket(over: Partial<SubTicket> = {}): SubTicket {
     pendingStage: null,
     claimedByUserId: null,
     outcome: null,
+    note: null,
+    createdAt: new Date('2026-09-21T02:00:00Z'),
     ...over,
   } as SubTicket;
 }
@@ -271,5 +274,88 @@ describe('slowestStage — trạng thái đơn khi phiếu con đi lệch khâu'
     expect(
       slowestStage(['STONE_SETTING', 'STONE_SETTING', 'STONE_SETTING']),
     ).toBe('STONE_SETTING');
+  });
+});
+
+describe('subTicketSummary — cột Phiếu con ở danh sách đơn', () => {
+  const RETURNED = new Date('2026-09-21T02:58:00Z');
+  const nguoiDone = entry({
+    stage: 'FILING',
+    returnedAt: RETURNED,
+    craftsmanName: 'Vũ Đại Lương',
+  } as Partial<StageEntry>);
+
+  it('chờ thợ nhận khâu mới: khâu mới, chưa có thợ — không mang tên thợ khâu trước', () => {
+    const s = subTicketSummary(
+      'A001',
+      ticket({ pendingStage: 'STONE_SETTING' }),
+      [nguoiDone],
+    );
+    expect(s).toEqual({
+      code: 'A001-1',
+      no: 1,
+      qty: 6,
+      silverWeight: '600',
+      note: null,
+      createdAt: '2026-09-21T02:00:00.000Z',
+      state: 'WAITING',
+      stage: 'STONE_SETTING',
+      workerName: null,
+    });
+  });
+
+  it('đã nhận: tên người nhận', () => {
+    const s = subTicketSummary(
+      'A001',
+      ticket({
+        pendingStage: 'STONE_SETTING',
+        claimedByUserId: 'u2',
+        claimedByName: 'Thuỳ Linh',
+      } as Partial<SubTicket>),
+      [nguoiDone],
+    );
+    expect(s.state).toBe('CLAIMED');
+    expect(s.workerName).toBe('Thuỳ Linh');
+  });
+
+  it('đang làm / đã báo xong: thợ của khâu đang mở', () => {
+    const working = entry({
+      stage: 'STONE_SETTING',
+      craftsmanName: 'Admin Enshido',
+    } as Partial<StageEntry>);
+    expect(subTicketSummary('A001', ticket(), [nguoiDone, working])).toMatchObject({
+      state: 'WORKING',
+      stage: 'STONE_SETTING',
+      workerName: 'Admin Enshido',
+    });
+    const submitted = { ...working, submittedAt: RETURNED } as StageEntry;
+    expect(subTicketSummary('A001', ticket(), [nguoiDone, submitted]).state).toBe(
+      'SUBMITTED',
+    );
+  });
+
+  it('xong khâu, chưa mở khâu sau: khâu vừa xong, không ai giữ hàng', () => {
+    expect(subTicketSummary('A001', ticket(), [nguoiDone])).toMatchObject({
+      state: 'IDLE',
+      stage: 'FILING',
+      workerName: null,
+    });
+  });
+
+  it('chưa giao khâu nào: không có khâu', () => {
+    expect(subTicketSummary('A001', ticket(), [])).toMatchObject({
+      state: 'IDLE',
+      stage: null,
+    });
+  });
+
+  it('đã chốt Hoàn thiện: vẫn cho biết khâu cuối', () => {
+    const xi = entry({
+      stage: 'PLATING',
+      returnedAt: RETURNED,
+    } as Partial<StageEntry>);
+    expect(
+      subTicketSummary('A001', ticket({ outcome: 'FINISH' }), [nguoiDone, xi]),
+    ).toMatchObject({ state: 'FINISH', stage: 'PLATING', workerName: null });
   });
 });
