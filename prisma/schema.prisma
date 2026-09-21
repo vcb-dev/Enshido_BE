@@ -383,6 +383,7 @@ model StockOutbound {
   @@index([warehouseId, sortOrder])
   @@index([warehouseId, materialId, applyToStock], map: "stock_outbounds_wh_mat_apply_idx")
   @@index([materialId], map: "stock_outbounds_material_id_idx")
+  @@index([productionOrderId])
   @@map("stock_outbounds")
 }
 
@@ -608,6 +609,7 @@ model ProductionStageEntry {
   @@unique([orderId, subTicketId, stage, attempt], map: "production_stage_entries_order_ticket_stage_attempt_key")
   @@index([orderId, createdAt])
   @@index([subTicketId])
+  @@index([craftsmanUserId, returnedAt])
   @@map("production_stage_entries")
 }
 
@@ -728,6 +730,7 @@ model FinishedGoodsReceipt {
 
   order ProductionOrder @relation(fields: [orderId], references: [id], onDelete: Restrict)
 
+  @@index([receivedAt])
   @@map("finished_goods_receipts")
 }
 

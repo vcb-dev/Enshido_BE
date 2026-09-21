@@ -36,10 +36,8 @@ export class CloudinaryService {
 
   /** Chỉ nhận ảnh nằm trong thư mục của hệ thống, tránh gắn ảnh lạ vào đơn. */
   ownsPublicId(publicId: string) {
-    const folder = this.config.get<string>(
-      'CLOUDINARY_FOLDER',
-      'enshido/orders',
-    );
+    const folder =
+      this.config.get<string>('CLOUDINARY_FOLDER')?.trim() || 'enshido/orders';
     return publicId.startsWith(`${folder}/`);
   }
 
@@ -96,14 +94,12 @@ export class CloudinaryService {
   }
 
   private readConfig(): CloudinaryConfig | null {
-    const cloudName = this.config.get<string>('CLOUDINARY_CLOUD_NAME');
-    const apiKey = this.config.get<string>('CLOUDINARY_API_KEY');
-    const apiSecret = this.config.get<string>('CLOUDINARY_API_SECRET');
+    const cloudName = this.config.get<string>('CLOUDINARY_CLOUD_NAME')?.trim();
+    const apiKey = this.config.get<string>('CLOUDINARY_API_KEY')?.trim();
+    const apiSecret = this.config.get<string>('CLOUDINARY_API_SECRET')?.trim();
     if (!cloudName || !apiKey || !apiSecret) return null;
-    const folder = this.config.get<string>(
-      'CLOUDINARY_FOLDER',
-      'enshido/orders',
-    );
+    const folder =
+      this.config.get<string>('CLOUDINARY_FOLDER')?.trim() || 'enshido/orders';
     return { cloudName, apiKey, apiSecret, folder };
   }
 

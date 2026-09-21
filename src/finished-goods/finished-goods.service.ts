@@ -15,6 +15,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ProductionCostingService } from '../production-orders/production-costing.service';
 import { orderCode } from '../production-orders/production-orders.service';
 import { availabilityOf, decStr } from '../util/money';
+import { InflightMap, TtlCache } from '../util/ttl-cache';
 import {
   ListShipmentsQuery,
   ShipmentLineDto,
@@ -27,6 +28,7 @@ const OPENING_COST_NAME = 'Giá vốn đầu kỳ';
 const STOCK_TRACKING_PREFIX = 'KHO-';
 
 const CREATE_RETRIES = 3;
+const STOCK_TTL_MS = 15_000;
 
 const shipmentInclude = {
   lines: {
@@ -58,10 +60,29 @@ type ShipmentDetail = Prisma.ShipmentGetPayload<{
 
 @Injectable()
 export class FinishedGoodsService {
+  private readonly cache = new TtlCache();
+  private readonly inflight = new InflightMap();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly costing: ProductionCostingService,
   ) {}
+
+  private cached<T>(key: string, load: () => Promise<T>): Promise<T> {
+    const hit = this.cache.get<T>(key);
+    if (hit) return Promise.resolve(hit);
+    return this.inflight.run(key, async () => {
+      const again = this.cache.get<T>(key);
+      if (again) return again;
+      const value = await load();
+      this.cache.set(key, value, STOCK_TTL_MS);
+      return value;
+    });
+  }
+
+  private bust() {
+    this.cache.clear();
+  }
 
   /**
    * Sổ tồn thành phẩm:
@@ -69,7 +90,11 @@ export class FinishedGoodsService {
    * Lên đơn trừ cột Tồn (đầu kỳ + nhập − xuất).
    */
   async stock(search?: string) {
-    const keyword = search?.trim();
+    const keyword = search?.trim() || '';
+    return this.cached(`stock:${keyword}`, () => this.loadStock(keyword));
+  }
+
+  private async loadStock(keyword: string) {
     const receipts = await this.prisma.finishedGoodsReceipt.findMany({
       where: keyword
         ? {
@@ -116,6 +141,9 @@ export class FinishedGoodsService {
       qty: zero,
       amount: zero,
     };
+    const costs = await this.costing.costingMany(
+      receipts.map((receipt) => receipt.order.id),
+    );
     const items = [];
     for (const receipt of receipts) {
       const shippedQty = receipt.order.shipmentLines.reduce(
@@ -123,7 +151,8 @@ export class FinishedGoodsService {
         0,
       );
       const remainingQty = receipt.qty - shippedQty;
-      const cost = await this.costing.costing(receipt.order.id);
+      const cost = costs.get(receipt.order.id);
+      if (!cost) continue;
       const isOpening = (receipt.order.trackingCode ?? '').startsWith(
         STOCK_TRACKING_PREFIX,
       );
@@ -195,7 +224,11 @@ export class FinishedGoodsService {
 
   /** Phiếu tab Nhập / KCS — không gồm tồn đầu kỳ tạo trên Tồn. */
   async receipts(search?: string) {
-    const keyword = search?.trim();
+    const keyword = search?.trim() || '';
+    return this.cached(`receipts:${keyword}`, () => this.loadReceipts(keyword));
+  }
+
+  private async loadReceipts(keyword: string) {
     const receipts = await this.prisma.finishedGoodsReceipt.findMany({
       where: {
         order: {
@@ -240,13 +273,17 @@ export class FinishedGoodsService {
         },
       },
     });
+    const costs = await this.costing.costingMany(
+      receipts.map((receipt) => receipt.order.id),
+    );
     const items = [];
     for (const receipt of receipts) {
       const shippedQty = receipt.order.shipmentLines.reduce(
         (sum, line) => sum + line.qty,
         0,
       );
-      const cost = await this.costing.costing(receipt.order.id);
+      const cost = costs.get(receipt.order.id);
+      if (!cost) continue;
       const qty = new Prisma.Decimal(receipt.qty);
       const amount = cost.unitCostDecimal.mul(qty).toDecimalPlaces(2);
       items.push({
@@ -327,6 +364,7 @@ export class FinishedGoodsService {
         },
       },
     });
+    this.bust();
     return { success: true };
   }
 
@@ -389,6 +427,7 @@ export class FinishedGoodsService {
         changedBy,
       );
     }
+    this.bust();
     return { success: true };
   }
 
@@ -410,6 +449,7 @@ export class FinishedGoodsService {
       );
     }
     await this.prisma.finishedGoodsReceipt.delete({ where: { id } });
+    this.bust();
     return { success: true };
   }
 
@@ -470,6 +510,7 @@ export class FinishedGoodsService {
             },
           });
         });
+        this.bust();
         return { success: true };
       } catch (error) {
         if (isUniqueViolation(error) && attempt < CREATE_RETRIES) continue;
@@ -674,6 +715,7 @@ export class FinishedGoodsService {
           );
           return shipment;
         });
+        this.bust();
         return this.shipment(created.code);
       } catch (error) {
         // Hai người lập phiếu cùng lúc có thể lấy trùng số — thử lại với số kế tiếp.
@@ -715,6 +757,7 @@ export class FinishedGoodsService {
         changedBy,
       );
     });
+    this.bust();
     return this.shipment(existing.code);
   }
 
@@ -735,6 +778,7 @@ export class FinishedGoodsService {
         true,
       );
     });
+    this.bust();
     return { success: true };
   }
 
@@ -783,6 +827,10 @@ export class FinishedGoodsService {
     });
     const byCode = new Map(orders.map((order) => [order.code, order]));
 
+    const costs = await this.costing.costingMany(
+      orders.map((order) => order.id),
+      tx,
+    );
     const unitCosts = new Map<string, Prisma.Decimal>();
     for (const [orderCode, qty] of requested) {
       const order = byCode.get(orderCode);
@@ -806,7 +854,10 @@ export class FinishedGoodsService {
           `Đơn ${orderCode} chỉ còn ${remaining} trong kho thành phẩm, không xuất ${qty} được`,
         );
       }
-      const cost = await this.costing.costing(order.id, tx);
+      const cost = costs.get(order.id);
+      if (!cost) {
+        throw new BadRequestException(`Không tính được giá vốn đơn ${orderCode}`);
+      }
       unitCosts.set(orderCode, cost.unitCostDecimal);
     }
 

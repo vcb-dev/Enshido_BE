@@ -17,6 +17,42 @@ function isGram(unitName: string) {
 const money = (value: Prisma.Decimal) =>
   value.toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP);
 
+const COSTING_ORDER_SELECT = {
+  id: true,
+  code: true,
+  qty: true,
+  stages: {
+    orderBy: { createdAt: 'asc' as const },
+    select: {
+      id: true,
+      subTicket: { select: { no: true } },
+      stage: true,
+      attempt: true,
+      craftsmanName: true,
+      returnedAt: true,
+      handedSilverWeight: true,
+      returnedSilverWeight: true,
+      btpRecoveredWeight: true,
+      silverRecoveredWeight: true,
+      laborCost: true,
+    },
+  },
+  costs: { orderBy: { createdAt: 'asc' as const } },
+} satisfies Prisma.ProductionOrderSelect;
+
+const COSTING_OUTBOUND_INCLUDE = {
+  warehouse: { select: { code: true, shortName: true } },
+  material: { select: { metalKind: true } },
+  unit: { select: { name: true } },
+} satisfies Prisma.StockOutboundInclude;
+
+type CostingOrder = Prisma.ProductionOrderGetPayload<{
+  select: typeof COSTING_ORDER_SELECT;
+}>;
+type CostingOutbound = Prisma.StockOutboundGetPayload<{
+  include: typeof COSTING_OUTBOUND_INCLUDE;
+}>;
+
 /**
  * Chi phí sản xuất của một đơn:
  *   NVL xuất gắn đơn − (bạc + BTP thu hồi) × giá bạc + tiền công các khâu + chi phí khác.
@@ -39,48 +75,57 @@ export class ProductionCostingService {
 
   /** Nhận `tx` để phiếu xuất hàng chụp chi phí trong cùng transaction. */
   async costing(orderId: string, db: Db = this.prisma) {
-    const zero = new Prisma.Decimal(0);
-    const [order, outbounds] = await Promise.all([
-      db.productionOrder.findUnique({
-        where: { id: orderId },
-        select: {
-          code: true,
-          qty: true,
-          stages: {
-            orderBy: { createdAt: 'asc' },
-            select: {
-              id: true,
-              subTicket: { select: { no: true } },
-              stage: true,
-              attempt: true,
-              craftsmanName: true,
-              returnedAt: true,
-              handedSilverWeight: true,
-              returnedSilverWeight: true,
-              btpRecoveredWeight: true,
-              silverRecoveredWeight: true,
-              laborCost: true,
-            },
-          },
-          costs: { orderBy: { createdAt: 'asc' } },
-        },
+    const map = await this.costingMany([orderId], db);
+    const result = map.get(orderId);
+    if (!result) throw new NotFoundException('Không tìm thấy đơn sản xuất');
+    return result;
+  }
+
+  /**
+   * Tính giá vốn nhiều đơn trong 2 query — sổ tồn / phiếu xuất không được N+1
+   * `costing()` từng dòng.
+   */
+  async costingMany(orderIds: string[], db: Db = this.prisma) {
+    const ids = Array.from(new Set(orderIds.filter(Boolean)));
+    const result = new Map<
+      string,
+      ReturnType<ProductionCostingService['compute']>
+    >();
+    if (ids.length === 0) return result;
+
+    const [orders, outbounds] = await Promise.all([
+      db.productionOrder.findMany({
+        where: { id: { in: ids } },
+        select: COSTING_ORDER_SELECT,
       }),
       db.stockOutbound.findMany({
         where: {
-          productionOrderId: orderId,
+          productionOrderId: { in: ids },
           applyToStock: true,
           qty: { gt: 0 },
         },
         orderBy: [{ issuedAt: 'asc' }, { sortOrder: 'asc' }],
-        include: {
-          warehouse: { select: { code: true, shortName: true } },
-          material: { select: { metalKind: true } },
-          unit: { select: { name: true } },
-        },
+        include: COSTING_OUTBOUND_INCLUDE,
       }),
     ]);
-    if (!order) throw new NotFoundException('Không tìm thấy đơn sản xuất');
 
+    const byOrder = new Map<string, CostingOutbound[]>();
+    for (const row of outbounds) {
+      const orderId = row.productionOrderId;
+      if (!orderId) continue;
+      const list = byOrder.get(orderId);
+      if (list) list.push(row);
+      else byOrder.set(orderId, [row]);
+    }
+
+    for (const order of orders) {
+      result.set(order.id, this.compute(order, byOrder.get(order.id) ?? []));
+    }
+    return result;
+  }
+
+  private compute(order: CostingOrder, outbounds: CostingOutbound[]) {
+    const zero = new Prisma.Decimal(0);
     const warnings: string[] = [];
 
     // Phiếu cũ có thể chưa lưu thành tiền — tính lại từ đơn giá xuất như bảng xuất kho.

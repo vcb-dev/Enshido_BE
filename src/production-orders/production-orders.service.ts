@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import {
   Prisma,
+  ProductionImageKind,
   ProductionSource,
   ProductionStatus,
   RoleCode,
@@ -127,7 +128,36 @@ export class ProductionOrdersService {
         orderBy,
         skip: (page - 1) * pageSize,
         take: pageSize,
-        include: {
+        select: {
+          id: true,
+          code: true,
+          status: true,
+          source: true,
+          requestType: true,
+          qty: true,
+          qtyUnit: true,
+          finishedProductQty: true,
+          returnedQty: true,
+          model3dCode: true,
+          model3dUrl: true,
+          leadTime: true,
+          trackingCode: true,
+          closedBy: true,
+          description: true,
+          stoneColor: true,
+          stoneTypes: true,
+          size: true,
+          sizeLabel: true,
+          mainMaterial: true,
+          platingColor: true,
+          btpCategory: true,
+          productKind: true,
+          askedUserName: true,
+          receivedDate: true,
+          dueDate: true,
+          debtStatus: true,
+          createdAt: true,
+          updatedAt: true,
           btpMaterial: { select: { sku: true } },
           // Phiếu con kèm các khâu của chúng — vừa đủ để tính trạng thái từng phiếu cho cột
           // "Phiếu con" ở danh sách, không kéo cả chi tiết đơn.
@@ -358,6 +388,7 @@ export class ProductionOrdersService {
         images: {
           select: { url: true, publicId: true, width: true, height: true },
           orderBy: { sortOrder: 'asc' },
+          take: 1,
         },
       },
     });
@@ -412,6 +443,7 @@ export class ProductionOrdersService {
             laserEngraving: true,
             otherRequirements: true,
             images: {
+              where: { kind: ProductionImageKind.PRODUCT },
               select: {
                 kind: true,
                 url: true,
@@ -420,6 +452,7 @@ export class ProductionOrdersService {
                 height: true,
               },
               orderBy: { sortOrder: 'asc' },
+              take: 1,
             },
             shipmentLines: { select: { qty: true } },
           },
@@ -491,6 +524,7 @@ export class ProductionOrdersService {
         images: {
           select: { url: true, publicId: true, width: true, height: true },
           orderBy: { sortOrder: 'asc' },
+          take: 1,
         },
       },
     });

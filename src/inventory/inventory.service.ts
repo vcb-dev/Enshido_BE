@@ -1881,8 +1881,15 @@ export class InventoryService {
       where: { productionOrderId: orderId, autoIssued: true },
       select: { id: true, warehouseId: true, materialId: true },
     });
+    if (rows.length === 0) return;
+    await tx.stockOutbound.deleteMany({
+      where: { id: { in: rows.map((row) => row.id) } },
+    });
+    const seen = new Set<string>();
     for (const row of rows) {
-      await tx.stockOutbound.delete({ where: { id: row.id } });
+      const key = `${row.warehouseId}:${row.materialId ?? ''}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       await this.recomputeStockBalance(tx, row.warehouseId, row.materialId);
     }
   }

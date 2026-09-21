@@ -75,7 +75,7 @@ const myTicketInclude = {
     },
   },
   stages: { orderBy: { createdAt: 'asc' } },
-  topUps: { orderBy: { createdAt: 'asc' } },
+  topUps: { orderBy: { createdAt: 'asc' }, select: { id: true, qty: true, silverWeight: true, stageEntryId: true, createdAt: true } },
 } satisfies Prisma.ProductionSubTicketInclude;
 
 type MyTicketRow = Prisma.ProductionSubTicketGetPayload<{
@@ -923,12 +923,14 @@ export class ProductionSubTicketsService {
         include: detailInclude,
       });
       await apply(tx, order);
-      return tx.productionOrder.findUniqueOrThrow({
-        where: { id: found.id },
-        include: detailInclude,
-      });
+      return found.id;
     });
-    return toDetail(updated);
+    return toDetail(
+      await this.prisma.productionOrder.findUniqueOrThrow({
+        where: { id: updated },
+        include: detailInclude,
+      }),
+    );
   }
 }
 
