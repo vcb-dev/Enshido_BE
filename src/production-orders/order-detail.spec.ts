@@ -2,9 +2,11 @@ import { Prisma } from '@prisma/client';
 import {
   entriesOf,
   looseTopUps,
+  slowestStage,
   subTicketAvailable,
   subTicketCode,
   subTicketState,
+  ticketPosition,
   type StageEntry,
   type SubTicket,
 } from './order-detail';
@@ -210,5 +212,64 @@ describe('entriesOf', () => {
 describe('subTicketCode', () => {
   it('ghép mã đơn với số phiếu', () => {
     expect(subTicketCode('A012', 2)).toBe('A012-2');
+  });
+});
+
+describe('ticketPosition — phiếu con đang đứng ở khâu nào', () => {
+  const RETURNED = new Date('2026-09-21T02:58:00Z');
+
+  it('khâu đang chạy: chờ thợ nhận, đang làm', () => {
+    expect(ticketPosition(ticket({ pendingStage: 'STONE_SETTING' }), [])).toBe(
+      'STONE_SETTING',
+    );
+    expect(ticketPosition(ticket(), [entry({ stage: 'ENGRAVING' })])).toBe(
+      'ENGRAVING',
+    );
+  });
+
+  it('xong khâu mà chưa mở khâu sau: vẫn tính ở khâu vừa xong', () => {
+    // Đúng cảnh A002-1: KCS nhận lại Nguội, phiếu đang rảnh chờ mở Vào đá.
+    const done = entry({ stage: 'FILING', returnedAt: RETURNED });
+    expect(ticketPosition(ticket(), [done])).toBe('FILING');
+  });
+
+  it('chưa làm khâu nào: theo khâu cuối của cả đơn trước lúc chia', () => {
+    expect(ticketPosition(ticket(), [], 'FILING')).toBe('FILING');
+    expect(ticketPosition(ticket(), [])).toBeNull();
+  });
+
+  it('đã chốt Lỗi / Hoàn thiện thì không còn đứng ở khâu nào', () => {
+    const done = entry({ stage: 'PLATING', returnedAt: RETURNED });
+    expect(ticketPosition(ticket({ outcome: 'FINISH' }), [done])).toBeNull();
+    expect(ticketPosition(ticket({ outcome: 'DEFECT' }), [done])).toBeNull();
+  });
+});
+
+describe('slowestStage — trạng thái đơn khi phiếu con đi lệch khâu', () => {
+  it('lấy khâu của phần chậm nhất, không theo phiếu nhanh', () => {
+    // A002-1 đã sang Vào đá, A002-2 / A002-3 còn Nguội → đơn vẫn là Nguội.
+    expect(slowestStage(['STONE_SETTING', 'FILING', 'FILING'])).toBe('FILING');
+  });
+
+  it('không phụ thuộc thứ tự phiếu', () => {
+    expect(slowestStage(['PLATING', 'ENGRAVING', 'POLISHING'])).toBe(
+      'ENGRAVING',
+    );
+    expect(slowestStage(['ENGRAVING', 'PLATING', 'POLISHING'])).toBe(
+      'ENGRAVING',
+    );
+  });
+
+  it('bỏ qua phiếu không đứng ở khâu nào (đã chốt kết cục)', () => {
+    expect(slowestStage([null, 'POLISHING', null])).toBe('POLISHING');
+    expect(slowestStage([null, null])).toBeNull();
+    expect(slowestStage([])).toBeNull();
+  });
+
+  it('phần chậm nhất bắt kịp thì đơn mới tiến lên', () => {
+    // A002-2, A002-3 xong Nguội và được giao Vào đá — giờ cả đơn đã tới Vào đá.
+    expect(
+      slowestStage(['STONE_SETTING', 'STONE_SETTING', 'STONE_SETTING']),
+    ).toBe('STONE_SETTING');
   });
 });

@@ -1136,6 +1136,13 @@ export class ProductionOrdersService {
     if (entry.returnedAt) {
       throw new BadRequestException('KCS đã nhận lại khâu này');
     }
+    // Phiếu con: thợ phải báo đã làm xong thì KCS mới nhận lại. Khâu của cả đơn (giao trước
+    // lúc chia phiếu con) không có bước báo xong nên không áp luật này, kẻo kẹt vĩnh viễn.
+    if (entry.subTicketId && !entry.submittedAt) {
+      throw new BadRequestException(
+        'Thợ chưa báo làm xong khâu này — chờ thợ bấm "Đã làm xong" rồi KCS mới nhận lại',
+      );
+    }
     const returnedAt = new Date(dto.returnedAt);
     if (returnedAt < entry.handedAt) {
       throw new BadRequestException(

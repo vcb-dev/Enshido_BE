@@ -117,9 +117,12 @@ export function entriesOf(
   return order.stages.filter((entry) => entry.subTicketId === ticketId);
 }
 
+/** Các trường của một lần giao khâu mà việc tính trạng thái phiếu con cần tới. */
+type StateEntry = Pick<StageEntry, 'stage' | 'returnedAt' | 'submittedAt'>;
+
 export function subTicketState(
   ticket: Pick<SubTicket, 'pendingStage' | 'claimedByUserId' | 'outcome'>,
-  entries: StageEntry[],
+  entries: readonly StateEntry[],
 ): { state: SubTicketState; activeStage: ProductionStage | null } {
   // Phiếu đã chốt lỗi / hoàn thiện thì không còn khâu nào chạy.
   if (ticket.outcome) return { state: ticket.outcome, activeStage: null };
@@ -137,6 +140,43 @@ export function subTicketState(
     };
   }
   return { state: 'IDLE', activeStage: null };
+}
+
+/**
+ * Phiếu con đang đứng ở khâu nào: khâu đang chạy (chờ thợ nhận, đã nhận, đang làm), hoặc
+ * khâu vừa xong nếu đang rảnh — hàng vẫn còn phải qua các khâu sau. Phiếu chưa làm khâu
+ * nào thì tính theo khâu cuối của cả đơn trước lúc chia. Phiếu đã chốt Lỗi / Hoàn thiện
+ * thì không còn đứng ở khâu nào.
+ */
+export function ticketPosition(
+  ticket: Pick<SubTicket, 'pendingStage' | 'claimedByUserId' | 'outcome'>,
+  entries: readonly StateEntry[],
+  orderLast: ProductionStage | null = null,
+): ProductionStage | null {
+  if (ticket.outcome) return null;
+  const { activeStage } = subTicketState(ticket, entries);
+  return activeStage ?? entries[entries.length - 1]?.stage ?? orderLast;
+}
+
+/**
+ * Phiếu con được đi lệch khâu nhau, nhưng đơn chỉ có một trạng thái: lấy khâu của phần chậm
+ * nhất. Đơn đứng ở "Nguội" nghĩa là vẫn còn hàng chưa qua Nguội — không báo tiến độ vượt
+ * quá phần hàng thật sự đã tới.
+ */
+export function slowestStage(
+  stages: readonly (ProductionStage | null)[],
+): ProductionStage | null {
+  let slowest: ProductionStage | null = null;
+  for (const stage of stages) {
+    if (
+      stage &&
+      (slowest === null ||
+        STAGE_ORDER.indexOf(stage) < STAGE_ORDER.indexOf(slowest))
+    ) {
+      slowest = stage;
+    }
+  }
+  return slowest;
 }
 
 /**
