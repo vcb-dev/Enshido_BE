@@ -605,7 +605,7 @@ model ProductionStageEntry {
   topUps    ProductionSubTicketTopUp[]
 
   // Không lặp khâu + lần trong cùng phiếu. Trên DB index này có thêm NULLS NOT DISTINCT
-  // (xem prisma/sql/2026-09-17_sub_tickets.sql) — Prisma 6 chưa khai báo được phần đó.
+  // (xem prisma/migrations/0_init/migration.sql) — Prisma 6 chưa khai báo được phần đó.
   @@unique([orderId, subTicketId, stage, attempt], map: "production_stage_entries_order_ticket_stage_attempt_key")
   @@index([orderId, createdAt])
   @@index([subTicketId])

@@ -11,6 +11,9 @@ logs/
 *.log
 npm-debug.log*
 
+# Dump dữ liệu DB: chứa password hash và refresh token, không được lên git.
+db-backup/
+
 .DS_Store
 .idea/
 .vscode/*
