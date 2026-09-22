@@ -10,6 +10,7 @@ import { CloudinaryService } from '../uploads/cloudinary.service';
 import { InflightMap, TtlCache } from '../util/ttl-cache';
 import { availabilityOf, CLASS_LABEL, METAL_KIND_LABEL, decStr } from '../util/money';
 import { allocateMaterialSku } from '../util/material-sku';
+import { dbTable } from '../prisma/database-url';
 import { slugFromName } from '../util/slug';
 import type { AuthUserPayload } from '../auth/types';
 import { canSeeWarehouse } from '../auth/screens';
@@ -423,7 +424,7 @@ export class InventoryService {
         : await this.resolveOtherClassId(dto.otherClassName);
 
     const materialId = await this.prisma.runTx(async (tx) => {
-      const sku = await allocateMaterialSku(tx);
+      const sku = await allocateMaterialSku(tx, warehouse.code);
       const material = await tx.material.create({
         data: {
           warehouseId: warehouse.id,
@@ -1311,7 +1312,7 @@ export class InventoryService {
       where: { warehouseId: warehouse.id, isActive: true },
       _max: { sortOrder: true },
     });
-    const sku = await allocateMaterialSku(tx);
+    const sku = await allocateMaterialSku(tx, warehouse.code);
     const material = await tx.material.create({
       data: {
         warehouseId: warehouse.id,
@@ -2052,7 +2053,7 @@ export class InventoryService {
   ) {
     if (!materialId) return;
     await tx.$executeRaw`
-      INSERT INTO stock_balances (
+      INSERT INTO ${dbTable('stock_balances')} (
         id, warehouse_id, material_id,
         opening_qty, opening_amount, stock_unit_price,
         in_qty, in_amount, out_qty, out_amount, qty, amount, updated_at
@@ -2072,10 +2073,10 @@ export class InventoryService {
         COALESCE(b.opening_amount, 0) + COALESCE(i.amount, 0) - COALESCE(o.amount, 0),
         NOW()
       FROM (SELECT 1) AS dummy
-      LEFT JOIN stock_balances b ON b.material_id = ${materialId}::uuid
+      LEFT JOIN ${dbTable('stock_balances')} b ON b.material_id = ${materialId}::uuid
       LEFT JOIN (
         SELECT COALESCE(SUM(qty), 0) AS qty, COALESCE(SUM(amount), 0) AS amount
-        FROM stock_inbounds
+        FROM ${dbTable('stock_inbounds')}
         WHERE warehouse_id = ${warehouseId}::uuid
           AND material_id = ${materialId}::uuid
           AND apply_to_stock = true
@@ -2083,7 +2084,7 @@ export class InventoryService {
       ) i ON true
       LEFT JOIN (
         SELECT COALESCE(SUM(qty), 0) AS qty, COALESCE(SUM(amount), 0) AS amount
-        FROM stock_outbounds
+        FROM ${dbTable('stock_outbounds')}
         WHERE warehouse_id = ${warehouseId}::uuid
           AND material_id = ${materialId}::uuid
           AND apply_to_stock = true
@@ -2128,7 +2129,7 @@ export class InventoryService {
   ) {
     const zero = new Prisma.Decimal(0);
     const locked = await tx.$queryRaw<Array<{ opening_qty: Prisma.Decimal }>>`
-      SELECT opening_qty FROM stock_balances WHERE material_id = ${materialId}::uuid FOR UPDATE
+      SELECT opening_qty FROM ${dbTable('stock_balances')} WHERE material_id = ${materialId}::uuid FOR UPDATE
     `;
     const inbound = await tx.stockInbound.aggregate({
       where: { warehouseId, materialId, applyToStock: true, qty: { gt: 0 } },

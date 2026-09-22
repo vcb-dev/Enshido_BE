@@ -1,6 +1,6 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Prisma, PrismaClient } from '@prisma/client';
-import { resolveDatabaseUrl } from './database-url';
+import { prismaSchemaName, resolveDatabaseUrl } from './database-url';
 
 const TX_MAX_WAIT_MS = 20_000;
 const TX_TIMEOUT_MS = 30_000;
@@ -54,7 +54,10 @@ export class PrismaService
     let last: unknown;
     for (let attempt = 1; attempt <= TX_RETRIES; attempt++) {
       try {
-        return await this.$transaction(fn, PRISMA_TX);
+        return await this.$transaction(async (tx) => {
+          await tx.$executeRaw`SELECT set_config('search_path', ${prismaSchemaName()}, true)`;
+          return fn(tx);
+        }, PRISMA_TX);
       } catch (err) {
         last = err;
         if (!isTxRetryable(err) || attempt === TX_RETRIES) throw err;

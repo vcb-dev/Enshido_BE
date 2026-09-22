@@ -69,11 +69,7 @@ const MANUAL_STATUSES: ProductionStatus[] = [S.NEW, S.REDO_3D, S.DEFECT];
 
 const DEFAULT_LEAD_TIMES = ['3-5 ngày', '7-15 ngày', '15-30 ngày'];
 
-const SUGGEST_COLUMNS = {
-  closedBy: 'closed_by',
-  leadTime: 'lead_time',
-  debtStatus: 'debt_status',
-} as const;
+const SUGGEST_FIELDS = ['closedBy', 'leadTime', 'debtStatus'] as const;
 
 const CREATE_RETRIES = 3;
 const LOOKUPS_TTL_MS = 2 * 60_000;
@@ -284,9 +280,7 @@ export class ProductionOrdersService {
           orderBy: { sortOrder: 'asc' },
         }),
         this.distinctValues('closedBy'),
-        this.prisma.$queryRaw<Array<{ name: string }>>(
-          Prisma.sql`SELECT DISTINCT unnest(stone_types) AS name FROM production_orders`,
-        ),
+        this.usedStoneTypes(),
         this.distinctValues('leadTime'),
         this.distinctValues('debtStatus'),
       ]);
@@ -316,7 +310,7 @@ export class ProductionOrdersService {
         ...materialTypes
           .filter((item) => !['ccdc', 'nvl-phu'].includes(item.code))
           .map((item) => item.name),
-        ...usedStoneTypes.map((item) => item.name),
+        ...usedStoneTypes,
       ]),
       leadTimes: unique([...DEFAULT_LEAD_TIMES, ...leadTimes]),
       debtStatuses: uniqueSorted(debts),
@@ -1876,13 +1870,25 @@ export class ProductionOrdersService {
     return { id: user.id, name: actorName(user) };
   }
 
-  /** Giá trị đã từng nhập, dùng làm gợi ý. Tên cột lấy từ bảng cố định nên ghép vào SQL an toàn. */
-  private async distinctValues(field: keyof typeof SUGGEST_COLUMNS) {
-    const column = Prisma.raw(SUGGEST_COLUMNS[field]);
-    const rows = await this.prisma.$queryRaw<Array<{ value: string }>>(
-      Prisma.sql`SELECT DISTINCT ${column} AS value FROM production_orders WHERE ${column} IS NOT NULL LIMIT 200`,
-    );
-    return rows.map((row) => row.value);
+  /** Giá trị đã từng nhập, dùng làm gợi ý. Đi qua Prisma Client để khỏi lệch schema. */
+  private async distinctValues(field: (typeof SUGGEST_FIELDS)[number]) {
+    const rows = await this.prisma.productionOrder.findMany({
+      where: { [field]: { not: null } },
+      distinct: [field],
+      select: { closedBy: true, leadTime: true, debtStatus: true },
+      take: 200,
+    });
+    return rows
+      .map((row) => row[field])
+      .filter((value): value is string => Boolean(value));
+  }
+
+  private async usedStoneTypes() {
+    const rows = await this.prisma.productionOrder.findMany({
+      where: { stoneTypes: { isEmpty: false } },
+      select: { stoneTypes: true },
+    });
+    return rows.flatMap((row) => row.stoneTypes);
   }
 }
 

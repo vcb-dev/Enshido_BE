@@ -13,6 +13,7 @@ import {
 } from '@prisma/client';
 import { userHasRole } from '../auth/permissions';
 import type { AuthUserPayload } from '../auth/types';
+import { dbTable } from '../prisma/database-url';
 import { PrismaService } from '../prisma/prisma.service';
 import { decStr } from '../util/money';
 import {
@@ -917,7 +918,7 @@ export class ProductionSubTicketsService {
     });
     if (!found) throw new NotFoundException('Không tìm thấy đơn sản xuất');
     const updated = await this.prisma.runTx(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM production_orders WHERE id = ${found.id}::uuid FOR UPDATE`;
+      await tx.$queryRaw`SELECT id FROM ${dbTable('production_orders')} WHERE id = ${found.id}::uuid FOR UPDATE`;
       const order = await tx.productionOrder.findUniqueOrThrow({
         where: { id: found.id },
         include: detailInclude,
