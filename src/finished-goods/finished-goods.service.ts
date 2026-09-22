@@ -281,35 +281,78 @@ export class FinishedGoodsService {
     return { items };
   }
 
-  /** Đơn chưa vào kho thành phẩm — chọn khi Nhập thành phẩm. */
+  /**
+   * Ô "Tên thành phẩm" trên phiếu Nhập: hàng đang trên Tồn (nhập thêm)
+   * rồi mới đến đơn sản xuất chưa vào kho.
+   */
   async orderOptions(search?: string) {
     const keyword = search?.trim();
-    const rows = await this.prisma.productionOrder.findMany({
-      where: {
-        receipt: { is: null },
-        NOT: { trackingCode: { startsWith: STOCK_TRACKING_PREFIX } },
-        ...(keyword
-          ? {
-              OR: [
-                { code: { contains: keyword, mode: 'insensitive' } },
-                { description: { contains: keyword, mode: 'insensitive' } },
-                { trackingCode: { contains: keyword, mode: 'insensitive' } },
-              ],
-            }
-          : undefined),
-      },
-      orderBy: { seq: 'desc' },
-      take: 200,
-      select: {
-        code: true,
-        description: true,
-        qty: true,
-        qtyUnit: true,
-        sizeLabel: true,
-        mainMaterial: true,
-      },
+    const nameFilter = keyword
+      ? {
+          OR: [
+            { code: { contains: keyword, mode: 'insensitive' as const } },
+            { description: { contains: keyword, mode: 'insensitive' as const } },
+            { trackingCode: { contains: keyword, mode: 'insensitive' as const } },
+          ],
+        }
+      : undefined;
+
+    const [stock, pending] = await Promise.all([
+      this.prisma.finishedGoodsReceipt.findMany({
+        where: nameFilter ? { order: nameFilter } : undefined,
+        orderBy: { receivedAt: 'desc' },
+        take: 200,
+        include: {
+          order: {
+            select: {
+              code: true,
+              description: true,
+              qtyUnit: true,
+              sizeLabel: true,
+              mainMaterial: true,
+              shipmentLines: { select: { qty: true } },
+            },
+          },
+        },
+      }),
+      this.prisma.productionOrder.findMany({
+        where: {
+          receipt: { is: null },
+          NOT: { trackingCode: { startsWith: STOCK_TRACKING_PREFIX } },
+          ...nameFilter,
+        },
+        orderBy: { seq: 'desc' },
+        take: 200,
+        select: {
+          code: true,
+          description: true,
+          qty: true,
+          qtyUnit: true,
+          sizeLabel: true,
+          mainMaterial: true,
+        },
+      }),
+    ]);
+
+    const inStock = stock.map((receipt) => {
+      const shippedQty = receipt.order.shipmentLines.reduce((sum, line) => sum + line.qty, 0);
+      return {
+        code: receipt.order.code,
+        description: receipt.order.description,
+        qty: receipt.qty,
+        qtyUnit: receipt.order.qtyUnit,
+        sizeLabel: receipt.order.sizeLabel,
+        mainMaterial: receipt.order.mainMaterial,
+        inStock: true as const,
+        remainingQty: receipt.qty - shippedQty,
+      };
     });
-    return { items: rows };
+    const waiting = pending.map((row) => ({
+      ...row,
+      inStock: false as const,
+      remainingQty: row.qty,
+    }));
+    return { items: [...inStock, ...waiting] };
   }
 
   async createReceipt(dto: UpsertReceiptDto, actor: AuthUserPayload) {
@@ -321,7 +364,25 @@ export class FinishedGoodsService {
     }
     const order = await this.requireReceiptOrder(dto.orderCode);
     if (order.receipt) {
-      throw new BadRequestException('Đơn đã có trong kho thành phẩm');
+      await this.prisma.finishedGoodsReceipt.update({
+        where: { id: order.receipt.id },
+        data: {
+          qty: order.receipt.qty + dto.qty,
+          receivedAt: receiptDate(dto.receivedAt),
+          receivedByUserId: actor.id,
+          receivedByName: actorName(actor),
+        },
+      });
+      if (dto.sizeLabel !== undefined || dto.qtyUnit !== undefined) {
+        await this.prisma.productionOrder.update({
+          where: { id: order.id },
+          data: {
+            ...(dto.sizeLabel !== undefined ? { sizeLabel: dto.sizeLabel.trim() || null } : {}),
+            ...(dto.qtyUnit !== undefined ? { qtyUnit: dto.qtyUnit.trim() || null } : {}),
+          },
+        });
+      }
+      return { success: true };
     }
     await this.prisma.productionOrder.update({
       where: { id: order.id },
@@ -531,7 +592,7 @@ export class FinishedGoodsService {
       select: {
         id: true,
         code: true,
-        receipt: { select: { id: true } },
+        receipt: { select: { id: true, qty: true } },
       },
     });
     if (!order) throw new NotFoundException('Không tìm thấy đơn sản xuất');
