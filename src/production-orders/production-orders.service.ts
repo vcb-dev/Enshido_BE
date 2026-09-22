@@ -1872,8 +1872,9 @@ export class ProductionOrdersService {
 
   /** Giá trị đã từng nhập, dùng làm gợi ý. Đi qua Prisma Client để khỏi lệch schema. */
   private async distinctValues(field: (typeof SUGGEST_FIELDS)[number]) {
+    // Không lọc null ở where: closedBy là cột NOT NULL, Prisma từ chối `not: null` trên cột này
+    // (lookups trả 500). Null / chuỗi rỗng bị bỏ ở filter bên dưới.
     const rows = await this.prisma.productionOrder.findMany({
-      where: { [field]: { not: null } },
       distinct: [field],
       select: { closedBy: true, leadTime: true, debtStatus: true },
       take: 200,
