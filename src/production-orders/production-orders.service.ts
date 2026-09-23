@@ -4,6 +4,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import {
   Prisma,
   ProductionSource,
@@ -30,6 +31,7 @@ import {
   StageLaborDto,
   StartStageDto,
   UpsertProductionOrderDto,
+  type ProductionNvlLineDto,
 } from './dto/production-order.dto';
 import {
   actorName,
@@ -59,6 +61,15 @@ type WarehouseMaterial = {
   sku: string | null;
   warehouseId: string;
   unit: { id: string; name: string };
+};
+
+type ResolvedNvlLine = {
+  material: WarehouseMaterial;
+  qty: number;
+  platingColor: string | null;
+  stoneWeight: string | null;
+  laserEngraving: string | null;
+  otherRequirements: string | null;
 };
 
 /**
@@ -424,6 +435,7 @@ export class ProductionOrdersService {
             description: true,
             requestType: true,
             qty: true,
+            qtyUnit: true,
             size: true,
             sizeLabel: true,
             mainMaterial: true,
@@ -447,6 +459,33 @@ export class ProductionOrdersService {
               orderBy: { sortOrder: 'asc' },
             },
             shipmentLines: { select: { qty: true } },
+            bomLines: {
+              orderBy: { sortOrder: 'asc' },
+              select: {
+                material: {
+                  select: {
+                    id: true,
+                    sku: true,
+                    name: true,
+                    sizeLabel: true,
+                    note: true,
+                    metalKind: true,
+                    locationCode: true,
+                    unit: { select: { name: true } },
+                    balance: { select: { qty: true } },
+                    materialType: { select: { name: true } },
+                    bodyMetal: { select: { name: true } },
+                    shape: { select: { name: true } },
+                    color: { select: { name: true } },
+                    images: {
+                      select: { url: true },
+                      orderBy: { sortOrder: 'asc' },
+                      take: 1,
+                    },
+                  },
+                },
+              },
+            },
           },
         },
       },
@@ -474,7 +513,26 @@ export class ProductionOrdersService {
         laserEngraving: receipt.order.laserEngraving,
         otherRequirements: receipt.order.otherRequirements,
         remainingQty: receipt.qty - shippedQty,
+        qtyUnit: receipt.order.qtyUnit,
         images: receipt.order.images,
+        bomLines: receipt.order.bomLines.map((line) => ({
+          id: line.material.id,
+          sku: line.material.sku,
+          name: line.material.name,
+          unit: line.material.unit.name,
+          qty: decStr(line.material.balance?.qty),
+          locationCode: line.material.locationCode ?? null,
+          shape: line.material.shape?.name ?? null,
+          color: line.material.color?.name ?? null,
+          materialType: line.material.materialType?.name ?? null,
+          bodyMetal: line.material.bodyMetal?.name ?? null,
+          metalKind: line.material.metalKind
+            ? (METAL_KIND_LABEL[line.material.metalKind] ?? line.material.metalKind)
+            : null,
+          sizeLabel: line.material.sizeLabel,
+          note: line.material.note,
+          imageUrl: line.material.images[0]?.url ?? null,
+        })),
       });
       if (items.length >= 100) break;
     }
@@ -663,7 +721,7 @@ export class ProductionOrdersService {
     const started = Date.now();
     this.logger.log(`Lên đơn ${dto.source}…`);
     const fields = await this.orderFields(dto);
-    const { btpMaterial, nvlMaterial, ...data } = fields;
+    const { btpMaterial, nvlMaterial, nvlLines, btpQty, ...data } = fields;
     const images = this.newImages(dto.images, new Set());
     const changedBy = actorName(actor);
 
@@ -693,6 +751,11 @@ export class ProductionOrdersService {
               statusLogs: { orderBy: { changedAt: 'desc' } },
             },
           });
+          if (nvlLines.length) {
+            await this.replaceBomLines(tx, row.id, nvlLines);
+          } else if (data.sourceOrderCode) {
+            await this.copyBomFromSource(tx, row.id, data.sourceOrderCode);
+          }
           await this.issueAutoStockForOrder(tx, {
             orderId: row.id,
             orderCode: row.code,
@@ -701,16 +764,19 @@ export class ProductionOrdersService {
             actorId: actor.id,
             source: data.source,
             btpMaterial,
-            nvlMaterial,
-            btpQty: data.finishedProductQty ?? data.qty,
-            nvlQty: data.stoneCount ?? 0,
+            btpQty: btpQty ?? data.finishedProductQty ?? data.qty,
+            nvlIssues: nvlLines.length
+              ? nvlLines.map((line) => ({ material: line.material, qty: line.qty }))
+              : nvlMaterial
+                ? [{ material: nvlMaterial, qty: data.stoneCount ?? 0 }]
+                : [],
             sourceOrderCode: data.sourceOrderCode,
             finishedProductQty: data.finishedProductQty ?? 0,
           });
           return row;
         });
         if (btpMaterial) this.inventory.bustBtpStock();
-        if (nvlMaterial) this.inventory.bustNvlStock();
+        if (nvlMaterial || nvlLines.length) this.inventory.bustNvlStock();
         await this.touchSiblings([data.parentId], created.id);
         this.logger.log(`Đã lên đơn ${created.code} (${Date.now() - started}ms)`);
         return toDetail(
@@ -718,7 +784,9 @@ export class ProductionOrdersService {
             created,
             btpMaterial,
             nvlMaterial,
-            Number(Boolean(btpMaterial)) + Number(Boolean(nvlMaterial)),
+            Number(Boolean(btpMaterial)) +
+              (nvlLines.length || Number(Boolean(nvlMaterial))),
+            nvlLines,
           ),
         );
       } catch (error) {
@@ -744,20 +812,25 @@ export class ProductionOrdersService {
         'Đơn đã vào kho thành phẩm, không đổi số lượng được',
       );
     }
-    const { btpMaterial, nvlMaterial, ...fields } = await this.orderFields(
+    const { btpMaterial, nvlMaterial, nvlLines, btpQty, ...fields } = await this.orderFields(
       dto,
       order.id,
     );
     assertCoversSubTickets(order, fields.qty, fields.silverWeight);
+    const nextNvlKey = nvlLines.length
+      ? nvlLines.map((line) => `${line.material.id}:${line.qty}`).join('|')
+      : `${fields.nvlMaterialId ?? ''}:${fields.stoneCount ?? 0}`;
+    const prevNvlKey = order.bomLines.length
+      ? order.bomLines.map((line) => `${line.materialId}:${line.qty ?? 0}`).join('|')
+      : `${order.nvlMaterialId ?? ''}:${order.stoneCount ?? 0}`;
     // Đổi loại đơn / mã / số lượng tự xuất thì hoàn phiếu cũ và xuất lại.
     const reissue =
       fields.source !== order.source ||
       fields.btpMaterialId !== order.btpMaterialId ||
-      fields.nvlMaterialId !== order.nvlMaterialId ||
       fields.sourceOrderCode !== order.sourceOrderCode ||
       (fields.finishedProductQty ?? fields.qty) !==
         (order.finishedProductQty ?? order.qty) ||
-      (fields.stoneCount ?? 0) !== (order.stoneCount ?? 0) ||
+      nextNvlKey !== prevNvlKey ||
       (fields.source === ProductionSource.BTP && fields.qty !== order.qty);
     if (reissue && order.stages.length > 0) {
       throw new BadRequestException(
@@ -807,6 +880,12 @@ export class ProductionOrdersService {
             : {}),
         },
       });
+      if (nvlLines.length) {
+        await this.replaceBomLines(tx, order.id, nvlLines);
+      } else if (fields.sourceOrderCode !== order.sourceOrderCode) {
+        await tx.productionOrderBomLine.deleteMany({ where: { orderId: order.id } });
+        await this.copyBomFromSource(tx, order.id, fields.sourceOrderCode);
+      }
       if (reissue) {
         await this.inventory.revokeBtpForOrder(tx, order.id);
         await this.revokeFinishedGoodsForOrder(tx, order.id);
@@ -818,9 +897,12 @@ export class ProductionOrdersService {
           actorId: actor.id,
           source: fields.source,
           btpMaterial,
-          nvlMaterial,
-          btpQty: fields.finishedProductQty ?? fields.qty,
-          nvlQty: fields.stoneCount ?? 0,
+          btpQty: btpQty ?? fields.finishedProductQty ?? fields.qty,
+          nvlIssues: nvlLines.length
+            ? nvlLines.map((line) => ({ material: line.material, qty: line.qty }))
+            : nvlMaterial
+              ? [{ material: nvlMaterial, qty: fields.stoneCount ?? 0 }]
+              : [],
           sourceOrderCode: fields.sourceOrderCode,
           finishedProductQty: fields.finishedProductQty ?? 0,
         });
@@ -1474,11 +1556,13 @@ export class ProductionOrdersService {
     if (!closedBy) throw new BadRequestException('Nhập người chốt đơn');
     const trackingCode = dto.trackingCode?.trim();
     if (!trackingCode) throw new BadRequestException('Nhập mã theo dõi đơn');
-    const leadTime = dto.leadTime?.trim();
-    if (!leadTime) throw new BadRequestException('Nhập thời gian cần hoàn thành');
+    const leadTime = optional(dto.leadTime);
     const receivedDate = dateOnly(dto.receivedDate);
     if (!dto.dueDate) throw new BadRequestException('Nhập ngày cần trả');
     const dueDate = dateOnly(dto.dueDate);
+    if (!selfId && dueDate < dateOnly(todayYmdVn())) {
+      throw new BadRequestException('Ngày cần trả không được ở quá khứ');
+    }
     if (dueDate < receivedDate) {
       throw new BadRequestException(
         'Ngày cần trả không được trước ngày đặt đơn',
@@ -1487,6 +1571,7 @@ export class ProductionOrdersService {
 
     const askedUserId = dto.askedUserId;
     const parentCode = dto.parentCode?.trim();
+    const nvlLines = await this.resolveNvlLines(dto.nvlLines);
     const [asked, parent, btpMaterial, nvlMaterial, sourceOrderCode] = await Promise.all([
       askedUserId ? this.resolveUser(askedUserId) : Promise.resolve(null),
       parentCode
@@ -1498,18 +1583,29 @@ export class ProductionOrdersService {
       dto.source === ProductionSource.BTP
         ? this.resolveBtpMaterial(dto.btpMaterialId)
         : Promise.resolve(null),
-      this.resolveNvlMaterial(dto.nvlMaterialId),
+      nvlLines[0]
+        ? Promise.resolve(nvlLines[0].material)
+        : this.resolveNvlMaterial(dto.nvlMaterialId),
       dto.source === ProductionSource.NVL
         ? this.resolveSourceFinishedProduct(
             dto.finishedProductCode,
             dto.finishedProductQty ?? 0,
-            selfId,
           )
         : Promise.resolve(null),
     ]);
 
-    if (!(dto.stoneCount && dto.stoneCount >= 1)) {
+    if (!nvlLines.length && !(dto.stoneCount && dto.stoneCount >= 1)) {
       throw new BadRequestException('Nhập số lượng NVL cần lên đơn');
+    }
+    if (dto.source === ProductionSource.NVL && sourceOrderCode && !nvlLines.length) {
+      const bomLineCount = await this.prisma.productionOrderBomLine.count({
+        where: { order: { code: sourceOrderCode } },
+      });
+      if (bomLineCount > 1) {
+        throw new BadRequestException(
+          'Nhập số lượng NVL cần lên đơn cho từng mã trên thành phẩm',
+        );
+      }
     }
     if (
       dto.source === ProductionSource.NVL &&
@@ -1521,6 +1617,9 @@ export class ProductionOrdersService {
       dto.source === ProductionSource.BTP &&
       !(dto.finishedProductQty && dto.finishedProductQty >= 1)
     ) {
+      throw new BadRequestException('Nhập số lượng thành phẩm cần lên đơn');
+    }
+    if (dto.source === ProductionSource.BTP && !(dto.btpQty && dto.btpQty >= 1)) {
       throw new BadRequestException('Nhập số lượng BTP cần lên đơn');
     }
 
@@ -1542,6 +1641,8 @@ export class ProductionOrdersService {
       sourceOrderCode,
       btpMaterial,
       nvlMaterial,
+      nvlLines,
+      btpQty: dto.btpQty ?? null,
       requestType: dto.requestType,
       receivedDate,
       dueDate,
@@ -1558,17 +1659,19 @@ export class ProductionOrdersService {
       stoneTypes: unique(
         (dto.stoneTypes ?? []).map((item) => item.trim()).filter(Boolean),
       ),
-      stoneCount: dto.stoneCount ?? null,
-      stoneWeight: decimalOrNull(dto.stoneWeight),
+      stoneCount: nvlLines[0]?.qty ?? dto.stoneCount ?? null,
+      stoneWeight: decimalOrNull(nvlLines[0]?.stoneWeight ?? dto.stoneWeight),
       silverWeight: decimalOrNull(dto.silverWeight),
       size: optional(dto.size),
       sizeLabel: optional(dto.sizeLabel),
       mainMaterial: optional(dto.mainMaterial),
-      platingColor: optional(dto.platingColor),
+      platingColor: optional(nvlLines[0]?.platingColor ?? dto.platingColor),
       btpCategory: optional(dto.btpCategory),
       productKind: optional(dto.productKind),
-      laserEngraving: optional(dto.laserEngraving),
-      otherRequirements: optional(dto.otherRequirements),
+      laserEngraving: optional(nvlLines[0]?.laserEngraving ?? dto.laserEngraving),
+      otherRequirements: optional(
+        nvlLines[0]?.otherRequirements ?? dto.otherRequirements,
+      ),
       askedUserId: asked?.id ?? null,
       askedUserName: asked?.name ?? null,
       debtStatus: optional(dto.debtStatus),
@@ -1631,41 +1734,97 @@ export class ProductionOrdersService {
   private async resolveSourceFinishedProduct(
     code: string | null | undefined,
     qty: number,
-    selfId?: string,
   ) {
     if (!code?.trim()) throw new BadRequestException('Chọn mã thành phẩm cho Đơn mới');
     if (qty < 1) throw new BadRequestException('Nhập số lượng thành phẩm cần lên đơn');
     const orderCode = normalizeCode(code);
     const source = await this.prisma.productionOrder.findUnique({
       where: { code: orderCode },
-      select: {
-        id: true,
-        code: true,
-        receipt: { select: { qty: true } },
-        shipmentLines: {
-          select: {
-            qty: true,
-            shipment: { select: { createdByOrderId: true } },
-          },
-        },
-      },
+      select: { code: true, receipt: { select: { id: true } } },
     });
     if (!source?.receipt) {
       throw new BadRequestException(
         `Không tìm thấy mã ${orderCode} trong kho thành phẩm`,
       );
     }
-    const shipped = source.shipmentLines.reduce((sum, line) => {
-      if (selfId && line.shipment.createdByOrderId === selfId) return sum;
-      return sum + line.qty;
-    }, 0);
-    const remaining = source.receipt.qty - shipped;
-    if (qty > remaining) {
-      throw new BadRequestException(
-        `Đơn ${orderCode} chỉ còn ${remaining} trong kho thành phẩm`,
-      );
-    }
     return source.code;
+  }
+
+  /** Ghi BOM NVL của đơn kèm số lượng / xi / khắc từng dòng. */
+  private async replaceBomLines(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+    lines: ResolvedNvlLine[],
+  ) {
+    await tx.productionOrderBomLine.deleteMany({ where: { orderId } });
+    if (!lines.length) return;
+    await tx.productionOrderBomLine.createMany({
+      data: lines.map((line, index) => ({
+        id: randomUUID(),
+        orderId,
+        materialId: line.material.id,
+        sortOrder: index,
+        platingColor: line.platingColor,
+        qty: line.qty,
+        stoneWeight: decimalOrNull(line.stoneWeight),
+        laserEngraving: line.laserEngraving,
+        otherRequirements: line.otherRequirements,
+      })),
+    });
+  }
+
+  private async resolveNvlLines(
+    lines?: ProductionNvlLineDto[],
+  ): Promise<ResolvedNvlLine[]> {
+    if (!lines?.length) return [];
+    const ids = lines.map((line) => line.materialId);
+    if (new Set(ids).size !== ids.length) {
+      throw new BadRequestException('Mã NVL bị trùng trên đơn');
+    }
+    const materials = await Promise.all(
+      ids.map((id) =>
+        this.resolveWarehouseMaterial(
+          id,
+          NVL_WAREHOUSE_CODE,
+          'Không tìm thấy mã NVL trong kho NVL chính',
+        ),
+      ),
+    );
+    return lines.map((line, index) => ({
+      material: materials[index],
+      qty: line.qty,
+      platingColor: optional(line.platingColor),
+      stoneWeight: line.stoneWeight ?? null,
+      laserEngraving: optional(line.laserEngraving),
+      otherRequirements: optional(line.otherRequirements),
+    }));
+  }
+
+  /** Chép BOM NVL từ thành phẩm nguồn sang đơn mới. */
+  private async copyBomFromSource(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+    sourceOrderCode: string | null | undefined,
+  ) {
+    if (!sourceOrderCode) return;
+    const source = await tx.productionOrder.findUnique({
+      where: { code: sourceOrderCode },
+      select: {
+        bomLines: {
+          select: { materialId: true, sortOrder: true },
+          orderBy: { sortOrder: 'asc' },
+        },
+      },
+    });
+    if (!source?.bomLines.length) return;
+    await tx.productionOrderBomLine.createMany({
+      data: source.bomLines.map((line) => ({
+        id: randomUUID(),
+        orderId,
+        materialId: line.materialId,
+        sortOrder: line.sortOrder,
+      })),
+    });
   }
 
   /** Xuất kho gắn đơn: BTP và/hoặc NVL; Đơn mới thêm xuất thành phẩm nguồn. */
@@ -1679,14 +1838,13 @@ export class ProductionOrdersService {
       actorId: string;
       source: ProductionSource;
       btpMaterial: WarehouseMaterial | null;
-      nvlMaterial: WarehouseMaterial | null;
       btpQty: number;
-      nvlQty: number;
+      nvlIssues: Array<{ material: WarehouseMaterial; qty: number }>;
       sourceOrderCode: string | null;
       finishedProductQty: number;
     },
   ) {
-    if (params.btpMaterial || params.nvlMaterial) {
+    if (params.btpMaterial || params.nvlIssues.length) {
       await tx.$executeRaw`SELECT set_config('lock_timeout', '2000', true)`;
     }
     if (params.btpMaterial) {
@@ -1699,12 +1857,17 @@ export class ProductionOrdersService {
         issuedBy: params.issuedBy,
       });
     }
-    if (params.nvlMaterial) {
+    for (const line of params.nvlIssues) {
+      if (line.qty < 1) {
+        throw new BadRequestException(
+          `Nhập số lượng NVL cần lên đơn cho mã ${line.material.sku ?? line.material.name}`,
+        );
+      }
       await this.inventory.issueStockForOrder(tx, {
         orderId: params.orderId,
         orderCode: params.orderCode,
-        material: params.nvlMaterial,
-        qty: params.nvlQty,
+        material: line.material,
+        qty: line.qty,
         issuedAt: params.issuedAt,
         issuedBy: params.issuedBy,
       });
@@ -1901,6 +2064,7 @@ function asCreatedDetail(
   btpMaterial: WarehouseMaterial | null,
   nvlMaterial: WarehouseMaterial | null,
   issuedCount = 0,
+  nvlLines: ResolvedNvlLine[] = [],
 ): OrderDetail {
   return {
     ...row,
@@ -1916,6 +2080,14 @@ function asCreatedDetail(
     children: [],
     receipt: null,
     shipmentLines: [],
+    bomLines: nvlLines.map((line) => ({
+      materialId: line.material.id,
+      platingColor: line.platingColor,
+      qty: line.qty,
+      stoneWeight: decimalOrNull(line.stoneWeight),
+      laserEngraving: line.laserEngraving,
+      otherRequirements: line.otherRequirements,
+    })),
     _count: { outbounds: issuedCount },
   };
 }
@@ -1989,6 +2161,11 @@ function uniqueSorted(values: string[]) {
 
 function dateOnly(value: string) {
   return new Date(`${value.slice(0, 10)}T00:00:00.000Z`);
+}
+
+function todayYmdVn() {
+  const vn = new Date(Date.now() + 7 * 60 * 60 * 1000);
+  return vn.toISOString().slice(0, 10);
 }
 
 function isUniqueViolation(error: unknown) {

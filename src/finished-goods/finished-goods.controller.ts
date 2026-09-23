@@ -39,6 +39,11 @@ export class FinishedGoodsController {
     return this.finishedGoods.orderOptions(query.search);
   }
 
+  @Get('nvl-options')
+  nvlOptions(@Query() query: StockQuery) {
+    return this.finishedGoods.nvlOptions(query.search);
+  }
+
   @Post('receipts')
   createReceipt(
     @Body() dto: UpsertReceiptDto,

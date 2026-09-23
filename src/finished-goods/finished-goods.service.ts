@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -13,8 +14,9 @@ import {
 import type { AuthUserPayload } from '../auth/types';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProductionCostingService } from '../production-orders/production-costing.service';
+import { randomUUID } from 'node:crypto';
 import { orderCode } from '../production-orders/production-orders.service';
-import { availabilityOf, decStr } from '../util/money';
+import { availabilityOf, decStr, METAL_KIND_LABEL } from '../util/money';
 import {
   ListShipmentsQuery,
   ShipmentLineDto,
@@ -25,6 +27,51 @@ import {
 const DEFAULT_PAYMENT_METHODS = ['Tiền mặt', 'Chuyển khoản', 'VCB'];
 const OPENING_COST_NAME = 'Giá vốn đầu kỳ';
 const STOCK_TRACKING_PREFIX = 'KHO-';
+const NVL_WAREHOUSE_CODE = 'nvl-chinh';
+
+const nvlSelect = {
+  id: true,
+  sku: true,
+  name: true,
+  sizeLabel: true,
+  note: true,
+  metalKind: true,
+  locationCode: true,
+  unit: { select: { name: true } },
+  balance: { select: { qty: true } },
+  materialType: { select: { name: true } },
+  bodyMetal: { select: { name: true } },
+  shape: { select: { name: true } },
+  color: { select: { name: true } },
+  images: {
+    select: { url: true },
+    orderBy: { sortOrder: 'asc' as const },
+    take: 1,
+  },
+} satisfies Prisma.MaterialSelect;
+
+type NvlSnapshot = Prisma.MaterialGetPayload<{ select: typeof nvlSelect }>;
+
+function mapNvl(row: NvlSnapshot) {
+  return {
+    id: row.id,
+    sku: row.sku,
+    name: row.name,
+    unit: row.unit.name,
+    qty: decStr(row.balance?.qty),
+    locationCode: row.locationCode ?? null,
+    shape: row.shape?.name ?? null,
+    color: row.color?.name ?? null,
+    materialType: row.materialType?.name ?? null,
+    bodyMetal: row.bodyMetal?.name ?? null,
+    metalKind: row.metalKind
+      ? (METAL_KIND_LABEL[row.metalKind] ?? row.metalKind)
+      : null,
+    sizeLabel: row.sizeLabel,
+    note: row.note,
+    imageUrl: row.images[0]?.url ?? null,
+  };
+}
 
 const CREATE_RETRIES = 3;
 
@@ -80,6 +127,18 @@ export class FinishedGoodsService {
               OR: [
                 { code: { contains: keyword, mode: 'insensitive' } },
                 { description: { contains: keyword, mode: 'insensitive' } },
+                {
+                  bomLines: {
+                    some: {
+                      material: {
+                        OR: [
+                          { sku: { contains: keyword, mode: 'insensitive' } },
+                          { name: { contains: keyword, mode: 'insensitive' } },
+                        ],
+                      },
+                    },
+                  },
+                },
               ],
             },
           }
@@ -95,6 +154,7 @@ export class FinishedGoodsService {
             qtyUnit: true,
             sizeLabel: true,
             mainMaterial: true,
+            platingColor: true,
             trackingCode: true,
             images: {
               where: { kind: ProductionImageKind.PRODUCT },
@@ -103,6 +163,10 @@ export class FinishedGoodsService {
               take: 1,
             },
             shipmentLines: { select: { qty: true } },
+            bomLines: {
+              orderBy: { sortOrder: 'asc' },
+              select: { material: { select: nvlSelect } },
+            },
           },
         },
       },
@@ -163,7 +227,9 @@ export class FinishedGoodsService {
         qtyUnit: receipt.order.qtyUnit,
         sizeLabel: receipt.order.sizeLabel,
         mainMaterial: receipt.order.mainMaterial,
+        platingColor: receipt.order.platingColor,
         imageUrl: receipt.order.images[0]?.url ?? null,
+        bomLines: receipt.order.bomLines.map((line) => mapNvl(line.material)),
         isOpening,
         openingQty: decStr(openingQty),
         openingAmount: decStr(openingAmount),
@@ -329,6 +395,29 @@ export class FinishedGoodsService {
     };
   }
 
+  /** Danh sách NVL kho chính để gắn vào thành phẩm — gồm cả mã tồn 0. */
+  async nvlOptions(search?: string) {
+    const keyword = search?.trim();
+    const rows = await this.prisma.material.findMany({
+      where: {
+        isActive: true,
+        warehouse: { code: NVL_WAREHOUSE_CODE },
+        ...(keyword
+          ? {
+              OR: [
+                { sku: { contains: keyword, mode: 'insensitive' } },
+                { name: { contains: keyword, mode: 'insensitive' } },
+              ],
+            }
+          : null),
+      },
+      orderBy: [{ sortOrder: 'asc' }, { sku: 'asc' }, { name: 'asc' }],
+      take: 500,
+      select: nvlSelect,
+    });
+    return { items: rows.map(mapNvl) };
+  }
+
   async createReceipt(dto: UpsertReceiptDto, actor: AuthUserPayload) {
     if (!dto.orderCode?.trim()) {
       return this.createStockEntry(dto, actor);
@@ -369,6 +458,7 @@ export class FinishedGoodsService {
           select: {
             id: true,
             code: true,
+            description: true,
             shipmentLines: { select: { qty: true } },
           },
         },
@@ -391,6 +481,9 @@ export class FinishedGoodsService {
       );
     }
     const changedBy = actorName(actor);
+    if (dto.description !== undefined) {
+      await this.assertUniqueStockName(dto.description.trim(), receipt.order.id);
+    }
     await this.prisma.productionOrder.update({
       where: { id: receipt.order.id },
       data: {
@@ -399,6 +492,9 @@ export class FinishedGoodsService {
           : {}),
         ...(dto.mainMaterial !== undefined
           ? { mainMaterial: dto.mainMaterial.trim() || null }
+          : {}),
+        ...(dto.platingColor !== undefined
+          ? { platingColor: dto.platingColor.trim() || null }
           : {}),
         ...(dto.sizeLabel !== undefined ? { sizeLabel: dto.sizeLabel.trim() || null } : {}),
         ...(dto.qtyUnit !== undefined ? { qtyUnit: dto.qtyUnit.trim() || null } : {}),
@@ -419,6 +515,9 @@ export class FinishedGoodsService {
         dto.stockUnitPrice,
         changedBy,
       );
+    }
+    if (dto.bomLines !== undefined) {
+      await this.replaceBomLines(receipt.order.id, dto.bomLines);
     }
     return { success: true };
   }
@@ -448,12 +547,14 @@ export class FinishedGoodsService {
   private async createStockEntry(dto: UpsertReceiptDto, actor: AuthUserPayload) {
     const description = dto.description?.trim();
     if (!description) throw new BadRequestException('Nhập tên thành phẩm');
+    await this.assertUniqueStockName(description);
     const changedBy = actorName(actor);
     const receivedAt = receiptDate(dto.receivedAt);
     const unitPrice = dto.stockUnitPrice
       ? new Prisma.Decimal(dto.stockUnitPrice)
       : new Prisma.Decimal(0);
     const costAmount = unitPrice.mul(dto.qty).toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP);
+    const bomLines = await this.requireBomMaterials(this.prisma, dto.bomLines ?? []);
 
     for (let attempt = 1; ; attempt += 1) {
       try {
@@ -472,6 +573,7 @@ export class FinishedGoodsService {
               qtyUnit: dto.qtyUnit?.trim() || null,
               description,
               mainMaterial: dto.mainMaterial?.trim() || null,
+              platingColor: dto.platingColor?.trim() || null,
               sizeLabel: dto.sizeLabel?.trim() || null,
               closedBy: changedBy,
               createdBy: changedBy,
@@ -487,6 +589,13 @@ export class FinishedGoodsService {
                   receivedByName: changedBy,
                 },
               },
+              ...(bomLines.length
+                ? {
+                    bomLines: {
+                      create: bomLines,
+                    },
+                  }
+                : {}),
               ...(costAmount.gt(0)
                 ? {
                     costs: {
@@ -507,6 +616,21 @@ export class FinishedGoodsService {
         throw error;
       }
     }
+  }
+
+  private async assertUniqueStockName(description: string, excludeOrderId?: string) {
+    const name = description.trim();
+    if (!name) return;
+    const found = await this.prisma.finishedGoodsReceipt.findFirst({
+      where: {
+        order: {
+          description: { equals: name, mode: 'insensitive' },
+          ...(excludeOrderId ? { id: { not: excludeOrderId } } : {}),
+        },
+      },
+      select: { id: true },
+    });
+    if (found) throw new ConflictException('Tên thành phẩm này đã có trên Tồn');
   }
 
   private async upsertOpeningCost(
@@ -556,6 +680,50 @@ export class FinishedGoodsService {
     });
     if (!order) throw new NotFoundException('Không tìm thấy đơn sản xuất');
     return order;
+  }
+
+  private async requireBomMaterials(
+    db: Prisma.TransactionClient | PrismaService,
+    lines: Array<{ materialId: string }>,
+  ) {
+    const ids = lines.map((line) => line.materialId.trim()).filter(Boolean);
+    const unique = [...new Set(ids)];
+    if (unique.length !== ids.length) {
+      throw new BadRequestException('Không chọn trùng một mã NVL');
+    }
+    if (unique.length === 0) return [];
+    const rows = await db.material.findMany({
+      where: {
+        id: { in: unique },
+        warehouse: { code: NVL_WAREHOUSE_CODE },
+      },
+      select: { id: true },
+    });
+    if (rows.length !== unique.length) {
+      throw new BadRequestException(
+        'Mã NVL không hợp lệ hoặc không thuộc kho NVL chính',
+      );
+    }
+    return unique.map((materialId, sortOrder) => ({ materialId, sortOrder }));
+  }
+
+  private async replaceBomLines(
+    orderId: string,
+    lines: Array<{ materialId: string }>,
+  ) {
+    const bom = await this.requireBomMaterials(this.prisma, lines);
+    await this.prisma.runTx(async (tx) => {
+      await tx.productionOrderBomLine.deleteMany({ where: { orderId } });
+      if (bom.length === 0) return;
+      await tx.productionOrderBomLine.createMany({
+        data: bom.map((line) => ({
+          id: randomUUID(),
+          orderId,
+          materialId: line.materialId,
+          sortOrder: line.sortOrder,
+        })),
+      });
+    });
   }
 
   async lookups() {

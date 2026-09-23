@@ -7,6 +7,7 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  IsUUID,
   Matches,
   Max,
   MaxLength,
@@ -108,6 +109,11 @@ export class UpsertReceiptDto {
   mainMaterial?: string;
 
   @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  platingColor?: string;
+
+  @IsOptional()
   @Matches(MONEY, { message: 'Đơn giá tồn không hợp lệ' })
   stockUnitPrice?: string;
 
@@ -128,4 +134,22 @@ export class UpsertReceiptDto {
   @IsString()
   @MaxLength(20)
   qtyUnit?: string;
+
+  /** NVL cấu thành — chỉ gửi khi tạo / sửa trên tab Tồn. */
+  @IsOptional()
+  @Transform(({ value }) =>
+    Array.isArray(value)
+      ? value.filter((line: { materialId?: string }) => Boolean(line?.materialId?.trim()))
+      : value,
+  )
+  @IsArray()
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
+  @Type(() => BomLineDto)
+  bomLines?: BomLineDto[];
+}
+
+export class BomLineDto {
+  @IsUUID()
+  materialId!: string;
 }

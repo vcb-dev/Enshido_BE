@@ -374,6 +374,7 @@ export class InventoryService {
     });
     if (!unit) throw new NotFoundException('Không tìm thấy đơn vị');
 
+    const colorId = await this.resolveColorId(dto.colorName, dto.colorId);
     const [last] = await Promise.all([
       this.prisma.material.aggregate({
         where: { warehouseId: warehouse.id, isActive: true },
@@ -381,7 +382,7 @@ export class InventoryService {
       }),
       this.assertLookups(
         dto.shapeId,
-        dto.colorId,
+        dto.colorName !== undefined ? null : dto.colorId,
         dto.materialTypeId,
         dto.bodyMetalId,
         dto.productKindId,
@@ -433,7 +434,7 @@ export class InventoryService {
           locationCode: dto.locationCode?.trim() || null,
           unitId: dto.unitId,
           shapeId: dto.shapeId || null,
-          colorId: dto.colorId || null,
+          colorId: colorId || null,
           materialTypeId: isBtp || otherClassId ? null : dto.materialTypeId || null,
           otherClassId,
           bodyMetalId: dto.bodyMetalId || null,
@@ -504,9 +505,10 @@ export class InventoryService {
       });
       if (!unitRow) throw new NotFoundException('Không tìm thấy đơn vị');
     }
+    const colorId = await this.resolveColorId(dto.colorName, dto.colorId);
     await this.assertLookups(
       dto.shapeId,
-      dto.colorId,
+      dto.colorName !== undefined ? null : dto.colorId,
       dto.materialTypeId,
       dto.bodyMetalId,
       dto.productKindId,
@@ -563,7 +565,7 @@ export class InventoryService {
           ...(dto.name != null ? { name: dto.name.trim() } : {}),
           ...(dto.unitId ? { unitId: dto.unitId } : {}),
           ...(dto.shapeId !== undefined ? { shapeId: dto.shapeId } : {}),
-          ...(dto.colorId !== undefined ? { colorId: dto.colorId } : {}),
+          ...(colorId !== undefined ? { colorId } : {}),
           ...(otherClassId
             ? { materialTypeId: null, otherClassId, metalKind: null }
             : {
@@ -1970,6 +1972,34 @@ export class InventoryService {
     return items;
   }
 
+  private async resolveColorId(colorName?: string | null, colorId?: string | null) {
+    if (colorName !== undefined) {
+      const name = colorName?.trim() ?? '';
+      if (!name) return null;
+      const existing = await this.prisma.color.findFirst({
+        where: { name: { equals: name, mode: 'insensitive' } },
+        select: { id: true },
+      });
+      if (existing) return existing.id;
+      const last = await this.prisma.color.aggregate({ _max: { sortOrder: true } });
+      const base = slugFromName(name);
+      let code = base;
+      let n = 2;
+      while (await this.prisma.color.findUnique({ where: { code }, select: { id: true } })) {
+        code = `${base}-${n}`;
+        n += 1;
+      }
+      const created = await this.prisma.color.create({
+        data: { code, name, sortOrder: (last._max.sortOrder ?? 0) + 1 },
+        select: { id: true },
+      });
+      this.bustLookups();
+      return created.id;
+    }
+    if (colorId === undefined) return undefined;
+    return colorId || null;
+  }
+
   private async resolveOtherClassId(raw?: string | null) {
     const name = raw?.trim();
     if (!name) return null;
@@ -2360,17 +2390,16 @@ export class InventoryService {
   ) {
     const [quote, last] = await Promise.all([
       this.quoteFifo(tx, params.warehouseId, params.material.id, params.qty),
-      tx.stockOutbound.findFirst({
+      tx.stockOutbound.aggregate({
         where: { warehouseId: params.warehouseId },
-        orderBy: { sortOrder: 'desc' },
-        select: { sortOrder: true },
+        _max: { sortOrder: true },
       }),
     ]);
     const row = await tx.stockOutbound.create({
       data: {
         warehouseId: params.warehouseId,
         materialId: params.material.id,
-        sortOrder: (last?.sortOrder ?? 0) + 1,
+        sortOrder: (last._max.sortOrder ?? 0) + 1,
         issuedAt: params.issuedAt,
         name: params.material.name,
         sku: params.material.sku,
