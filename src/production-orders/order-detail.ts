@@ -70,7 +70,7 @@ export const detailInclude = {
     orderBy: { no: 'asc' },
     include: { topUps: { orderBy: { createdAt: 'asc' } } },
   },
-  statusLogs: { orderBy: { changedAt: 'desc' } },
+  statusLogs: { orderBy: { changedAt: 'desc' }, take: 80 },
   parent: {
     select: {
       code: true,
@@ -81,6 +81,17 @@ export const detailInclude = {
   receipt: true,
   btpMaterial: { select: { id: true, sku: true, name: true } },
   nvlMaterial: { select: { id: true, sku: true, name: true } },
+  bomLines: {
+    orderBy: { sortOrder: 'asc' },
+    select: {
+      materialId: true,
+      platingColor: true,
+      qty: true,
+      stoneWeight: true,
+      laserEngraving: true,
+      otherRequirements: true,
+    },
+  },
   shipmentLines: {
     select: {
       qty: true,
@@ -439,6 +450,14 @@ export function toDetail(order: OrderDetail) {
     productKind: order.productKind,
     laserEngraving: order.laserEngraving,
     otherRequirements: order.otherRequirements,
+    nvlLines: order.bomLines.map((line) => ({
+      materialId: line.materialId,
+      platingColor: line.platingColor,
+      qty: line.qty,
+      stoneWeight: line.stoneWeight != null ? decStr(line.stoneWeight) : null,
+      laserEngraving: line.laserEngraving,
+      otherRequirements: line.otherRequirements,
+    })),
     askedUserId: order.askedUserId,
     askedUserName: order.askedUserName,
     receivedDate: ymd(order.receivedDate),

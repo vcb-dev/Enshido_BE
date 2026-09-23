@@ -111,6 +111,37 @@ export class OrderImageDto {
   height?: number | null;
 }
 
+/** Một mã NVL trên đơn — số lượng / xi / khắc nhập riêng từng dòng. */
+export class ProductionNvlLineDto {
+  @IsUUID()
+  materialId!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  platingColor?: string;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  qty!: number;
+
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Matches(DECIMAL, { message: 'Trọng lượng đá không hợp lệ' })
+  stoneWeight?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  laserEngraving?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  otherRequirements?: string;
+}
+
 export class UpsertProductionOrderDto {
   /** Đơn NVL (làm từ đầu) hoặc Đơn BTP (lấy BTP có sẵn theo mã). */
   @IsEnum(ProductionSource)
@@ -169,6 +200,14 @@ export class UpsertProductionOrderDto {
   @Min(1)
   finishedProductQty?: number | null;
 
+  /** Số lượng BTP xuất kho — Đơn BTP. */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  btpQty?: number | null;
+
   @IsOptional()
   @IsString()
   @MaxLength(60)
@@ -179,10 +218,10 @@ export class UpsertProductionOrderDto {
   @IsUrl({ require_protocol: true })
   model3dUrl?: string | null;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
   @MaxLength(60)
-  leadTime!: string;
+  leadTime?: string;
 
   @IsString()
   @IsNotEmpty()
@@ -283,6 +322,14 @@ export class UpsertProductionOrderDto {
   @ValidateNested({ each: true })
   @Type(() => OrderImageDto)
   images!: OrderImageDto[];
+
+  /** NVL gắn thành phẩm — số lượng / xi / khắc từng mã khi lên đơn. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => ProductionNvlLineDto)
+  nvlLines?: ProductionNvlLineDto[];
 }
 
 export class ChangeStatusDto {

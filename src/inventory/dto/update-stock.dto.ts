@@ -70,6 +70,11 @@ export class UpdateStockDto {
   colorId?: string | null;
 
   @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  colorName?: string | null;
+
+  @IsOptional()
   @Transform(({ value }) => (value === '' ? null : value))
   @IsUUID()
   materialTypeId?: string | null;
@@ -189,6 +194,11 @@ export class CreateStockDto {
   @Transform(({ value }) => (value === '' ? null : value))
   @IsUUID()
   colorId?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  colorName?: string | null;
 
   @IsOptional()
   @Transform(({ value }) => (value === '' ? null : value))
