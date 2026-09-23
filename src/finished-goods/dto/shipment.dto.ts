@@ -90,6 +90,15 @@ export class StockQuery {
   search?: string;
 }
 
+/** Kho xác nhận nhận hàng vào tồn. Bỏ trống `qty` là nhận hết phần đang chờ. */
+export class ReceiveReceiptDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  qty?: number;
+}
+
 export class UpsertReceiptDto {
   /** Bỏ trống khi nhập mới trên Tồn — hệ thống tự cấp mã. */
   @IsOptional()
@@ -139,7 +148,9 @@ export class UpsertReceiptDto {
   @IsOptional()
   @Transform(({ value }) =>
     Array.isArray(value)
-      ? value.filter((line: { materialId?: string }) => Boolean(line?.materialId?.trim()))
+      ? value.filter((line: { materialId?: string }) =>
+          Boolean(line?.materialId?.trim()),
+        )
       : value,
   )
   @IsArray()

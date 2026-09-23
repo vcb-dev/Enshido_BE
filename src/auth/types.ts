@@ -19,4 +19,3 @@ export type JwtPayload = {
   extraRoles: RoleCode[];
   department: string | null;
 };
-

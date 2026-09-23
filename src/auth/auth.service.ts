@@ -266,7 +266,11 @@ export class AuthService {
     return {
       ...this.toPublicUser(user),
       roleLabel: roleLabelFor(user.roleCode, extraRoles),
-      permissions: permissionsForUser(user.roleCode, extraRoles, allowedScreens),
+      permissions: permissionsForUser(
+        user.roleCode,
+        extraRoles,
+        allowedScreens,
+      ),
     };
   }
 }

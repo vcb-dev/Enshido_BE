@@ -168,7 +168,6 @@ export class UpdateStockDto {
   @IsOptional()
   @Matches(DECIMAL, { message: 'Tồn kho TT không hợp lệ' })
   amount?: string;
-
 }
 
 export class CreateStockDto {

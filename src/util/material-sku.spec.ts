@@ -33,7 +33,9 @@ describe('allocateMaterialSku', () => {
       },
     };
     await expect(allocateMaterialSku(db, 'nvl-chinh')).resolves.toBe('A00006');
-    await expect(allocateMaterialSku(db, 'btp-cho-vao-da')).resolves.toBe('B00006');
+    await expect(allocateMaterialSku(db, 'btp-cho-vao-da')).resolves.toBe(
+      'B00006',
+    );
     expect(String(seen[0].values[0])).toContain('^A[0-9]');
     expect(String(seen[1].values[0])).toContain('^B[0-9]');
   });
@@ -42,6 +44,8 @@ describe('allocateMaterialSku', () => {
     const db = {
       $queryRaw: async <T>() => [{ max: null }] as T,
     };
-    await expect(allocateMaterialSku(db, 'nvl-tieu-hao')).resolves.toBe('D00001');
+    await expect(allocateMaterialSku(db, 'nvl-tieu-hao')).resolves.toBe(
+      'D00001',
+    );
   });
 });

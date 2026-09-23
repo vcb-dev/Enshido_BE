@@ -31,7 +31,10 @@ export class LocationsController {
 
   @Patch(':id')
   @RequirePermissions(Permission.SCREEN_LOCATIONS)
-  update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateLocationDto) {
+  update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateLocationDto,
+  ) {
     return this.locations.update(id, dto);
   }
 

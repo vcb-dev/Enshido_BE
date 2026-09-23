@@ -16,7 +16,12 @@ export class LocationsService {
     const [slots, materials] = await Promise.all([
       this.prisma.warehouseLocation.findMany({
         where: { warehouseId: warehouse.id, isActive: true },
-        orderBy: [{ zone: 'asc' }, { aisle: 'asc' }, { level: 'asc' }, { position: 'asc' }],
+        orderBy: [
+          { zone: 'asc' },
+          { aisle: 'asc' },
+          { level: 'asc' },
+          { position: 'asc' },
+        ],
         select: {
           id: true,
           code: true,
@@ -95,13 +100,21 @@ export class LocationsService {
   async generate(dto: GenerateLocationsDto) {
     const warehouse = await this.requireWarehouse(dto.warehouseCode.trim());
     const zone = dto.zone.trim().toUpperCase();
-    const slots = buildSlots(zone, dto.aisleCount, dto.levelCount, dto.positionCount);
+    const slots = buildSlots(
+      zone,
+      dto.aisleCount,
+      dto.levelCount,
+      dto.positionCount,
+    );
     if (slots.length > 2000) {
       throw new BadRequestException('Tối đa 2000 vị trí mỗi lần tạo');
     }
 
     const existing = await this.prisma.warehouseLocation.findMany({
-      where: { warehouseId: warehouse.id, code: { in: slots.map((s) => s.code) } },
+      where: {
+        warehouseId: warehouse.id,
+        code: { in: slots.map((s) => s.code) },
+      },
       select: { code: true },
     });
     const have = new Set(existing.map((row) => row.code));
@@ -176,11 +189,17 @@ export class LocationsService {
     });
     if (!slot) throw new NotFoundException('Không tìm thấy vị trí');
     const used = await this.prisma.material.findFirst({
-      where: { warehouseId: slot.warehouseId, isActive: true, locationCode: slot.code },
+      where: {
+        warehouseId: slot.warehouseId,
+        isActive: true,
+        locationCode: slot.code,
+      },
       select: { name: true },
     });
     if (used) {
-      throw new BadRequestException(`Vị trí ${slot.code} đang dùng cho ${used.name}`);
+      throw new BadRequestException(
+        `Vị trí ${slot.code} đang dùng cho ${used.name}`,
+      );
     }
     await this.prisma.warehouseLocation.delete({ where: { id: slot.id } });
     return { success: true };
@@ -206,9 +225,19 @@ export function buildLocationCode(
 }
 
 /** Zone A + 3 dãy + 8 tầng + 10 ô → A1A1 … A3H10 */
-function buildSlots(zone: string, aisleCount: number, levelCount: number, positionCount: number) {
-  const slots: { zone: string; aisle: number; level: string; position: number; code: string }[] =
-    [];
+function buildSlots(
+  zone: string,
+  aisleCount: number,
+  levelCount: number,
+  positionCount: number,
+) {
+  const slots: {
+    zone: string;
+    aisle: number;
+    level: string;
+    position: number;
+    code: string;
+  }[] = [];
   for (let aisle = 1; aisle <= aisleCount; aisle += 1) {
     for (let i = 0; i < levelCount; i += 1) {
       const level = String.fromCharCode(65 + i);
@@ -225,4 +254,3 @@ function buildSlots(zone: string, aisleCount: number, levelCount: number, positi
   }
   return slots;
 }
-

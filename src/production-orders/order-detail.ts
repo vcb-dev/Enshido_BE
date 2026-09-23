@@ -1,5 +1,10 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
-import { Prisma, ProductionStage, ProductionStatus } from '@prisma/client';
+import {
+  Prisma,
+  ProductionStage,
+  ProductionStatus,
+  SubTicketOutcome,
+} from '@prisma/client';
 import { decStr } from '../util/money';
 import { silverLossOf } from './stage-math';
 
@@ -14,6 +19,9 @@ export const STAGE_ORDER: ProductionStage[] = [
   G.POLISHING,
   G.PLATING,
 ];
+
+/** Khâu cuối trên phiếu (Xi) — phải xong khâu này mới chốt Hoàn thiện được. */
+export const LAST_STAGE: ProductionStage = STAGE_ORDER[STAGE_ORDER.length - 1];
 
 /** Khâu trên phiếu → trạng thái đơn. Mỗi khâu một trạng thái. */
 export const STAGE_STATUS: Record<ProductionStage, ProductionStatus> = {
@@ -128,6 +136,69 @@ export function entriesOf(
   return order.stages.filter((entry) => entry.subTicketId === ticketId);
 }
 
+/**
+ * Đá phát cho thợ ở khâu Vào đá — hai trường này chỉ có nghĩa ở khâu đó, khâu khác gửi lên
+ * là sai luồng. Cộng dồn các lần giao không được vượt quá số đá ghi trên đơn (lần đang sửa
+ * không tính vào phần đã phát). Trả về giá trị đã lọc theo khâu để chỗ ghi DB dùng thẳng.
+ */
+export function handedStoneOf(
+  stage: ProductionStage,
+  dto: { handedStoneCount?: number | null; handedStoneWeight?: string | null },
+  order: Pick<OrderDetail, 'stoneCount' | 'stoneWeight' | 'stages'>,
+  currentEntryId: string | null = null,
+) {
+  if (stage !== G.STONE_SETTING) {
+    if (dto.handedStoneCount != null || dto.handedStoneWeight != null) {
+      throw new BadRequestException(
+        `Chỉ khâu ${STAGE_LABEL[G.STONE_SETTING]} mới ghi đá giao cho thợ`,
+      );
+    }
+    return { handedStoneCount: null, handedStoneWeight: null };
+  }
+  const handedStoneCount = dto.handedStoneCount ?? null;
+  const handedStoneWeight = decimalOrNull(dto.handedStoneWeight);
+  const others = order.stages.filter(
+    (entry) => entry.stage === G.STONE_SETTING && entry.id !== currentEntryId,
+  );
+  if (order.stoneCount != null && handedStoneCount != null) {
+    const used = others.reduce(
+      (sum, entry) => sum + (entry.handedStoneCount ?? 0),
+      0,
+    );
+    const left = order.stoneCount - used;
+    if (handedStoneCount > left) {
+      throw new BadRequestException(
+        `Đơn chỉ còn ${left < 0 ? 0 : left} viên đá chưa giao`,
+      );
+    }
+  }
+  if (order.stoneWeight != null && handedStoneWeight != null) {
+    const used = others.reduce(
+      (sum, entry) => sum.add(entry.handedStoneWeight ?? 0),
+      new Prisma.Decimal(0),
+    );
+    const left = order.stoneWeight.sub(used);
+    if (handedStoneWeight.gt(left)) {
+      throw new BadRequestException(
+        `Đơn chỉ còn ${decStr(left.lt(0) ? new Prisma.Decimal(0) : left)} g đá chưa giao`,
+      );
+    }
+  }
+  return { handedStoneCount, handedStoneWeight };
+}
+
+/**
+ * Phiếu đã đi hết đến khâu cuối chưa: khâu gần nhất phải là Xi và đã được KCS nhận lại. Chưa
+ * tới thì không chốt Hoàn thiện được — khâu giữa bỏ qua được, nhưng sửa lại khâu nào sau khi
+ * đã xi thì phải xi lại mới chốt.
+ */
+export function lastStageDone(
+  entries: readonly Pick<StageEntry, 'stage' | 'returnedAt'>[],
+) {
+  const last = entries[entries.length - 1];
+  return last?.stage === LAST_STAGE && last.returnedAt != null;
+}
+
 /** Các trường của một lần giao khâu mà việc tính trạng thái phiếu con cần tới. */
 type StateEntry = Pick<StageEntry, 'stage' | 'returnedAt' | 'submittedAt'>;
 
@@ -167,6 +238,46 @@ export function ticketPosition(
   if (ticket.outcome) return null;
   const { activeStage } = subTicketState(ticket, entries);
   return activeStage ?? entries[entries.length - 1]?.stage ?? orderLast;
+}
+
+/**
+ * Các tab mà một đơn phải xuất hiện trên danh sách. Một đơn đã chia có thể đồng thời nằm ở
+ * nhiều khâu vì từng phiếu con chạy độc lập; phiếu đã chốt thì nằm ở Lỗi / Hoàn thiện.
+ */
+export function orderListStatuses(order: {
+  status: ProductionStatus;
+  subTickets: readonly Pick<
+    SubTicket,
+    'id' | 'pendingStage' | 'claimedByUserId' | 'outcome'
+  >[];
+  stages: readonly (StateEntry & Pick<StageEntry, 'subTicketId'>)[];
+}): ProductionStatus[] {
+  const statuses = new Set<ProductionStatus>();
+  // Đơn chưa chia lấy trạng thái của chính nó. Với đơn đã chia, trạng thái khâu của đơn mẹ
+  // chỉ là giá trị tổng hợp; từng phiếu bên dưới mới là nguồn đúng để xếp tab khâu.
+  if (
+    order.subTickets.length === 0 ||
+    !IN_STAGE_STATUSES.includes(order.status)
+  ) {
+    statuses.add(order.status);
+  }
+  for (const ticket of order.subTickets) {
+    if (ticket.outcome === SubTicketOutcome.DEFECT) {
+      statuses.add(S.DEFECT);
+      continue;
+    }
+    if (ticket.outcome === SubTicketOutcome.FINISH) {
+      statuses.add(S.FINISHING);
+      continue;
+    }
+    const entries = order.stages.filter(
+      (entry) => entry.subTicketId === ticket.id,
+    );
+    const stage = ticketPosition(ticket, entries);
+    if (stage) statuses.add(STAGE_STATUS[stage]);
+  }
+  if (statuses.size === 0) statuses.add(order.status);
+  return [...statuses];
 }
 
 /**
@@ -242,7 +353,10 @@ export function slowestStage(
 export function subTicketAvailable(
   ticket: Pick<SubTicket, 'qty' | 'silverWeight'>,
   entries: StageEntry[],
-  topUps: readonly Pick<SubTicketTopUp, 'stageEntryId' | 'qty' | 'silverWeight'>[] = [],
+  topUps: readonly Pick<
+    SubTicketTopUp,
+    'stageEntryId' | 'qty' | 'silverWeight'
+  >[] = [],
 ) {
   const last = entries[entries.length - 1];
   if (!last) return { qty: ticket.qty, silver: ticket.silverWeight };
@@ -255,13 +369,18 @@ export function subTicketAvailable(
   const loose = looseTopUps(topUps);
   return {
     qty: (last.returnedQty ?? last.handedQty ?? ticket.qty) + loose.qty,
-    silver: (last.returnedSilverWeight ?? ticket.silverWeight).add(loose.silver),
+    silver: (last.returnedSilverWeight ?? ticket.silverWeight).add(
+      loose.silver,
+    ),
   };
 }
 
 /** Phần cấp thêm chưa được giao vào khâu nào — vẫn đang nằm trong tay chờ khâu sau. */
 export function looseTopUps(
-  topUps: readonly Pick<SubTicketTopUp, 'stageEntryId' | 'qty' | 'silverWeight'>[],
+  topUps: readonly Pick<
+    SubTicketTopUp,
+    'stageEntryId' | 'qty' | 'silverWeight'
+  >[],
 ) {
   return topUps
     .filter((item) => item.stageEntryId == null)
@@ -272,6 +391,61 @@ export function looseTopUps(
       }),
       { qty: 0, silver: new Prisma.Decimal(0) },
     );
+}
+
+/**
+ * Danh sách "vừa nộp" của thợ, gộp từ phiếu mẹ và phiếu con. Phải trộn theo thời gian rồi
+ * mới cắt: nối đuôi nhau thì một nguồn luôn chiếm chỗ và đẩy phiếu mới hơn của nguồn kia
+ * ra ngoài. Mốc là chuỗi ISO nên so trực tiếp được.
+ */
+export function recentFirst<T extends { returnedAt: string | null }>(
+  items: readonly T[],
+  limit: number,
+) {
+  return [...items]
+    .sort((a, b) => (b.returnedAt ?? '').localeCompare(a.returnedAt ?? ''))
+    .slice(0, limit);
+}
+
+/** Các lần giao khâu trực tiếp trên phiếu mẹ. */
+export function orderEntries(order: Pick<OrderDetail, 'stages'>) {
+  return order.stages.filter((entry) => !entry.subTicketId);
+}
+
+/** Phiếu mẹ dùng cùng state machine chờ nhận → đã nhận → đang làm → chờ KCS như phiếu con. */
+export function orderTicketState(
+  order: Pick<OrderDetail, 'pendingStage' | 'claimedByUserId'> & {
+    /** Chỉ cần biết đơn đã có phiếu nhập kho hay chưa, nên chỗ gọi được select gọn. */
+    receipt: { id: string } | null;
+  },
+  entries: readonly StateEntry[],
+) {
+  return subTicketState(
+    {
+      pendingStage: order.pendingStage,
+      claimedByUserId: order.claimedByUserId,
+      outcome: order.receipt ? SubTicketOutcome.FINISH : null,
+    },
+    entries,
+  );
+}
+
+/** Số lượng / bạc còn lại để giao khâu kế tiếp trên phiếu mẹ. */
+export function orderTicketAvailable(
+  order: Pick<OrderDetail, 'qty' | 'silverWeight'>,
+  entries: readonly Pick<
+    StageEntry,
+    'handedQty' | 'handedSilverWeight' | 'returnedQty' | 'returnedSilverWeight'
+  >[],
+) {
+  const last = entries[entries.length - 1];
+  return {
+    qty: last?.returnedQty ?? last?.handedQty ?? order.qty,
+    silver:
+      last?.returnedSilverWeight ??
+      last?.handedSilverWeight ??
+      order.silverWeight,
+  };
 }
 
 /** Khâu cấp đơn (không thuộc phiếu con) đang chờ KCS nhận lại. */
@@ -288,6 +462,10 @@ export function toDetail(order: OrderDetail) {
       ? { no: splitIndex + 1, total: siblings.length }
       : { no: 1, total: 1 };
   const ticketNo = new Map(order.subTickets.map((t) => [t.id, t.no]));
+  const parentEntries = orderEntries(order);
+  const parentState = orderTicketState(order, parentEntries);
+  const parentAvailable = orderTicketAvailable(order, parentEntries);
+  const parentOpen = parentEntries.find((entry) => !entry.returnedAt);
 
   return {
     id: order.id,
@@ -346,7 +524,9 @@ export function toDetail(order: OrderDetail) {
     linkedOutbounds: order._count.outbounds,
     finishedGoods: order.receipt
       ? {
-          qty: order.receipt.qty,
+          qty: order.receipt.stockedQty,
+          pendingQty: Math.max(0, order.receipt.qty - order.receipt.stockedQty),
+          completedQty: order.receipt.qty,
           receivedAt: order.receipt.receivedAt.toISOString(),
           receivedByName: order.receipt.receivedByName,
           shippedQty: order.shipmentLines.reduce(
@@ -354,7 +534,7 @@ export function toDetail(order: OrderDetail) {
             0,
           ),
           remainingQty:
-            order.receipt.qty -
+            order.receipt.stockedQty -
             order.shipmentLines.reduce((sum, line) => sum + line.qty, 0),
           shipments: order.shipmentLines.map((line) => ({
             code: line.shipment.code,
@@ -384,6 +564,26 @@ export function toDetail(order: OrderDetail) {
         entry.subTicketId ? (ticketNo.get(entry.subTicketId) ?? null) : null,
       ),
     ),
+    workTicket:
+      order.subTickets.length === 0
+        ? {
+            code: order.code,
+            state: parentState.state,
+            activeStage: parentState.activeStage,
+            pendingStage: order.pendingStage,
+            pendingAt: order.pendingAt?.toISOString() ?? null,
+            pendingByName: order.pendingByName,
+            claimedByUserId: order.claimedByUserId,
+            claimedByName: order.claimedByName,
+            claimedAt: order.claimedAt?.toISOString() ?? null,
+            openEntryId: parentOpen?.id ?? null,
+            availableQty: parentAvailable.qty,
+            availableSilver:
+              parentAvailable.silver != null
+                ? decStr(parentAvailable.silver)
+                : null,
+          }
+        : null,
     subTickets: order.subTickets.map((ticket) => toSubTicket(order, ticket)),
     subTicketTotals: {
       qty: order.subTickets.reduce((sum, ticket) => sum + ticket.qty, 0),
@@ -472,6 +672,8 @@ export function toStage(entry: StageEntry, subTicketNo: number | null = null) {
     handedAt: entry.handedAt.toISOString(),
     handedQty: entry.handedQty,
     handedSilverWeight: dec(entry.handedSilverWeight),
+    handedStoneCount: entry.handedStoneCount,
+    handedStoneWeight: dec(entry.handedStoneWeight),
     craftsmanUserId: entry.craftsmanUserId,
     craftsmanName: entry.craftsmanName,
     submittedAt: entry.submittedAt?.toISOString() ?? null,
@@ -480,6 +682,8 @@ export function toStage(entry: StageEntry, subTicketNo: number | null = null) {
     returnedAt: entry.returnedAt?.toISOString() ?? null,
     returnedQty: entry.returnedQty,
     returnedSilverWeight: dec(entry.returnedSilverWeight),
+    stoneCount: entry.stoneCount,
+    stoneWeight: dec(entry.stoneWeight),
     btpRecoveredWeight: dec(entry.btpRecoveredWeight),
     silverRecoveredWeight: dec(entry.silverRecoveredWeight),
     silverLoss: dec(silverLoss),

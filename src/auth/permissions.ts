@@ -9,7 +9,7 @@ export const Permission = {
   SCREEN_WAREHOUSE_THANH_PHAM: 'screen.warehouse.thanh-pham',
   SCREEN_LOCATIONS: 'screen.locations',
   SCREEN_CATALOGS: 'screen.catalogs',
-  /** Thợ sản xuất: tự nhận phiếu con ở màn "Phiếu của tôi". */
+  /** Thợ sản xuất: tự nhận phiếu mẹ hoặc phiếu con ở màn "Phiếu của tôi". */
   PRODUCTION_WORKER: 'production.worker',
 } as const;
 
@@ -20,7 +20,7 @@ export const ALL_PERMISSIONS: PermissionCode[] = Object.values(Permission);
 const ROLE_PERMISSIONS: Record<RoleCode, readonly PermissionCode[]> = {
   [RoleCode.ADMIN]: ALL_PERMISSIONS,
   [RoleCode.USER]: [],
-  // Thợ có sẵn quyền nhận phiếu con, không phải tick tay ở màn Nhân sự.
+  // Thợ có sẵn quyền nhận phiếu sản xuất, không phải tick tay ở màn Nhân sự.
   [RoleCode.WORKER]: [Permission.PRODUCTION_WORKER],
 };
 
@@ -40,7 +40,9 @@ export function permissionsForRoles(
   extraRoles: readonly RoleCode[] = [],
 ): PermissionCode[] {
   return Array.from(
-    new Set(rolesOf(roleCode, extraRoles).flatMap((r) => permissionsForRole(r))),
+    new Set(
+      rolesOf(roleCode, extraRoles).flatMap((r) => permissionsForRole(r)),
+    ),
   );
 }
 
@@ -48,8 +50,8 @@ export function sanitizeScreens(
   screens: readonly string[] | undefined | null,
 ): PermissionCode[] {
   const allowed = new Set<string>(ALL_PERMISSIONS);
-  return Array.from(new Set(screens ?? [])).filter((key): key is PermissionCode =>
-    allowed.has(key),
+  return Array.from(new Set(screens ?? [])).filter(
+    (key): key is PermissionCode => allowed.has(key),
   );
 }
 

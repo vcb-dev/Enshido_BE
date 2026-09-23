@@ -40,10 +40,12 @@ export class UsersService {
   ) {}
 
   list() {
-    const hit = this.cache.get<Awaited<ReturnType<UsersService['loadUsers']>>>('users');
+    const hit =
+      this.cache.get<Awaited<ReturnType<UsersService['loadUsers']>>>('users');
     if (hit) return Promise.resolve(hit);
     return this.inflight.run('users', async () => {
-      const again = this.cache.get<Awaited<ReturnType<UsersService['loadUsers']>>>('users');
+      const again =
+        this.cache.get<Awaited<ReturnType<UsersService['loadUsers']>>>('users');
       if (again) return again;
       const value = await this.loadUsers();
       this.cache.set('users', value, USERS_TTL_MS);
@@ -123,11 +125,13 @@ export class UsersService {
     if (dto.department !== undefined) {
       data.department = dto.department.trim() || null;
     }
-    if (dto.email !== undefined) data.email = dto.email.toLowerCase().trim() || null;
+    if (dto.email !== undefined)
+      data.email = dto.email.toLowerCase().trim() || null;
     if (dto.isActive !== undefined && user.roleCode !== RoleCode.ADMIN) {
       data.isActive = dto.isActive;
     }
-    if (dto.password) data.passwordHash = await bcrypt.hash(dto.password, BCRYPT_COST);
+    if (dto.password)
+      data.passwordHash = await bcrypt.hash(dto.password, BCRYPT_COST);
 
     const updated = await this.prisma.user.update({
       where: { id },

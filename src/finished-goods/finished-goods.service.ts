@@ -19,6 +19,7 @@ import { orderCode } from '../production-orders/production-orders.service';
 import { availabilityOf, decStr, METAL_KIND_LABEL } from '../util/money';
 import {
   ListShipmentsQuery,
+  ReceiveReceiptDto,
   ShipmentLineDto,
   UpsertReceiptDto,
   UpsertShipmentDto,
@@ -121,28 +122,33 @@ export class FinishedGoodsService {
   async stock(search?: string) {
     const keyword = search?.trim();
     const receipts = await this.prisma.finishedGoodsReceipt.findMany({
-      where: keyword
-        ? {
-            order: {
-              OR: [
-                { code: { contains: keyword, mode: 'insensitive' } },
-                { description: { contains: keyword, mode: 'insensitive' } },
-                {
-                  bomLines: {
-                    some: {
-                      material: {
-                        OR: [
-                          { sku: { contains: keyword, mode: 'insensitive' } },
-                          { name: { contains: keyword, mode: 'insensitive' } },
-                        ],
+      where: {
+        stockedQty: { gt: 0 },
+        ...(keyword
+          ? {
+              order: {
+                OR: [
+                  { code: { contains: keyword, mode: 'insensitive' } },
+                  { description: { contains: keyword, mode: 'insensitive' } },
+                  {
+                    bomLines: {
+                      some: {
+                        material: {
+                          OR: [
+                            { sku: { contains: keyword, mode: 'insensitive' } },
+                            {
+                              name: { contains: keyword, mode: 'insensitive' },
+                            },
+                          ],
+                        },
                       },
                     },
                   },
-                },
-              ],
-            },
-          }
-        : undefined,
+                ],
+              },
+            }
+          : {}),
+      },
       orderBy: { receivedAt: 'desc' },
       include: {
         order: {
@@ -192,16 +198,16 @@ export class FinishedGoodsService {
         (sum, line) => sum + line.qty,
         0,
       );
-      const remainingQty = receipt.qty - shippedQty;
+      const remainingQty = receipt.stockedQty - shippedQty;
       const cost = costs.get(receipt.order.id);
       if (!cost) continue;
       const isOpening = (receipt.order.trackingCode ?? '').startsWith(
         STOCK_TRACKING_PREFIX,
       );
       const openingQty = isOpening
-        ? new Prisma.Decimal(receipt.qty)
+        ? new Prisma.Decimal(receipt.stockedQty)
         : zero;
-      const inQty = isOpening ? zero : new Prisma.Decimal(receipt.qty);
+      const inQty = isOpening ? zero : new Prisma.Decimal(receipt.stockedQty);
       const outQty = new Prisma.Decimal(shippedQty);
       const qty = new Prisma.Decimal(remainingQty);
       const openingAmount = cost.unitCostDecimal
@@ -239,7 +245,7 @@ export class FinishedGoodsService {
         outAmount: decStr(outAmount),
         qty: decStr(qty),
         amount: decStr(amount),
-        receivedQty: receipt.qty,
+        receivedQty: receipt.stockedQty,
         shippedQty,
         remainingQty,
         receivedAt: receipt.receivedAt.toISOString(),
@@ -276,15 +282,27 @@ export class FinishedGoodsService {
             {
               OR: [
                 { trackingCode: null },
-                { NOT: { trackingCode: { startsWith: STOCK_TRACKING_PREFIX } } },
+                {
+                  NOT: { trackingCode: { startsWith: STOCK_TRACKING_PREFIX } },
+                },
               ],
             },
             ...(keyword
               ? [
                   {
                     OR: [
-                      { code: { contains: keyword, mode: 'insensitive' as const } },
-                      { description: { contains: keyword, mode: 'insensitive' as const } },
+                      {
+                        code: {
+                          contains: keyword,
+                          mode: 'insensitive' as const,
+                        },
+                      },
+                      {
+                        description: {
+                          contains: keyword,
+                          mode: 'insensitive' as const,
+                        },
+                      },
                     ],
                   },
                 ]
@@ -325,6 +343,7 @@ export class FinishedGoodsService {
       const cost = costs.get(receipt.order.id);
       if (!cost) continue;
       const qty = new Prisma.Decimal(receipt.qty);
+      const pendingQty = Math.max(0, receipt.qty - receipt.stockedQty);
       const amount = cost.unitCostDecimal.mul(qty).toDecimalPlaces(2);
       items.push({
         id: receipt.id,
@@ -335,10 +354,13 @@ export class FinishedGoodsService {
         mainMaterial: receipt.order.mainMaterial,
         imageUrl: receipt.order.images[0]?.url ?? null,
         qty: decStr(qty),
+        stockedQty: receipt.stockedQty,
+        pendingQty,
+        status: pendingQty > 0 ? ('PENDING' as const) : ('RECEIVED' as const),
         unitPrice: cost.unitCost,
         amount: decStr(amount),
         shippedQty,
-        remainingQty: receipt.qty - shippedQty,
+        remainingQty: receipt.stockedQty - shippedQty,
         receivedAt: ymd(receipt.receivedAt),
         receivedByName: receipt.receivedByName,
         note: null,
@@ -354,14 +376,21 @@ export class FinishedGoodsService {
       ? {
           OR: [
             { code: { contains: keyword, mode: 'insensitive' as const } },
-            { description: { contains: keyword, mode: 'insensitive' as const } },
-            { trackingCode: { contains: keyword, mode: 'insensitive' as const } },
+            {
+              description: { contains: keyword, mode: 'insensitive' as const },
+            },
+            {
+              trackingCode: { contains: keyword, mode: 'insensitive' as const },
+            },
           ],
         }
       : undefined;
 
     const stock = await this.prisma.finishedGoodsReceipt.findMany({
-      where: nameFilter ? { order: nameFilter } : undefined,
+      where: {
+        stockedQty: { gt: 0 },
+        ...(nameFilter ? { order: nameFilter } : {}),
+      },
       orderBy: { receivedAt: 'desc' },
       take: 200,
       include: {
@@ -380,16 +409,19 @@ export class FinishedGoodsService {
 
     return {
       items: stock.map((receipt) => {
-        const shippedQty = receipt.order.shipmentLines.reduce((sum, line) => sum + line.qty, 0);
+        const shippedQty = receipt.order.shipmentLines.reduce(
+          (sum, line) => sum + line.qty,
+          0,
+        );
         return {
           code: receipt.order.code,
           description: receipt.order.description,
-          qty: receipt.qty,
+          qty: receipt.stockedQty,
           qtyUnit: receipt.order.qtyUnit,
           sizeLabel: receipt.order.sizeLabel,
           mainMaterial: receipt.order.mainMaterial,
           inStock: true as const,
-          remainingQty: receipt.qty - shippedQty,
+          remainingQty: receipt.stockedQty - shippedQty,
         };
       }),
     };
@@ -427,12 +459,15 @@ export class FinishedGoodsService {
     }
     const order = await this.requireReceiptOrder(dto.orderCode);
     if (!order.receipt) {
-      throw new BadRequestException('Chọn thành phẩm đang có trên Tồn. Đơn sản xuất lên Tồn trước.');
+      throw new BadRequestException(
+        'Chọn thành phẩm đang có trên Tồn. Đơn sản xuất lên Tồn trước.',
+      );
     }
     await this.prisma.finishedGoodsReceipt.update({
       where: { id: order.receipt.id },
       data: {
         qty: order.receipt.qty + dto.qty,
+        stockedQty: order.receipt.stockedQty + dto.qty,
         receivedAt: receiptDate(dto.receivedAt),
         receivedByUserId: actor.id,
         receivedByName: actorName(actor),
@@ -442,15 +477,59 @@ export class FinishedGoodsService {
       await this.prisma.productionOrder.update({
         where: { id: order.id },
         data: {
-          ...(dto.sizeLabel !== undefined ? { sizeLabel: dto.sizeLabel.trim() || null } : {}),
-          ...(dto.qtyUnit !== undefined ? { qtyUnit: dto.qtyUnit.trim() || null } : {}),
+          ...(dto.sizeLabel !== undefined
+            ? { sizeLabel: dto.sizeLabel.trim() || null }
+            : {}),
+          ...(dto.qtyUnit !== undefined
+            ? { qtyUnit: dto.qtyUnit.trim() || null }
+            : {}),
         },
       });
     }
     return { success: true };
   }
 
-  async updateReceipt(id: string, dto: UpsertReceiptDto, actor: AuthUserPayload) {
+  /**
+   * Kho xác nhận nhận hàng: chỉ lúc này phần đang chờ mới được cộng vào tồn. Nhận đúng số
+   * đếm được, thiếu thì nhận từng phần — phần còn lại vẫn nằm chờ trên phiếu.
+   */
+  async receiveReceipt(
+    id: string,
+    dto: ReceiveReceiptDto,
+    actor: AuthUserPayload,
+  ) {
+    const receipt = await this.prisma.finishedGoodsReceipt.findUnique({
+      where: { id },
+      select: { id: true, qty: true, stockedQty: true },
+    });
+    if (!receipt) throw new NotFoundException('Không tìm thấy phiếu nhập');
+    const pendingQty = receipt.qty - receipt.stockedQty;
+    if (pendingQty <= 0) {
+      throw new BadRequestException('Phiếu này đã vào tồn đầy đủ');
+    }
+    const takenQty = dto.qty ?? pendingQty;
+    if (takenQty > pendingQty) {
+      throw new BadRequestException(
+        `Phiếu chỉ còn ${pendingQty} đang chờ vào tồn`,
+      );
+    }
+    await this.prisma.finishedGoodsReceipt.update({
+      where: { id },
+      data: {
+        stockedQty: receipt.stockedQty + takenQty,
+        receivedAt: new Date(),
+        receivedByUserId: actor.id,
+        receivedByName: actorName(actor),
+      },
+    });
+    return { success: true };
+  }
+
+  async updateReceipt(
+    id: string,
+    dto: UpsertReceiptDto,
+    actor: AuthUserPayload,
+  ) {
     const receipt = await this.prisma.finishedGoodsReceipt.findUnique({
       where: { id },
       include: {
@@ -475,6 +554,8 @@ export class FinishedGoodsService {
       (sum, line) => sum + line.qty,
       0,
     );
+    // Sửa giảm vẫn phải được — đếm lại thấy thiếu là chuyện thường. Chỉ chặn xuống dưới số
+    // đã xuất, còn phần đã vào tồn thì kéo xuống theo chứ không lấy làm sàn.
     if (dto.qty < shippedQty) {
       throw new BadRequestException(
         `Đã xuất ${shippedQty} — số lượng nhập không được nhỏ hơn số đã xuất`,
@@ -482,7 +563,10 @@ export class FinishedGoodsService {
     }
     const changedBy = actorName(actor);
     if (dto.description !== undefined) {
-      await this.assertUniqueStockName(dto.description.trim(), receipt.order.id);
+      await this.assertUniqueStockName(
+        dto.description.trim(),
+        receipt.order.id,
+      );
     }
     await this.prisma.productionOrder.update({
       where: { id: receipt.order.id },
@@ -496,11 +580,21 @@ export class FinishedGoodsService {
         ...(dto.platingColor !== undefined
           ? { platingColor: dto.platingColor.trim() || null }
           : {}),
-        ...(dto.sizeLabel !== undefined ? { sizeLabel: dto.sizeLabel.trim() || null } : {}),
-        ...(dto.qtyUnit !== undefined ? { qtyUnit: dto.qtyUnit.trim() || null } : {}),
+        ...(dto.sizeLabel !== undefined
+          ? { sizeLabel: dto.sizeLabel.trim() || null }
+          : {}),
+        ...(dto.qtyUnit !== undefined
+          ? { qtyUnit: dto.qtyUnit.trim() || null }
+          : {}),
         receipt: {
           update: {
             qty: dto.qty,
+            // Phiếu đã vào tồn đủ thì đi theo số mới; phiếu còn dở chỉ bị cắt khi số mới
+            // thấp hơn phần đã nhận. Bất biến: stockedQty không bao giờ vượt qty.
+            stockedQty:
+              receipt.stockedQty === receipt.qty
+                ? dto.qty
+                : Math.min(receipt.stockedQty, dto.qty),
             receivedAt: receiptDate(dto.receivedAt),
             receivedByUserId: actor.id,
             receivedByName: changedBy,
@@ -544,7 +638,10 @@ export class FinishedGoodsService {
   }
 
   /** Nhập mới trên Tồn — tự tạo mã đơn, không hiện trên danh sách sản xuất. */
-  private async createStockEntry(dto: UpsertReceiptDto, actor: AuthUserPayload) {
+  private async createStockEntry(
+    dto: UpsertReceiptDto,
+    actor: AuthUserPayload,
+  ) {
     const description = dto.description?.trim();
     if (!description) throw new BadRequestException('Nhập tên thành phẩm');
     await this.assertUniqueStockName(description);
@@ -553,13 +650,20 @@ export class FinishedGoodsService {
     const unitPrice = dto.stockUnitPrice
       ? new Prisma.Decimal(dto.stockUnitPrice)
       : new Prisma.Decimal(0);
-    const costAmount = unitPrice.mul(dto.qty).toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP);
-    const bomLines = await this.requireBomMaterials(this.prisma, dto.bomLines ?? []);
+    const costAmount = unitPrice
+      .mul(dto.qty)
+      .toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP);
+    const bomLines = await this.requireBomMaterials(
+      this.prisma,
+      dto.bomLines ?? [],
+    );
 
     for (let attempt = 1; ; attempt += 1) {
       try {
         await this.prisma.runTx(async (tx) => {
-          const last = await tx.productionOrder.aggregate({ _max: { seq: true } });
+          const last = await tx.productionOrder.aggregate({
+            _max: { seq: true },
+          });
           const seq = (last._max.seq ?? 0) + 1;
           const code = orderCode(seq);
           await tx.productionOrder.create({
@@ -584,6 +688,7 @@ export class FinishedGoodsService {
               receipt: {
                 create: {
                   qty: dto.qty,
+                  stockedQty: dto.qty,
                   receivedAt,
                   receivedByUserId: actor.id,
                   receivedByName: changedBy,
@@ -618,7 +723,10 @@ export class FinishedGoodsService {
     }
   }
 
-  private async assertUniqueStockName(description: string, excludeOrderId?: string) {
+  private async assertUniqueStockName(
+    description: string,
+    excludeOrderId?: string,
+  ) {
     const name = description.trim();
     if (!name) return;
     const found = await this.prisma.finishedGoodsReceipt.findFirst({
@@ -648,7 +756,9 @@ export class FinishedGoodsService {
     });
     if (amount.lte(0)) {
       if (existing) {
-        await this.prisma.productionOrderCost.delete({ where: { id: existing.id } });
+        await this.prisma.productionOrderCost.delete({
+          where: { id: existing.id },
+        });
       }
       return;
     }
@@ -675,7 +785,7 @@ export class FinishedGoodsService {
       select: {
         id: true,
         code: true,
-        receipt: { select: { id: true, qty: true } },
+        receipt: { select: { id: true, qty: true, stockedQty: true } },
       },
     });
     if (!order) throw new NotFoundException('Không tìm thấy đơn sản xuất');
@@ -976,7 +1086,7 @@ export class FinishedGoodsService {
       select: {
         id: true,
         code: true,
-        receipt: { select: { qty: true } },
+        receipt: { select: { stockedQty: true } },
         shipmentLines: { select: { qty: true } },
       },
     });
@@ -1003,7 +1113,7 @@ export class FinishedGoodsService {
         (sum, line) => sum + line.qty,
         0,
       );
-      const remaining = order.receipt.qty - shipped;
+      const remaining = order.receipt.stockedQty - shipped;
       if (qty > remaining) {
         throw new BadRequestException(
           `Đơn ${orderCode} chỉ còn ${remaining} trong kho thành phẩm, không xuất ${qty} được`,
@@ -1011,7 +1121,9 @@ export class FinishedGoodsService {
       }
       const cost = costs.get(order.id);
       if (!cost) {
-        throw new BadRequestException(`Không tính được giá vốn đơn ${orderCode}`);
+        throw new BadRequestException(
+          `Không tính được giá vốn đơn ${orderCode}`,
+        );
       }
       unitCosts.set(orderCode, cost.unitCostDecimal);
     }
@@ -1052,6 +1164,7 @@ export class FinishedGoodsService {
           qty: true,
           status: true,
           returnedQty: true,
+          receipt: { select: { qty: true } },
           shipmentLines: { select: { qty: true } },
         },
       });
@@ -1060,7 +1173,10 @@ export class FinishedGoodsService {
         (sum, line) => sum + line.qty,
         0,
       );
-      const delivered = shipped >= order.qty;
+      // Mốc "giao đủ" là số đã chốt hoàn thiện, không phải số đặt hàng: hàng hỏng dọc đường
+      // không bao giờ lên kho nên đơn sẽ không bao giờ đủ nếu so với số đặt.
+      const finishedQty = order.receipt?.qty ?? order.qty;
+      const delivered = shipped > 0 && shipped >= finishedQty;
       const nextStatus = delivered
         ? ProductionStatus.DELIVERED
         : order.status === ProductionStatus.DELIVERED
@@ -1082,7 +1198,7 @@ export class FinishedGoodsService {
                     toStatus: nextStatus,
                     note: removed
                       ? `Xóa phiếu xuất ${shipmentCode}`
-                      : `Phiếu xuất ${shipmentCode} (đã xuất ${shipped}/${order.qty})`,
+                      : `Phiếu xuất ${shipmentCode} (đã xuất ${shipped}/${finishedQty})`,
                     changedBy,
                   },
                 },

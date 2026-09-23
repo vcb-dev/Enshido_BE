@@ -522,6 +522,14 @@ model ProductionOrder {
   createdByUserId     String?               @map("created_by_user_id") @db.Uuid
   /// Số phiếu con đã cấp (A012-1, A012-2…). Chỉ tăng, số của phiếu đã xoá không cấp lại.
   subTicketSeq        Int                   @default(0) @map("sub_ticket_seq")
+  /// Đơn không chia phiếu con: khâu đang mở để thợ tự nhận trên chính phiếu mẹ.
+  pendingStage        ProductionStage?      @map("pending_stage")
+  pendingAt           DateTime?             @map("pending_at")
+  pendingByName       String?               @map("pending_by_name")
+  /// Thợ đã tự nhận khâu của phiếu mẹ, chờ người giao xác nhận số lượng và bạc.
+  claimedByUserId     String?                @map("claimed_by_user_id") @db.Uuid
+  claimedByName       String?                @map("claimed_by_name")
+  claimedAt           DateTime?              @map("claimed_at")
   createdAt           DateTime              @default(now()) @map("created_at")
   updatedAt           DateTime              @updatedAt @map("updated_at")
 
@@ -550,6 +558,8 @@ model ProductionOrder {
   @@index([parentId])
   @@index([btpMaterialId])
   @@index([nvlMaterialId])
+  @@index([pendingStage, claimedByUserId])
+  @@index([claimedByUserId])
   @@map("production_orders")
 }
 
@@ -608,6 +618,10 @@ model ProductionStageEntry {
   handedQty             Int?            @map("handed_qty")
   /// Trọng lượng bạc giao (hao hụt chỉ tính trên bạc).
   handedSilverWeight    Decimal?        @map("handed_silver_weight") @db.Decimal(18, 4)
+  /// Khâu Vào đá: số viên đá phát cho thợ lúc giao.
+  handedStoneCount      Int?            @map("handed_stone_count")
+  /// Khâu Vào đá: TL đá phát cho thợ (g). Đá gắn thật ghi ở `stoneWeight` lúc KCS nhận lại.
+  handedStoneWeight     Decimal?        @map("handed_stone_weight") @db.Decimal(18, 4)
   craftsmanUserId       String?         @map("craftsman_user_id") @db.Uuid
   craftsmanName         String          @map("craftsman_name")
   /// Thợ bấm "Đã làm xong" — tín hiệu cho KCS, không chặn bước nhận lại.
@@ -621,6 +635,11 @@ model ProductionStageEntry {
   /// Số lượng KCS nhận lại — ít hơn số giao khi có hàng hỏng ở khâu.
   returnedQty           Int?            @map("returned_qty")
   returnedSilverWeight  Decimal?        @map("returned_silver_weight") @db.Decimal(18, 4)
+  /// Khâu Vào đá: số viên đá gắn lên, KCS ghi lúc nhận lại. Đá không tính hao hụt.
+  stoneCount            Int?            @map("stone_count")
+  /// Khâu Vào đá: TL đá gắn lên (g). KCS cân cả cụm bạc + đá nên hao hụt phải cộng số này
+  /// vào TL bạc giao trước khi trừ TL cân lại.
+  stoneWeight           Decimal?        @map("stone_weight") @db.Decimal(18, 4)
   btpRecoveredWeight    Decimal?        @map("btp_recovered_weight") @db.Decimal(18, 4)
   silverRecoveredWeight Decimal?        @map("silver_recovered_weight") @db.Decimal(18, 4)
   /// Tiền công khâu, nhập khi KCS nhận lại.
@@ -750,7 +769,10 @@ model ProductionOrderCost {
 model FinishedGoodsReceipt {
   id               String   @id @default(uuid()) @db.Uuid
   orderId          String   @unique @map("order_id") @db.Uuid
+  /// Tổng SL sản xuất đã chốt hoàn thiện / đề nghị nhập kho.
   qty              Int
+  /// SL kho thành phẩm đã xác nhận nhận — chỉ số này được cộng vào tồn.
+  stockedQty       Int      @default(0) @map("stocked_qty")
   receivedAt       DateTime @map("received_at")
   receivedByUserId String?  @map("received_by_user_id") @db.Uuid
   receivedByName   String   @map("received_by_name")
