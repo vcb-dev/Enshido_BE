@@ -45,6 +45,8 @@ import {
   LAST_STAGE,
   lastStageDone,
   normalizeCode,
+  orderListStatuses,
+  orderTicketState,
   type OrderDetail,
   requireStage,
   STAGE_LABEL,
@@ -151,138 +153,182 @@ export class ProductionOrdersService {
         { description: contains },
       ];
     }
-    const where = query.status ? { ...base, status: query.status } : base;
     const orderBy: Prisma.ProductionOrderOrderByWithRelationInput[] =
       sort === 'code' ? [{ seq: dir }] : [{ [sort]: dir }, { seq: 'desc' }];
 
-    // Tổng số dòng suy ra từ groupBy theo trạng thái — không cần thêm một câu COUNT.
-    const [rows, grouped] = await Promise.all([
-      this.prisma.productionOrder.findMany({
-        where,
-        orderBy,
-        skip: (page - 1) * pageSize,
-        take: pageSize,
-        select: {
-          id: true,
-          code: true,
-          status: true,
-          source: true,
-          requestType: true,
-          qty: true,
-          qtyUnit: true,
-          finishedProductQty: true,
-          returnedQty: true,
-          model3dCode: true,
-          model3dUrl: true,
-          leadTime: true,
-          trackingCode: true,
-          closedBy: true,
-          description: true,
-          stoneColor: true,
-          stoneTypes: true,
-          size: true,
-          sizeLabel: true,
-          mainMaterial: true,
-          platingColor: true,
-          btpCategory: true,
-          productKind: true,
-          askedUserName: true,
-          receivedDate: true,
-          dueDate: true,
-          debtStatus: true,
-          createdAt: true,
-          updatedAt: true,
-          btpMaterial: { select: { sku: true } },
-          // Phiếu con kèm các khâu của chúng — vừa đủ để tính trạng thái từng phiếu cho cột
-          // "Phiếu con" ở danh sách, không kéo cả chi tiết đơn.
-          subTickets: {
-            orderBy: { no: 'asc' },
-            select: {
-              id: true,
-              no: true,
-              qty: true,
-              silverWeight: true,
-              note: true,
-              createdAt: true,
-              pendingStage: true,
-              claimedByUserId: true,
-              claimedByName: true,
-              outcome: true,
-            },
-          },
-          stages: {
-            where: { subTicketId: { not: null } },
-            orderBy: { createdAt: 'asc' },
-            select: {
-              subTicketId: true,
-              stage: true,
-              returnedAt: true,
-              submittedAt: true,
-              craftsmanName: true,
-            },
+    // Một đơn đã chia có thể có các phiếu con ở nhiều khâu. Lấy vị trí gọn của toàn bộ đơn
+    // khớp bộ lọc trước để đếm tab và phân trang theo khâu thực tế, thay vì chỉ nhìn status
+    // tổng hợp (khâu chậm nhất) của đơn mẹ.
+    const candidates = await this.prisma.productionOrder.findMany({
+      where: base,
+      orderBy,
+      select: {
+        id: true,
+        status: true,
+        subTickets: {
+          select: {
+            id: true,
+            pendingStage: true,
+            claimedByUserId: true,
+            outcome: true,
           },
         },
-      }),
-      this.prisma.productionOrder.groupBy({
-        by: ['status'],
-        where: base,
-        _count: { _all: true },
-      }),
-    ]);
-
+        stages: {
+          orderBy: { createdAt: 'asc' },
+          select: {
+            subTicketId: true,
+            stage: true,
+            returnedAt: true,
+            submittedAt: true,
+          },
+        },
+      },
+    });
+    const memberships = new Map(
+      candidates.map((row) => [row.id, orderListStatuses(row)]),
+    );
     const statusCounts = Object.fromEntries(
       Object.values(S).map((status) => [status, 0]),
     ) as Record<ProductionStatus, number>;
-    let all = 0;
-    for (const group of grouped) {
-      statusCounts[group.status] = group._count._all;
-      all += group._count._all;
+    for (const statuses of memberships.values()) {
+      for (const status of statuses) statusCounts[status] += 1;
     }
-    const total = query.status ? statusCounts[query.status] : all;
+    const matching = query.status
+      ? candidates.filter((row) =>
+          memberships.get(row.id)?.includes(query.status!),
+        )
+      : candidates;
+    const total = matching.length;
+    const pageIds = matching
+      .slice((page - 1) * pageSize, page * pageSize)
+      .map((row) => row.id);
+
+    const rows = pageIds.length
+      ? await this.prisma.productionOrder.findMany({
+          where: { id: { in: pageIds } },
+          orderBy,
+          select: {
+            id: true,
+            code: true,
+            status: true,
+            source: true,
+            requestType: true,
+            qty: true,
+            qtyUnit: true,
+            finishedProductQty: true,
+            returnedQty: true,
+            model3dCode: true,
+            model3dUrl: true,
+            leadTime: true,
+            trackingCode: true,
+            closedBy: true,
+            description: true,
+            stoneColor: true,
+            stoneTypes: true,
+            size: true,
+            sizeLabel: true,
+            mainMaterial: true,
+            platingColor: true,
+            btpCategory: true,
+            productKind: true,
+            askedUserName: true,
+            receivedDate: true,
+            dueDate: true,
+            debtStatus: true,
+            createdAt: true,
+            updatedAt: true,
+            pendingStage: true,
+            claimedByUserId: true,
+            receipt: true,
+            btpMaterial: { select: { sku: true } },
+            // Phiếu con kèm các khâu của chúng — vừa đủ để tính trạng thái từng phiếu cho cột
+            // "Phiếu con" ở danh sách, không kéo cả chi tiết đơn.
+            subTickets: {
+              orderBy: { no: 'asc' },
+              select: {
+                id: true,
+                no: true,
+                qty: true,
+                silverWeight: true,
+                note: true,
+                createdAt: true,
+                pendingStage: true,
+                claimedByUserId: true,
+                claimedByName: true,
+                outcome: true,
+              },
+            },
+            stages: {
+              orderBy: { createdAt: 'asc' },
+              select: {
+                subTicketId: true,
+                stage: true,
+                returnedAt: true,
+                submittedAt: true,
+                craftsmanName: true,
+              },
+            },
+          },
+        })
+      : [];
+    const rowOrder = new Map(pageIds.map((id, index) => [id, index]));
+    rows.sort((a, b) => rowOrder.get(a.id)! - rowOrder.get(b.id)!);
 
     return {
       total,
-      statusCounts: { ...statusCounts, ALL: all },
-      items: rows.map((row) => ({
-        id: row.id,
-        code: row.code,
-        status: row.status,
-        source: row.source,
-        btpSku: row.btpMaterial?.sku ?? null,
-        requestType: row.requestType,
-        qty: row.qty,
-        qtyUnit: row.qtyUnit,
-        finishedProductQty: row.finishedProductQty,
-        returnedQty: row.returnedQty,
-        model3dCode: row.model3dCode,
-        model3dUrl: row.model3dUrl,
-        leadTime: row.leadTime,
-        trackingCode: row.trackingCode,
-        closedBy: row.closedBy,
-        description: row.description,
-        stoneColor: row.stoneColor,
-        stoneTypes: row.stoneTypes,
-        size: row.size,
-        sizeLabel: row.sizeLabel,
-        mainMaterial: row.mainMaterial,
-        platingColor: row.platingColor,
-        btpCategory: row.btpCategory,
-        productKind: row.productKind,
-        askedUserName: row.askedUserName,
-        receivedDate: ymd(row.receivedDate),
-        dueDate: row.dueDate ? ymd(row.dueDate) : null,
-        debtStatus: row.debtStatus,
-        createdAt: row.createdAt.toISOString(),
-        updatedAt: row.updatedAt.toISOString(),
-        images: [],
-        subTickets: row.subTickets.map((ticket) =>
-          subTicketSummary(
-            row.code,
-            ticket,
-            row.stages.filter((entry) => entry.subTicketId === ticket.id),
+      statusCounts: { ...statusCounts, ALL: candidates.length },
+      items: rows.map((row) => {
+        const parentEntries = row.stages.filter((entry) => !entry.subTicketId);
+        const parentProgress = row.subTickets.length
+          ? null
+          : orderTicketState(row, parentEntries);
+        const lastParentEntry = parentEntries[parentEntries.length - 1];
+        const workStage = parentProgress
+          ? (parentProgress.activeStage ?? lastParentEntry?.stage ?? null)
+          : null;
+        return {
+          id: row.id,
+          code: row.code,
+          status: row.status,
+          source: row.source,
+          btpSku: row.btpMaterial?.sku ?? null,
+          requestType: row.requestType,
+          qty: row.qty,
+          qtyUnit: row.qtyUnit,
+          finishedProductQty: row.finishedProductQty,
+          returnedQty: row.returnedQty,
+          model3dCode: row.model3dCode,
+          model3dUrl: row.model3dUrl,
+          leadTime: row.leadTime,
+          trackingCode: row.trackingCode,
+          closedBy: row.closedBy,
+          description: row.description,
+          stoneColor: row.stoneColor,
+          stoneTypes: row.stoneTypes,
+          size: row.size,
+          sizeLabel: row.sizeLabel,
+          mainMaterial: row.mainMaterial,
+          platingColor: row.platingColor,
+          btpCategory: row.btpCategory,
+          productKind: row.productKind,
+          askedUserName: row.askedUserName,
+          receivedDate: ymd(row.receivedDate),
+          dueDate: row.dueDate ? ymd(row.dueDate) : null,
+          debtStatus: row.debtStatus,
+          createdAt: row.createdAt.toISOString(),
+          updatedAt: row.updatedAt.toISOString(),
+          workState: workStage ? (parentProgress?.state ?? null) : null,
+          workStage,
+          images: [],
+          subTickets: row.subTickets.map((ticket) =>
+            subTicketSummary(
+              row.code,
+              ticket,
+              row.stages.filter((entry) => entry.subTicketId === ticket.id),
+            ),
           ),
-        ),
-      })),
+        };
+      }),
     };
   }
 

@@ -5,6 +5,7 @@ import {
   lastStageDone,
   looseTopUps,
   orderEntries,
+  orderListStatuses,
   orderTicketAvailable,
   orderTicketState,
   slowestStage,
@@ -109,6 +110,37 @@ describe('subTicketState — phiếu con đang ở đâu', () => {
       state: 'FINISH',
       activeStage: null,
     });
+  });
+});
+
+describe('orderListStatuses — tab theo vị trí thật của từng phiếu', () => {
+  it('một đơn xuất hiện ở mọi khâu mà phiếu con đang đứng', () => {
+    const statuses = orderListStatuses({
+      status: 'FILING',
+      subTickets: [
+        ticket({ id: 't1' }),
+        ticket({ id: 't2', pendingStage: 'STONE_SETTING' }),
+      ],
+      stages: [
+        entry({ subTicketId: 't1', stage: 'FILING', returnedAt: new Date() }),
+      ],
+    });
+    expect(statuses).toEqual(
+      expect.arrayContaining(['FILING', 'STONE_SETTING']),
+    );
+  });
+
+  it('phiếu đã chốt nằm ở tab kết cục tương ứng', () => {
+    const statuses = orderListStatuses({
+      status: 'STONE_SETTING',
+      subTickets: [
+        ticket({ id: 't1', outcome: 'FINISH' }),
+        ticket({ id: 't2', outcome: 'DEFECT' }),
+      ],
+      stages: [],
+    });
+    expect(statuses).toEqual(expect.arrayContaining(['FINISHING', 'DEFECT']));
+    expect(statuses).not.toContain('STONE_SETTING');
   });
 });
 

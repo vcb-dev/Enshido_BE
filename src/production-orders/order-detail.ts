@@ -241,6 +241,46 @@ export function ticketPosition(
 }
 
 /**
+ * Các tab mà một đơn phải xuất hiện trên danh sách. Một đơn đã chia có thể đồng thời nằm ở
+ * nhiều khâu vì từng phiếu con chạy độc lập; phiếu đã chốt thì nằm ở Lỗi / Hoàn thiện.
+ */
+export function orderListStatuses(order: {
+  status: ProductionStatus;
+  subTickets: readonly Pick<
+    SubTicket,
+    'id' | 'pendingStage' | 'claimedByUserId' | 'outcome'
+  >[];
+  stages: readonly (StateEntry & Pick<StageEntry, 'subTicketId'>)[];
+}): ProductionStatus[] {
+  const statuses = new Set<ProductionStatus>();
+  // Đơn chưa chia lấy trạng thái của chính nó. Với đơn đã chia, trạng thái khâu của đơn mẹ
+  // chỉ là giá trị tổng hợp; từng phiếu bên dưới mới là nguồn đúng để xếp tab khâu.
+  if (
+    order.subTickets.length === 0 ||
+    !IN_STAGE_STATUSES.includes(order.status)
+  ) {
+    statuses.add(order.status);
+  }
+  for (const ticket of order.subTickets) {
+    if (ticket.outcome === SubTicketOutcome.DEFECT) {
+      statuses.add(S.DEFECT);
+      continue;
+    }
+    if (ticket.outcome === SubTicketOutcome.FINISH) {
+      statuses.add(S.FINISHING);
+      continue;
+    }
+    const entries = order.stages.filter(
+      (entry) => entry.subTicketId === ticket.id,
+    );
+    const stage = ticketPosition(ticket, entries);
+    if (stage) statuses.add(STAGE_STATUS[stage]);
+  }
+  if (statuses.size === 0) statuses.add(order.status);
+  return [...statuses];
+}
+
+/**
  * Tóm tắt một phiếu con cho danh sách đơn: đang ở khâu nào, trạng thái gì, ai đang giữ hàng.
  * Khâu lấy giống cột Khâu ở bảng phiếu con trong trang đơn — khâu đang chạy, hoặc khâu vừa
  * xong nếu đang rảnh / đã chốt. Thợ chỉ ghi người đang giữ (đã nhận hoặc đang làm); đang chờ
