@@ -52,6 +52,14 @@ export class FinishedGoodsController {
     return this.finishedGoods.createReceipt(dto, user);
   }
 
+  @Post('receipts/:id/receive')
+  receiveReceipt(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.finishedGoods.receiveReceipt(id, user);
+  }
+
   @Patch('receipts/:id')
   updateReceipt(
     @Param('id', ParseUUIDPipe) id: string,

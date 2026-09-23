@@ -489,17 +489,20 @@ export class ProductionOrdersService {
   async finishedProductOptions(search?: string) {
     const keyword = search?.trim();
     const receipts = await this.prisma.finishedGoodsReceipt.findMany({
-      where: keyword
-        ? {
-            order: {
-              OR: [
-                { code: { contains: keyword, mode: 'insensitive' } },
-                { description: { contains: keyword, mode: 'insensitive' } },
-                { trackingCode: { contains: keyword, mode: 'insensitive' } },
-              ],
-            },
-          }
-        : undefined,
+      where: {
+        stockedQty: { gt: 0 },
+        ...(keyword
+          ? {
+              order: {
+                OR: [
+                  { code: { contains: keyword, mode: 'insensitive' } },
+                  { description: { contains: keyword, mode: 'insensitive' } },
+                  { trackingCode: { contains: keyword, mode: 'insensitive' } },
+                ],
+              },
+            }
+          : {}),
+      },
       orderBy: { receivedAt: 'desc' },
       take: 200,
       include: {
@@ -593,7 +596,7 @@ export class ProductionOrdersService {
             : null,
         laserEngraving: receipt.order.laserEngraving,
         otherRequirements: receipt.order.otherRequirements,
-        remainingQty: receipt.qty - shippedQty,
+        remainingQty: receipt.stockedQty - shippedQty,
         qtyUnit: receipt.order.qtyUnit,
         images: receipt.order.images,
         bomLines: receipt.order.bomLines.map((line) => ({
@@ -1404,7 +1407,7 @@ export class ProductionOrdersService {
 
   /**
    * Kết phiếu ở nhánh Hoàn thiện (thay cho khâu Ngoại Quan cũ): KCS chốt hàng đạt,
-   * đơn sang Hoàn thiện và vào kho thành phẩm đủ số lượng.
+   * đơn sang Hoàn thiện và tạo phiếu chờ kho thành phẩm xác nhận nhập.
    */
   async finish(code: string, dto: FinishOrderDto, actor: AuthUserPayload) {
     const order = await this.requireOrder(code);
@@ -1412,7 +1415,7 @@ export class ProductionOrdersService {
       throw new BadRequestException('Đơn đã giao');
     }
     if (order.receipt) {
-      throw new BadRequestException('Đơn đã hoàn thiện, đang ở kho thành phẩm');
+      throw new BadRequestException('Đơn đã hoàn thiện, đã có phiếu chờ nhập thành phẩm');
     }
     if (order.status === S.NEW || order.status === S.REDO_3D) {
       throw new BadRequestException(
@@ -1457,6 +1460,7 @@ export class ProductionOrdersService {
         receipt: {
           create: {
             qty: order.qty,
+            stockedQty: 0,
             receivedAt: finishedAt,
             receivedByUserId: actor.id,
             receivedByName: changedBy,

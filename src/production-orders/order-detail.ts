@@ -513,7 +513,9 @@ export function toDetail(order: OrderDetail) {
     linkedOutbounds: order._count.outbounds,
     finishedGoods: order.receipt
       ? {
-          qty: order.receipt.qty,
+          qty: order.receipt.stockedQty,
+          pendingQty: Math.max(0, order.receipt.qty - order.receipt.stockedQty),
+          completedQty: order.receipt.qty,
           receivedAt: order.receipt.receivedAt.toISOString(),
           receivedByName: order.receipt.receivedByName,
           shippedQty: order.shipmentLines.reduce(
@@ -521,7 +523,7 @@ export function toDetail(order: OrderDetail) {
             0,
           ),
           remainingQty:
-            order.receipt.qty -
+            order.receipt.stockedQty -
             order.shipmentLines.reduce((sum, line) => sum + line.qty, 0),
           shipments: order.shipmentLines.map((line) => ({
             code: line.shipment.code,

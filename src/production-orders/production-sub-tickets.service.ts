@@ -947,7 +947,8 @@ export class ProductionSubTicketsService {
 
   /**
    * Gộp kết cục các phiếu con lên đơn mẹ. Số của phiếu hoàn thiện cộng dồn ngay vào phiếu
-   * nhập kho thành phẩm; trạng thái đơn chỉ chốt khi mọi phiếu con đã có kết cục —
+   * chờ nhập kho thành phẩm; SL đã được kho xác nhận giữ nguyên. Trạng thái đơn chỉ chốt
+   * khi mọi phiếu con đã có kết cục —
    * còn ít nhất một phiếu hoàn thiện thì đơn Hoàn thiện, tất cả lỗi thì đơn Sản xuất lỗi.
    */
   private async syncOrder(
@@ -982,11 +983,15 @@ export class ProductionSubTicketsService {
         create: {
           orderId: order.id,
           qty: finishedQty,
+          stockedQty: 0,
           receivedAt: new Date(),
           receivedByUserId: actor.id,
           receivedByName: changedBy,
         },
-        update: { qty: finishedQty },
+        update: {
+          qty: finishedQty,
+          stockedQty: Math.min(order.receipt?.stockedQty ?? 0, finishedQty),
+        },
       });
     } else if (order.receipt) {
       await tx.finishedGoodsReceipt.delete({ where: { orderId: order.id } });
@@ -998,7 +1003,7 @@ export class ProductionSubTicketsService {
     let note: string | null = null;
     if (done) {
       status = finishedQty > 0 ? S.FINISHING : S.DEFECT;
-      note = `${finished.length}/${tickets.length} phiếu con hoàn thiện — ${finishedQty} sp vào kho thành phẩm`;
+      note = `${finished.length}/${tickets.length} phiếu con hoàn thiện — ${finishedQty} sp chờ nhập kho thành phẩm`;
     } else if (order.status === S.FINISHING || order.status === S.DEFECT) {
       // Gỡ kết cục một phiếu: đơn quay lại khâu của phần chậm nhất còn đang làm — không lấy
       // khâu mới tạo gần nhất, vì phiếu con đi lệch khâu nhau thì đó là khâu của phiếu nhanh.
