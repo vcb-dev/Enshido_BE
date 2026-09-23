@@ -207,7 +207,7 @@ export class AuthService {
   expiresAtFromRequest(req: Request) {
     const token = req.cookies?.[COOKIE_ACCESS];
     if (typeof token === 'string' && token.length > 0) {
-      const decoded = this.jwt.decode(token) as { exp?: number } | null;
+      const decoded = this.jwt.decode(token);
       if (decoded?.exp) return new Date(decoded.exp * 1000).toISOString();
     }
     return new Date(
@@ -266,7 +266,11 @@ export class AuthService {
     return {
       ...this.toPublicUser(user),
       roleLabel: roleLabelFor(user.roleCode, extraRoles),
-      permissions: permissionsForUser(user.roleCode, extraRoles, allowedScreens),
+      permissions: permissionsForUser(
+        user.roleCode,
+        extraRoles,
+        allowedScreens,
+      ),
     };
   }
 }

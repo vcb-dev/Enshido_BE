@@ -1,6 +1,7 @@
 import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
+  ArrayMinSize,
   IsArray,
   IsDateString,
   IsEnum,
@@ -341,6 +342,20 @@ export class HandoverInfoDto {
   @Matches(DECIMAL, { message: 'Trọng lượng giao (bạc) không hợp lệ' })
   handedSilverWeight!: string;
 
+  /** Khâu Vào đá: số viên đá phát cho thợ. Khâu khác không nhận hai trường đá này. */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  handedStoneCount?: number | null;
+
+  /** Khâu Vào đá: TL đá phát cho thợ (g). */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Matches(DECIMAL, { message: 'Trọng lượng đá giao không hợp lệ' })
+  handedStoneWeight?: string | null;
+
   @IsOptional()
   @IsString()
   @MaxLength(1000)
@@ -375,6 +390,20 @@ export class ReturnStageDto {
   @Transform(emptyToNull)
   @Matches(DECIMAL, { message: 'Trọng lượng nhận lại (bạc) không hợp lệ' })
   returnedSilverWeight!: string;
+
+  /** Khâu Vào đá: số viên đá gắn lên. Khâu khác không nhận hai trường đá này. */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  stoneCount?: number | null;
+
+  /** Khâu Vào đá: TL đá gắn lên (g) — cộng vào TL giao khi tính hao hụt. */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Matches(DECIMAL, { message: 'Trọng lượng đá không hợp lệ' })
+  stoneWeight?: string | null;
 
   @IsOptional()
   @Transform(emptyToNull)
@@ -444,6 +473,16 @@ export class SubTicketDto {
   note?: string;
 }
 
+/** Lần chia đầu tiên phải tạo ít nhất hai phiếu; một phần việc thì làm thẳng trên phiếu mẹ. */
+export class SplitSubTicketsDto {
+  @IsArray()
+  @ArrayMinSize(2)
+  @ArrayMaxSize(200)
+  @ValidateNested({ each: true })
+  @Type(() => SubTicketDto)
+  tickets!: SubTicketDto[];
+}
+
 /** Mở một khâu cho thợ tự nhận trên các phiếu con. Bỏ trống `nos` = mọi phiếu con đang rảnh. */
 export class OpenSubTicketStageDto {
   @IsEnum(ProductionStage)
@@ -456,6 +495,12 @@ export class OpenSubTicketStageDto {
   @IsInt({ each: true })
   @Min(1, { each: true })
   nos?: number[];
+}
+
+/** Mở khâu trên phiếu mẹ để thợ tự nhận; chỉ dùng khi đơn không chia phiếu con. */
+export class OpenOrderStageDto {
+  @IsEnum(ProductionStage)
+  stage!: ProductionStage;
 }
 
 /** Chốt phiếu con ở nhánh Lỗi (bắt buộc lý do) hoặc Hoàn thiện. */

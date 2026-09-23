@@ -28,7 +28,8 @@ export function resolveDatabaseUrl(raw = process.env.DATABASE_URL): string {
   const [base, query = ''] = raw.split('?');
   const params = new URLSearchParams(query);
   const host = base.match(/@([^/]+)/)?.[1] ?? '';
-  const usesTransactionPooler = host.includes(':6543') || base.includes(':6543');
+  const usesTransactionPooler =
+    host.includes(':6543') || base.includes(':6543');
 
   if (usesTransactionPooler) {
     params.set('pgbouncer', 'true');

@@ -137,7 +137,8 @@ export class BtpService {
       where: { id: userId, isActive: true },
       select: { id: true, fullName: true, username: true },
     });
-    if (!user) throw new BadRequestException('Chọn thợ nguội từ tài khoản hệ thống');
+    if (!user)
+      throw new BadRequestException('Chọn thợ nguội từ tài khoản hệ thống');
     return { id: user.id, name: actorDisplayName(user) };
   }
 
@@ -200,7 +201,8 @@ export class BtpService {
 
 function requireName(name: string) {
   const trimmed = name.trim();
-  if (!trimmed) throw new BadRequestException('Tên bán thành phẩm không được trống');
+  if (!trimmed)
+    throw new BadRequestException('Tên bán thành phẩm không được trống');
   return trimmed;
 }
 

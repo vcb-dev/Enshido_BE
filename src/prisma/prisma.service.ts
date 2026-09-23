@@ -14,7 +14,8 @@ export const PRISMA_TX = {
 function isTxRetryable(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
   const e = err as { code?: string; message?: string };
-  if (e.code === 'P2028' || e.code === 'P2034' || e.code === 'P1017') return true;
+  if (e.code === 'P2028' || e.code === 'P2034' || e.code === 'P1017')
+    return true;
   const msg = e.message ?? '';
   return (
     msg.includes('Transaction not found') ||
@@ -48,9 +49,7 @@ export class PrismaService
     await this.$disconnect();
   }
 
-  async runTx<T>(
-    fn: (tx: Prisma.TransactionClient) => Promise<T>,
-  ): Promise<T> {
+  async runTx<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
     let last: unknown;
     for (let attempt = 1; attempt <= TX_RETRIES; attempt++) {
       try {

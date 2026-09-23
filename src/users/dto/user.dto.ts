@@ -15,7 +15,8 @@ import { ALL_PERMISSIONS } from '../../auth/permissions';
 export class CreateUserDto {
   @IsString()
   @Matches(/^[a-zA-Z0-9._-]{3,32}$/, {
-    message: 'Tài khoản chỉ gồm chữ, số, dấu chấm, gạch dưới, gạch ngang (3–32 ký tự)',
+    message:
+      'Tài khoản chỉ gồm chữ, số, dấu chấm, gạch dưới, gạch ngang (3–32 ký tự)',
   })
   username!: string;
 

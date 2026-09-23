@@ -16,7 +16,10 @@ import { WarehouseScreenGuard } from '../auth/guards/warehouse-screen.guard';
 import type { AuthUserPayload } from '../auth/types';
 import { CreateInboundDto } from '../inventory/dto/inbound.dto';
 import { CreateOutboundDto } from '../inventory/dto/outbound.dto';
-import { CreateStockDto, UpdateStockDto } from '../inventory/dto/update-stock.dto';
+import {
+  CreateStockDto,
+  UpdateStockDto,
+} from '../inventory/dto/update-stock.dto';
 import { InventoryService } from '../inventory/inventory.service';
 
 @Controller('warehouses')

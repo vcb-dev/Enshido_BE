@@ -45,9 +45,9 @@ describe('permissionsForUser', () => {
   });
 
   it('bỏ qua mã quyền lạ trong allowedScreens', () => {
-    expect(permissionsForUser(RoleCode.USER, [], ['screen.khong-ton-tai'])).toEqual(
-      [],
-    );
+    expect(
+      permissionsForUser(RoleCode.USER, [], ['screen.khong-ton-tai']),
+    ).toEqual([]);
   });
 });
 

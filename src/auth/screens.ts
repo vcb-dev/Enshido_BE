@@ -1,4 +1,8 @@
-import { Permission, type PermissionCode, userHasPermission } from './permissions';
+import {
+  Permission,
+  type PermissionCode,
+  userHasPermission,
+} from './permissions';
 import { RoleCode } from '@prisma/client';
 
 export const WAREHOUSE_SCREEN: Record<string, PermissionCode> = {

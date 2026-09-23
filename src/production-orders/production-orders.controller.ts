@@ -27,11 +27,13 @@ import {
   HandoverStageDto,
   ListProductionOrdersQuery,
   OpenSubTicketStageDto,
+  OpenOrderStageDto,
   OrderCostDto,
   OrderOptionsQuery,
   ReturnStageDto,
   StageLaborDto,
   StartStageDto,
+  SplitSubTicketsDto,
   SubTicketDto,
   SubTicketOutcomeDto,
   SubTicketTopUpDto,
@@ -266,6 +268,85 @@ export class ProductionOrdersController {
     @CurrentUser() user: AuthUserPayload,
   ) {
     return this.subTickets.create(code, dto, user);
+  }
+
+  @Post(':code/work/open-stage')
+  @BlockWorker()
+  openOrderStage(
+    @Param('code') code: string,
+    @Body() dto: OpenOrderStageDto,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.subTickets.openOrderStage(code, dto, user);
+  }
+
+  @Delete(':code/work/pending')
+  @BlockWorker()
+  cancelOrderPending(@Param('code') code: string) {
+    return this.subTickets.cancelOrderPending(code);
+  }
+
+  @Post(':code/work/claim')
+  @RequirePermissions(Permission.PRODUCTION_WORKER)
+  claimOrder(
+    @Param('code') code: string,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.subTickets.claimOrder(code, user);
+  }
+
+  @Delete(':code/work/claim')
+  unclaimOrder(
+    @Param('code') code: string,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.subTickets.unclaimOrder(code, user);
+  }
+
+  @Post(':code/work/handover')
+  handoverOrder(
+    @Param('code') code: string,
+    @Body() dto: HandoverInfoDto,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.subTickets.handoverOrder(code, dto, user);
+  }
+
+  @Post(':code/work/submit')
+  submitOrder(
+    @Param('code') code: string,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.subTickets.submitOrder(code, user);
+  }
+
+  @Delete(':code/work/submit')
+  unsubmitOrder(
+    @Param('code') code: string,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.subTickets.unsubmitOrder(code, user);
+  }
+
+  /** Chia đơn lần đầu: luôn tạo từ hai phiếu con trở lên trong cùng một transaction. */
+  @Post(':code/sub-tickets/split')
+  @BlockWorker()
+  splitSubTickets(
+    @Param('code') code: string,
+    @Body() dto: SplitSubTicketsDto,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.subTickets.split(code, dto, user);
+  }
+
+  /** Hủy chia khi chưa phiếu nào bắt đầu làm, quay lại quy trình trên phiếu mẹ. */
+  @Delete(':code/sub-tickets')
+  @BlockWorker()
+  clearSubTickets(
+    @Param('code') code: string,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.subTickets.clearSplit(code, user);
   }
 
   @Post(':code/sub-tickets/open-stage')

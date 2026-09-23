@@ -1,9 +1,22 @@
-import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+  Post,
+  Query,
+} from '@nestjs/common';
 import { OtherClassKind } from '@prisma/client';
 import { RequirePermissions } from '../auth/decorators';
 import { Permission } from '../auth/permissions';
 import { CatalogsService } from './catalogs.service';
-import { CreateOtherClassDto, UpdateOtherClassDto } from './dto/other-class.dto';
+import {
+  CreateOtherClassDto,
+  UpdateOtherClassDto,
+} from './dto/other-class.dto';
 
 @Controller('catalogs')
 export class CatalogsController {
@@ -12,7 +25,9 @@ export class CatalogsController {
   @Get()
   list(@Query('kind') kind?: OtherClassKind) {
     const resolved =
-      kind === OtherClassKind.OTHER ? OtherClassKind.OTHER : OtherClassKind.CATALOG;
+      kind === OtherClassKind.OTHER
+        ? OtherClassKind.OTHER
+        : OtherClassKind.CATALOG;
     return this.catalogs.list(resolved);
   }
 
@@ -24,7 +39,10 @@ export class CatalogsController {
 
   @Patch(':id')
   @RequirePermissions(Permission.SCREEN_CATALOGS)
-  update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateOtherClassDto) {
+  update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateOtherClassDto,
+  ) {
     return this.catalogs.update(id, dto);
   }
 

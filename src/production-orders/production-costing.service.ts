@@ -31,6 +31,7 @@ const COSTING_ORDER_SELECT = {
       craftsmanName: true,
       returnedAt: true,
       handedSilverWeight: true,
+      stoneWeight: true,
       returnedSilverWeight: true,
       btpRecoveredWeight: true,
       silverRecoveredWeight: true,

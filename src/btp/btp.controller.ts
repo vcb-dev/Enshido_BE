@@ -44,10 +44,7 @@ export class BtpController {
   }
 
   @Delete(':id')
-  remove(
-    @Param('code') code: string,
-    @Param('id', ParseUUIDPipe) id: string,
-  ) {
+  remove(@Param('code') code: string, @Param('id', ParseUUIDPipe) id: string) {
     return this.btp.remove(code, id);
   }
 }

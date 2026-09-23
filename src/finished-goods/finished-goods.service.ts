@@ -134,9 +134,7 @@ export class FinishedGoodsService {
       const isOpening = (receipt.order.trackingCode ?? '').startsWith(
         STOCK_TRACKING_PREFIX,
       );
-      const openingQty = isOpening
-        ? new Prisma.Decimal(receipt.qty)
-        : zero;
+      const openingQty = isOpening ? new Prisma.Decimal(receipt.qty) : zero;
       const inQty = isOpening ? zero : new Prisma.Decimal(receipt.qty);
       const outQty = new Prisma.Decimal(shippedQty);
       const qty = new Prisma.Decimal(remainingQty);
@@ -210,15 +208,27 @@ export class FinishedGoodsService {
             {
               OR: [
                 { trackingCode: null },
-                { NOT: { trackingCode: { startsWith: STOCK_TRACKING_PREFIX } } },
+                {
+                  NOT: { trackingCode: { startsWith: STOCK_TRACKING_PREFIX } },
+                },
               ],
             },
             ...(keyword
               ? [
                   {
                     OR: [
-                      { code: { contains: keyword, mode: 'insensitive' as const } },
-                      { description: { contains: keyword, mode: 'insensitive' as const } },
+                      {
+                        code: {
+                          contains: keyword,
+                          mode: 'insensitive' as const,
+                        },
+                      },
+                      {
+                        description: {
+                          contains: keyword,
+                          mode: 'insensitive' as const,
+                        },
+                      },
                     ],
                   },
                 ]
@@ -288,8 +298,12 @@ export class FinishedGoodsService {
       ? {
           OR: [
             { code: { contains: keyword, mode: 'insensitive' as const } },
-            { description: { contains: keyword, mode: 'insensitive' as const } },
-            { trackingCode: { contains: keyword, mode: 'insensitive' as const } },
+            {
+              description: { contains: keyword, mode: 'insensitive' as const },
+            },
+            {
+              trackingCode: { contains: keyword, mode: 'insensitive' as const },
+            },
           ],
         }
       : undefined;
@@ -314,7 +328,10 @@ export class FinishedGoodsService {
 
     return {
       items: stock.map((receipt) => {
-        const shippedQty = receipt.order.shipmentLines.reduce((sum, line) => sum + line.qty, 0);
+        const shippedQty = receipt.order.shipmentLines.reduce(
+          (sum, line) => sum + line.qty,
+          0,
+        );
         return {
           code: receipt.order.code,
           description: receipt.order.description,
@@ -338,7 +355,9 @@ export class FinishedGoodsService {
     }
     const order = await this.requireReceiptOrder(dto.orderCode);
     if (!order.receipt) {
-      throw new BadRequestException('Chọn thành phẩm đang có trên Tồn. Đơn sản xuất lên Tồn trước.');
+      throw new BadRequestException(
+        'Chọn thành phẩm đang có trên Tồn. Đơn sản xuất lên Tồn trước.',
+      );
     }
     await this.prisma.finishedGoodsReceipt.update({
       where: { id: order.receipt.id },
@@ -353,15 +372,23 @@ export class FinishedGoodsService {
       await this.prisma.productionOrder.update({
         where: { id: order.id },
         data: {
-          ...(dto.sizeLabel !== undefined ? { sizeLabel: dto.sizeLabel.trim() || null } : {}),
-          ...(dto.qtyUnit !== undefined ? { qtyUnit: dto.qtyUnit.trim() || null } : {}),
+          ...(dto.sizeLabel !== undefined
+            ? { sizeLabel: dto.sizeLabel.trim() || null }
+            : {}),
+          ...(dto.qtyUnit !== undefined
+            ? { qtyUnit: dto.qtyUnit.trim() || null }
+            : {}),
         },
       });
     }
     return { success: true };
   }
 
-  async updateReceipt(id: string, dto: UpsertReceiptDto, actor: AuthUserPayload) {
+  async updateReceipt(
+    id: string,
+    dto: UpsertReceiptDto,
+    actor: AuthUserPayload,
+  ) {
     const receipt = await this.prisma.finishedGoodsReceipt.findUnique({
       where: { id },
       include: {
@@ -400,8 +427,12 @@ export class FinishedGoodsService {
         ...(dto.mainMaterial !== undefined
           ? { mainMaterial: dto.mainMaterial.trim() || null }
           : {}),
-        ...(dto.sizeLabel !== undefined ? { sizeLabel: dto.sizeLabel.trim() || null } : {}),
-        ...(dto.qtyUnit !== undefined ? { qtyUnit: dto.qtyUnit.trim() || null } : {}),
+        ...(dto.sizeLabel !== undefined
+          ? { sizeLabel: dto.sizeLabel.trim() || null }
+          : {}),
+        ...(dto.qtyUnit !== undefined
+          ? { qtyUnit: dto.qtyUnit.trim() || null }
+          : {}),
         receipt: {
           update: {
             qty: dto.qty,
@@ -445,7 +476,10 @@ export class FinishedGoodsService {
   }
 
   /** Nhập mới trên Tồn — tự tạo mã đơn, không hiện trên danh sách sản xuất. */
-  private async createStockEntry(dto: UpsertReceiptDto, actor: AuthUserPayload) {
+  private async createStockEntry(
+    dto: UpsertReceiptDto,
+    actor: AuthUserPayload,
+  ) {
     const description = dto.description?.trim();
     if (!description) throw new BadRequestException('Nhập tên thành phẩm');
     const changedBy = actorName(actor);
@@ -453,12 +487,16 @@ export class FinishedGoodsService {
     const unitPrice = dto.stockUnitPrice
       ? new Prisma.Decimal(dto.stockUnitPrice)
       : new Prisma.Decimal(0);
-    const costAmount = unitPrice.mul(dto.qty).toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP);
+    const costAmount = unitPrice
+      .mul(dto.qty)
+      .toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP);
 
     for (let attempt = 1; ; attempt += 1) {
       try {
         await this.prisma.runTx(async (tx) => {
-          const last = await tx.productionOrder.aggregate({ _max: { seq: true } });
+          const last = await tx.productionOrder.aggregate({
+            _max: { seq: true },
+          });
           const seq = (last._max.seq ?? 0) + 1;
           const code = orderCode(seq);
           await tx.productionOrder.create({
@@ -524,7 +562,9 @@ export class FinishedGoodsService {
     });
     if (amount.lte(0)) {
       if (existing) {
-        await this.prisma.productionOrderCost.delete({ where: { id: existing.id } });
+        await this.prisma.productionOrderCost.delete({
+          where: { id: existing.id },
+        });
       }
       return;
     }
@@ -843,7 +883,9 @@ export class FinishedGoodsService {
       }
       const cost = costs.get(order.id);
       if (!cost) {
-        throw new BadRequestException(`Không tính được giá vốn đơn ${orderCode}`);
+        throw new BadRequestException(
+          `Không tính được giá vốn đơn ${orderCode}`,
+        );
       }
       unitCosts.set(orderCode, cost.unitCostDecimal);
     }

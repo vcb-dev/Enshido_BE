@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
+import compression from 'compression';
 import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 
@@ -11,8 +12,12 @@ async function bootstrap() {
 
   app.setGlobalPrefix('api');
   app.use(helmet({ contentSecurityPolicy: false }));
+  // Gzip JSON: 25 dòng danh sách đơn ~29 KB còn ~3 KB.
+  app.use(compression());
   app.use(cookieParser());
-  const http = app.getHttpAdapter().getInstance() as { set?: (k: string, v: unknown) => void };
+  const http = app.getHttpAdapter().getInstance() as {
+    set?: (k: string, v: unknown) => void;
+  };
   http.set?.('trust proxy', 1);
 
   app.useGlobalPipes(

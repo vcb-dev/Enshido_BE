@@ -8,7 +8,10 @@ import { OtherClassKind } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { slugFromName } from '../util/slug';
-import { CreateOtherClassDto, UpdateOtherClassDto } from './dto/other-class.dto';
+import {
+  CreateOtherClassDto,
+  UpdateOtherClassDto,
+} from './dto/other-class.dto';
 
 const catalogSelect = {
   id: true,
@@ -84,12 +87,16 @@ export class CatalogsService {
     });
     if (!current) throw new NotFoundException('Không tìm thấy danh mục');
     const name = dto.name?.trim();
-    const parentId = dto.parentId === undefined ? current.parentId : dto.parentId;
-    if (parentId === id) throw new BadRequestException('Danh mục không thể là cha của chính nó');
+    const parentId =
+      dto.parentId === undefined ? current.parentId : dto.parentId;
+    if (parentId === id)
+      throw new BadRequestException('Danh mục không thể là cha của chính nó');
     if (parentId) {
       const parent = await this.assertParent(parentId, id);
       if (parent.kind !== current.kind) {
-        throw new BadRequestException('Danh mục con phải cùng loại với danh mục cha');
+        throw new BadRequestException(
+          'Danh mục con phải cùng loại với danh mục cha',
+        );
       }
     }
     if (name) await this.assertUniqueName(name, current.kind, parentId, id);
@@ -113,7 +120,9 @@ export class CatalogsService {
     });
     if (!current) throw new NotFoundException('Không tìm thấy danh mục');
     if (current._count.children > 0) {
-      throw new BadRequestException('Xóa danh mục con trước khi xóa danh mục này');
+      throw new BadRequestException(
+        'Xóa danh mục con trước khi xóa danh mục này',
+      );
     }
     await this.prisma.otherClass.delete({ where: { id } });
     this.inventory.bustLookups();
@@ -126,7 +135,8 @@ export class CatalogsService {
       select: { id: true, parentId: true, kind: true },
     });
     if (!parent) throw new NotFoundException('Không tìm thấy danh mục cha');
-    if (parent.parentId) throw new BadRequestException('Chỉ tạo danh mục con dưới danh mục to');
+    if (parent.parentId)
+      throw new BadRequestException('Chỉ tạo danh mục con dưới danh mục to');
     if (exceptId && parentId === exceptId) {
       throw new BadRequestException('Danh mục không thể là cha của chính nó');
     }
