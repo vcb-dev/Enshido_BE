@@ -486,7 +486,8 @@ export class InventoryService {
           unitId: dto.unitId,
           shapeId: dto.shapeId || null,
           colorId: colorId || null,
-          materialTypeId: isBtp || otherClassId ? null : dto.materialTypeId || null,
+          materialTypeId:
+            isBtp || otherClassId ? null : dto.materialTypeId || null,
           otherClassId,
           bodyMetalId: dto.bodyMetalId || null,
           productKindId: dto.productKindId || null,
@@ -2193,7 +2194,10 @@ export class InventoryService {
     return items;
   }
 
-  private async resolveColorId(colorName?: string | null, colorId?: string | null) {
+  private async resolveColorId(
+    colorName?: string | null,
+    colorId?: string | null,
+  ) {
     if (colorName !== undefined) {
       const name = colorName?.trim() ?? '';
       if (!name) return null;
@@ -2202,11 +2206,18 @@ export class InventoryService {
         select: { id: true },
       });
       if (existing) return existing.id;
-      const last = await this.prisma.color.aggregate({ _max: { sortOrder: true } });
+      const last = await this.prisma.color.aggregate({
+        _max: { sortOrder: true },
+      });
       const base = slugFromName(name);
       let code = base;
       let n = 2;
-      while (await this.prisma.color.findUnique({ where: { code }, select: { id: true } })) {
+      while (
+        await this.prisma.color.findUnique({
+          where: { code },
+          select: { id: true },
+        })
+      ) {
         code = `${base}-${n}`;
         n += 1;
       }

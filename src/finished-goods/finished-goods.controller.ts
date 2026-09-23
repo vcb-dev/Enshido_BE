@@ -14,6 +14,7 @@ import { CurrentUser, Roles } from '../auth/decorators';
 import type { AuthUserPayload } from '../auth/types';
 import {
   ListShipmentsQuery,
+  ReceiveReceiptDto,
   StockQuery,
   UpsertReceiptDto,
   UpsertShipmentDto,
@@ -55,9 +56,10 @@ export class FinishedGoodsController {
   @Post('receipts/:id/receive')
   receiveReceipt(
     @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ReceiveReceiptDto,
     @CurrentUser() user: AuthUserPayload,
   ) {
-    return this.finishedGoods.receiveReceipt(id, user);
+    return this.finishedGoods.receiveReceipt(id, dto, user);
   }
 
   @Patch('receipts/:id')

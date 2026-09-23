@@ -1,4 +1,4 @@
-import { Prisma } from '@prisma/client';
+import { Prisma, ProductionStatus } from '@prisma/client';
 import {
   entriesOf,
   handedStoneOf,
@@ -8,6 +8,7 @@ import {
   orderListStatuses,
   orderTicketAvailable,
   orderTicketState,
+  recentFirst,
   slowestStage,
   subTicketAvailable,
   subTicketCode,
@@ -142,10 +143,56 @@ describe('orderListStatuses — tab theo vị trí thật của từng phiếu',
     expect(statuses).toEqual(expect.arrayContaining(['FINISHING', 'DEFECT']));
     expect(statuses).not.toContain('STONE_SETTING');
   });
+
+  // `list()` lọc và đếm đơn chưa chia thẳng trong DB bằng chính cột `status`, chỉ kéo đơn
+  // đã chia về tính trong bộ nhớ. Luật đó chỉ đúng khi đơn chưa chia luôn nằm đúng một tab.
+  it('đơn chưa chia luôn nằm đúng một tab — chính trạng thái của nó', () => {
+    for (const status of Object.values(ProductionStatus)) {
+      expect(orderListStatuses({ status, subTickets: [], stages: [] })).toEqual(
+        [status],
+      );
+    }
+  });
+});
+
+describe('recentFirst — trộn phiếu vừa nộp của phiếu mẹ và phiếu con', () => {
+  const item = (ticketCode: string, returnedAt: string | null) => ({
+    ticketCode,
+    returnedAt,
+  });
+
+  it('cắt theo thời gian chung, không để một nguồn chiếm hết chỗ', () => {
+    // Phiếu mẹ luôn đứng trước trong mảng gộp; nếu cắt mà không trộn thì A002-1 mới hơn
+    // vẫn bị đẩy ra để nhường chỗ cho A001 cũ hơn.
+    const merged = recentFirst(
+      [
+        item('A001', '2026-09-20T10:00:00.000Z'),
+        item('A003', '2026-09-18T10:00:00.000Z'),
+        item('A002-1', '2026-09-22T10:00:00.000Z'),
+      ],
+      2,
+    );
+    expect(merged.map((row) => row.ticketCode)).toEqual(['A002-1', 'A001']);
+  });
+
+  it('phiếu chưa có mốc nhận lại xếp cuối, mảng gốc không bị đổi', () => {
+    const source = [
+      item('A001', null),
+      item('A002-1', '2026-09-22T10:00:00.000Z'),
+    ];
+    expect(recentFirst(source, 5).map((row) => row.ticketCode)).toEqual([
+      'A002-1',
+      'A001',
+    ]);
+    expect(source.map((row) => row.ticketCode)).toEqual(['A001', 'A002-1']);
+  });
 });
 
 describe('phiếu mẹ không chia — dùng cùng state machine với phiếu con', () => {
-  const parent = (pendingStage: 'FILING' | null, claimedByUserId: string | null = null) => ({
+  const parent = (
+    pendingStage: 'FILING' | null,
+    claimedByUserId: string | null = null,
+  ) => ({
     pendingStage,
     claimedByUserId,
     receipt: null,
@@ -182,9 +229,11 @@ describe('phiếu mẹ không chia — dùng cùng state machine với phiếu c
     });
     const childEntry = entry({ id: 'child-entry', subTicketId: 't1' });
 
-    expect(orderEntries({ stages: [parentEntry, childEntry] }).map((item) => item.id)).toEqual([
-      'parent-entry',
-    ]);
+    expect(
+      orderEntries({ stages: [parentEntry, childEntry] }).map(
+        (item) => item.id,
+      ),
+    ).toEqual(['parent-entry']);
     expect(
       orderTicketAvailable({ qty: 6, silverWeight: dec('600') }, [parentEntry]),
     ).toEqual({ qty: 5, silver: dec('590') });
@@ -353,7 +402,11 @@ describe('handedStoneOf — đá phát cho thợ', () => {
       handedStoneOf('STONE_SETTING', { handedStoneCount: 200 }, order(stages)),
     ).toThrow(/chỉ còn 100 viên/);
     expect(() =>
-      handedStoneOf('STONE_SETTING', { handedStoneWeight: '100' }, order(stages)),
+      handedStoneOf(
+        'STONE_SETTING',
+        { handedStoneWeight: '100' },
+        order(stages),
+      ),
     ).toThrow(/chỉ còn 80 g/);
   });
 

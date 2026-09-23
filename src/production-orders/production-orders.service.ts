@@ -20,7 +20,6 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CloudinaryService } from '../uploads/cloudinary.service';
 import { decStr, METAL_KIND_LABEL } from '../util/money';
 import { InflightMap, TtlCache } from '../util/ttl-cache';
-import { silverLossOf } from './stage-math';
 import {
   CastingDto,
   ChangeStatusDto,
@@ -31,7 +30,6 @@ import {
   OrderImageDto,
   ReturnStageDto,
   StageLaborDto,
-  StartStageDto,
   UpsertProductionOrderDto,
   type ProductionNvlLineDto,
 } from './dto/production-order.dto';
@@ -45,12 +43,13 @@ import {
   LAST_STAGE,
   lastStageDone,
   normalizeCode,
+  orderEntries,
   orderListStatuses,
+  orderTicketAvailable,
   orderTicketState,
   type OrderDetail,
   requireStage,
   STAGE_LABEL,
-  STAGE_ORDER,
   STAGE_STATUS,
   type StageEntry,
   STATUS_LABEL,
@@ -156,127 +155,158 @@ export class ProductionOrdersService {
     const orderBy: Prisma.ProductionOrderOrderByWithRelationInput[] =
       sort === 'code' ? [{ seq: dir }] : [{ [sort]: dir }, { seq: 'desc' }];
 
-    // Một đơn đã chia có thể có các phiếu con ở nhiều khâu. Lấy vị trí gọn của toàn bộ đơn
-    // khớp bộ lọc trước để đếm tab và phân trang theo khâu thực tế, thay vì chỉ nhìn status
-    // tổng hợp (khâu chậm nhất) của đơn mẹ.
-    const candidates = await this.prisma.productionOrder.findMany({
-      where: base,
-      orderBy,
-      select: {
-        id: true,
-        status: true,
-        subTickets: {
-          select: {
-            id: true,
-            pendingStage: true,
-            claimedByUserId: true,
-            outcome: true,
+    // Đơn chưa chia luôn nằm đúng một tab — chính trạng thái của nó — nên lọc và đếm thẳng
+    // trong DB. Chỉ đơn đã chia mới nằm được nhiều tab cùng lúc (mỗi phiếu con một khâu),
+    // và chỉ nhóm đó mới phải kéo về tính trong bộ nhớ.
+    const plainWhere: Prisma.ProductionOrderWhereInput = {
+      AND: [base, { subTickets: { none: {} } }],
+    };
+    const [plainGrouped, splitRows] = await Promise.all([
+      this.prisma.productionOrder.groupBy({
+        by: ['status'],
+        where: plainWhere,
+        _count: { _all: true },
+      }),
+      this.prisma.productionOrder.findMany({
+        where: { AND: [base, { subTickets: { some: {} } }] },
+        select: {
+          id: true,
+          status: true,
+          subTickets: {
+            select: {
+              id: true,
+              pendingStage: true,
+              claimedByUserId: true,
+              outcome: true,
+            },
+          },
+          // Vị trí phiếu con chỉ đọc khâu của phiếu con; khâu cấp đơn không liên quan.
+          stages: {
+            where: { subTicketId: { not: null } },
+            orderBy: { createdAt: 'asc' },
+            select: {
+              subTicketId: true,
+              stage: true,
+              returnedAt: true,
+              submittedAt: true,
+            },
           },
         },
-        stages: {
-          orderBy: { createdAt: 'asc' },
-          select: {
-            subTicketId: true,
-            stage: true,
-            returnedAt: true,
-            submittedAt: true,
-          },
-        },
-      },
-    });
-    const memberships = new Map(
-      candidates.map((row) => [row.id, orderListStatuses(row)]),
-    );
+      }),
+    ]);
+
     const statusCounts = Object.fromEntries(
       Object.values(S).map((status) => [status, 0]),
     ) as Record<ProductionStatus, number>;
-    for (const statuses of memberships.values()) {
-      for (const status of statuses) statusCounts[status] += 1;
+    let all = 0;
+    for (const group of plainGrouped) {
+      statusCounts[group.status] += group._count._all;
+      all += group._count._all;
     }
-    const matching = query.status
-      ? candidates.filter((row) =>
-          memberships.get(row.id)?.includes(query.status!),
-        )
-      : candidates;
-    const total = matching.length;
-    const pageIds = matching
-      .slice((page - 1) * pageSize, page * pageSize)
-      .map((row) => row.id);
+    // Id của đơn đã chia theo từng tab — dùng luôn làm bộ lọc để DB cắt trang, khỏi phải
+    // tải hết đơn rồi slice trong Node.
+    const splitIdsByStatus = new Map<ProductionStatus, string[]>();
+    for (const row of splitRows) {
+      all += 1;
+      for (const status of orderListStatuses(row)) {
+        statusCounts[status] += 1;
+        const ids = splitIdsByStatus.get(status);
+        if (ids) ids.push(row.id);
+        else splitIdsByStatus.set(status, [row.id]);
+      }
+    }
 
-    const rows = pageIds.length
-      ? await this.prisma.productionOrder.findMany({
-          where: { id: { in: pageIds } },
-          orderBy,
-          select: {
-            id: true,
-            code: true,
-            status: true,
-            source: true,
-            requestType: true,
-            qty: true,
-            qtyUnit: true,
-            finishedProductQty: true,
-            returnedQty: true,
-            model3dCode: true,
-            model3dUrl: true,
-            leadTime: true,
-            trackingCode: true,
-            closedBy: true,
-            description: true,
-            stoneColor: true,
-            stoneTypes: true,
-            size: true,
-            sizeLabel: true,
-            mainMaterial: true,
-            platingColor: true,
-            btpCategory: true,
-            productKind: true,
-            askedUserName: true,
-            receivedDate: true,
-            dueDate: true,
-            debtStatus: true,
-            createdAt: true,
-            updatedAt: true,
-            pendingStage: true,
-            claimedByUserId: true,
-            receipt: true,
-            btpMaterial: { select: { sku: true } },
-            // Phiếu con kèm các khâu của chúng — vừa đủ để tính trạng thái từng phiếu cho cột
-            // "Phiếu con" ở danh sách, không kéo cả chi tiết đơn.
-            subTickets: {
-              orderBy: { no: 'asc' },
-              select: {
-                id: true,
-                no: true,
-                qty: true,
-                silverWeight: true,
-                note: true,
-                createdAt: true,
-                pendingStage: true,
-                claimedByUserId: true,
-                claimedByName: true,
-                outcome: true,
-              },
+    // Lọc theo tab: đơn chưa chia so bằng status, đơn đã chia so bằng đúng danh sách id vừa
+    // tính. Bọc trong AND để không đè mất OR tìm kiếm của `base`.
+    const where: Prisma.ProductionOrderWhereInput = query.status
+      ? {
+          AND: [
+            base,
+            {
+              OR: [
+                { status: query.status, subTickets: { none: {} } },
+                { id: { in: splitIdsByStatus.get(query.status) ?? [] } },
+              ],
             },
-            stages: {
-              orderBy: { createdAt: 'asc' },
-              select: {
-                subTicketId: true,
-                stage: true,
-                returnedAt: true,
-                submittedAt: true,
-                craftsmanName: true,
-              },
+          ],
+        }
+      : base;
+
+    const [rows, total] = await Promise.all([
+      this.prisma.productionOrder.findMany({
+        where,
+        orderBy,
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        select: {
+          id: true,
+          code: true,
+          status: true,
+          source: true,
+          requestType: true,
+          qty: true,
+          qtyUnit: true,
+          finishedProductQty: true,
+          returnedQty: true,
+          model3dCode: true,
+          model3dUrl: true,
+          leadTime: true,
+          trackingCode: true,
+          closedBy: true,
+          description: true,
+          stoneColor: true,
+          stoneTypes: true,
+          size: true,
+          sizeLabel: true,
+          mainMaterial: true,
+          platingColor: true,
+          btpCategory: true,
+          productKind: true,
+          askedUserName: true,
+          receivedDate: true,
+          dueDate: true,
+          debtStatus: true,
+          createdAt: true,
+          updatedAt: true,
+          pendingStage: true,
+          claimedByUserId: true,
+          receipt: true,
+          btpMaterial: { select: { sku: true } },
+          // Phiếu con kèm các khâu của chúng — vừa đủ để tính trạng thái từng phiếu cho cột
+          // "Phiếu con" ở danh sách, không kéo cả chi tiết đơn.
+          subTickets: {
+            orderBy: { no: 'asc' },
+            select: {
+              id: true,
+              no: true,
+              qty: true,
+              silverWeight: true,
+              note: true,
+              createdAt: true,
+              pendingStage: true,
+              claimedByUserId: true,
+              claimedByName: true,
+              outcome: true,
             },
           },
-        })
-      : [];
-    const rowOrder = new Map(pageIds.map((id, index) => [id, index]));
-    rows.sort((a, b) => rowOrder.get(a.id)! - rowOrder.get(b.id)!);
+          stages: {
+            orderBy: { createdAt: 'asc' },
+            select: {
+              subTicketId: true,
+              stage: true,
+              returnedAt: true,
+              submittedAt: true,
+              craftsmanName: true,
+            },
+          },
+        },
+      }),
+      this.prisma.productionOrder.count({ where }),
+    ]);
 
     return {
       total,
-      statusCounts: { ...statusCounts, ALL: candidates.length },
+      statusCounts: { ...statusCounts, ALL: all },
       items: rows.map((row) => {
         const parentEntries = row.stages.filter((entry) => !entry.subTicketId);
         const parentProgress = row.subTickets.length
@@ -611,7 +641,8 @@ export class ProductionOrdersService {
           materialType: line.material.materialType?.name ?? null,
           bodyMetal: line.material.bodyMetal?.name ?? null,
           metalKind: line.material.metalKind
-            ? (METAL_KIND_LABEL[line.material.metalKind] ?? line.material.metalKind)
+            ? (METAL_KIND_LABEL[line.material.metalKind] ??
+              line.material.metalKind)
             : null,
           sizeLabel: line.material.sizeLabel,
           note: line.material.note,
@@ -852,7 +883,10 @@ export class ProductionOrdersService {
             btpMaterial,
             btpQty: btpQty ?? data.finishedProductQty ?? data.qty,
             nvlIssues: nvlLines.length
-              ? nvlLines.map((line) => ({ material: line.material, qty: line.qty }))
+              ? nvlLines.map((line) => ({
+                  material: line.material,
+                  qty: line.qty,
+                }))
               : nvlMaterial
                 ? [{ material: nvlMaterial, qty: data.stoneCount ?? 0 }]
                 : [],
@@ -900,16 +934,16 @@ export class ProductionOrdersService {
         'Đơn đã vào kho thành phẩm, không đổi số lượng được',
       );
     }
-    const { btpMaterial, nvlMaterial, nvlLines, btpQty, ...fields } = await this.orderFields(
-      dto,
-      order.id,
-    );
+    const { btpMaterial, nvlMaterial, nvlLines, btpQty, ...fields } =
+      await this.orderFields(dto, order.id);
     assertCoversSubTickets(order, fields.qty, fields.silverWeight);
     const nextNvlKey = nvlLines.length
       ? nvlLines.map((line) => `${line.material.id}:${line.qty}`).join('|')
       : `${fields.nvlMaterialId ?? ''}:${fields.stoneCount ?? 0}`;
     const prevNvlKey = order.bomLines.length
-      ? order.bomLines.map((line) => `${line.materialId}:${line.qty ?? 0}`).join('|')
+      ? order.bomLines
+          .map((line) => `${line.materialId}:${line.qty ?? 0}`)
+          .join('|')
       : `${order.nvlMaterialId ?? ''}:${order.stoneCount ?? 0}`;
     // Đổi loại đơn / mã / số lượng tự xuất thì hoàn phiếu cũ và xuất lại.
     const reissue =
@@ -971,7 +1005,9 @@ export class ProductionOrdersService {
       if (nvlLines.length) {
         await this.replaceBomLines(tx, order.id, nvlLines);
       } else if (fields.sourceOrderCode !== order.sourceOrderCode) {
-        await tx.productionOrderBomLine.deleteMany({ where: { orderId: order.id } });
+        await tx.productionOrderBomLine.deleteMany({
+          where: { orderId: order.id },
+        });
         await this.copyBomFromSource(tx, order.id, fields.sourceOrderCode);
       }
       if (reissue) {
@@ -987,7 +1023,10 @@ export class ProductionOrdersService {
           btpMaterial,
           btpQty: btpQty ?? fields.finishedProductQty ?? fields.qty,
           nvlIssues: nvlLines.length
-            ? nvlLines.map((line) => ({ material: line.material, qty: line.qty }))
+            ? nvlLines.map((line) => ({
+                material: line.material,
+                qty: line.qty,
+              }))
             : nvlMaterial
               ? [{ material: nvlMaterial, qty: fields.stoneCount ?? 0 }]
               : [],
@@ -1240,17 +1279,6 @@ export class ProductionOrdersService {
     return toDetail(updated);
   }
 
-  /** Giao khâu cho thợ. Người giao là tài khoản đăng nhập. */
-  async startStage(
-    _code: string,
-    _dto: StartStageDto,
-    _actor: AuthUserPayload,
-  ) {
-    throw new BadRequestException(
-      'Luồng giao thợ trực tiếp đã ngừng dùng — hãy mở khâu để thợ tự xem và nhận phiếu',
-    );
-  }
-
   /** Sửa thông tin giao khi KCS chưa nhận lại. Người giao giữ nguyên. */
   async updateHandover(code: string, stageId: string, dto: HandoverStageDto) {
     const order = await this.requireOrder(code);
@@ -1415,7 +1443,9 @@ export class ProductionOrdersService {
       throw new BadRequestException('Đơn đã giao');
     }
     if (order.receipt) {
-      throw new BadRequestException('Đơn đã hoàn thiện, đã có phiếu chờ nhập thành phẩm');
+      throw new BadRequestException(
+        'Đơn đã hoàn thiện, đã có phiếu chờ nhập thành phẩm',
+      );
     }
     if (order.status === S.NEW || order.status === S.REDO_3D) {
       throw new BadRequestException(
@@ -1444,9 +1474,18 @@ export class ProductionOrdersService {
         `Phiếu ${subTicketCode(order.code, pending.no)} đang mở khâu ${STAGE_LABEL[pending.pendingStage]} — huỷ mở khâu trước khi hoàn thiện`,
       );
     }
-    if (!lastStageDone(order.stages)) {
+    const entries = orderEntries(order);
+    if (!lastStageDone(entries)) {
       throw new BadRequestException(
         `Đơn chưa xong khâu ${STAGE_LABEL[LAST_STAGE]} — làm hết phiếu rồi mới hoàn thiện được`,
+      );
+    }
+    // Vào kho là số KCS thật sự nhận lại ở khâu cuối, không phải số đặt hàng — giống hệt
+    // cách phiếu con chốt bằng `subTicketAvailable`. Hàng hỏng dọc đường không được lên tồn.
+    const finishedQty = orderTicketAvailable(order, entries).qty;
+    if (finishedQty <= 0) {
+      throw new BadRequestException(
+        'Khâu cuối không nhận lại được sản phẩm nào — chuyển đơn sang Sản xuất lỗi',
       );
     }
     const finishedAt = dto.finishedAt ? new Date(dto.finishedAt) : new Date();
@@ -1459,7 +1498,7 @@ export class ProductionOrdersService {
         dataChangedAt: new Date(),
         receipt: {
           create: {
-            qty: order.qty,
+            qty: finishedQty,
             stockedQty: 0,
             receivedAt: finishedAt,
             receivedByUserId: actor.id,
@@ -1660,32 +1699,37 @@ export class ProductionOrdersService {
     const askedUserId = dto.askedUserId;
     const parentCode = dto.parentCode?.trim();
     const nvlLines = await this.resolveNvlLines(dto.nvlLines);
-    const [asked, parent, btpMaterial, nvlMaterial, sourceOrderCode] = await Promise.all([
-      askedUserId ? this.resolveUser(askedUserId) : Promise.resolve(null),
-      parentCode
-        ? this.prisma.productionOrder.findUnique({
-            where: { code: normalizeCode(parentCode) },
-            select: { id: true, parentId: true },
-          })
-        : Promise.resolve(null),
-      dto.source === ProductionSource.BTP
-        ? this.resolveBtpMaterial(dto.btpMaterialId)
-        : Promise.resolve(null),
-      nvlLines[0]
-        ? Promise.resolve(nvlLines[0].material)
-        : this.resolveNvlMaterial(dto.nvlMaterialId),
-      dto.source === ProductionSource.NVL
-        ? this.resolveSourceFinishedProduct(
-            dto.finishedProductCode,
-            dto.finishedProductQty ?? 0,
-          )
-        : Promise.resolve(null),
-    ]);
+    const [asked, parent, btpMaterial, nvlMaterial, sourceOrderCode] =
+      await Promise.all([
+        askedUserId ? this.resolveUser(askedUserId) : Promise.resolve(null),
+        parentCode
+          ? this.prisma.productionOrder.findUnique({
+              where: { code: normalizeCode(parentCode) },
+              select: { id: true, parentId: true },
+            })
+          : Promise.resolve(null),
+        dto.source === ProductionSource.BTP
+          ? this.resolveBtpMaterial(dto.btpMaterialId)
+          : Promise.resolve(null),
+        nvlLines[0]
+          ? Promise.resolve(nvlLines[0].material)
+          : this.resolveNvlMaterial(dto.nvlMaterialId),
+        dto.source === ProductionSource.NVL
+          ? this.resolveSourceFinishedProduct(
+              dto.finishedProductCode,
+              dto.finishedProductQty ?? 0,
+            )
+          : Promise.resolve(null),
+      ]);
 
     if (!nvlLines.length && !(dto.stoneCount && dto.stoneCount >= 1)) {
       throw new BadRequestException('Nhập số lượng NVL cần lên đơn');
     }
-    if (dto.source === ProductionSource.NVL && sourceOrderCode && !nvlLines.length) {
+    if (
+      dto.source === ProductionSource.NVL &&
+      sourceOrderCode &&
+      !nvlLines.length
+    ) {
       const bomLineCount = await this.prisma.productionOrderBomLine.count({
         where: { order: { code: sourceOrderCode } },
       });
@@ -1707,7 +1751,10 @@ export class ProductionOrdersService {
     ) {
       throw new BadRequestException('Nhập số lượng thành phẩm cần lên đơn');
     }
-    if (dto.source === ProductionSource.BTP && !(dto.btpQty && dto.btpQty >= 1)) {
+    if (
+      dto.source === ProductionSource.BTP &&
+      !(dto.btpQty && dto.btpQty >= 1)
+    ) {
       throw new BadRequestException('Nhập số lượng BTP cần lên đơn');
     }
 
@@ -1756,7 +1803,9 @@ export class ProductionOrdersService {
       platingColor: optional(nvlLines[0]?.platingColor ?? dto.platingColor),
       btpCategory: optional(dto.btpCategory),
       productKind: optional(dto.productKind),
-      laserEngraving: optional(nvlLines[0]?.laserEngraving ?? dto.laserEngraving),
+      laserEngraving: optional(
+        nvlLines[0]?.laserEngraving ?? dto.laserEngraving,
+      ),
       otherRequirements: optional(
         nvlLines[0]?.otherRequirements ?? dto.otherRequirements,
       ),

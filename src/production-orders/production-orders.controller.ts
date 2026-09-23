@@ -32,7 +32,6 @@ import {
   OrderOptionsQuery,
   ReturnStageDto,
   StageLaborDto,
-  StartStageDto,
   SplitSubTicketsDto,
   SubTicketDto,
   SubTicketOutcomeDto,
@@ -215,15 +214,6 @@ export class ProductionOrdersController {
     @CurrentUser() user: AuthUserPayload,
   ) {
     return this.orders.undoFinish(code, user);
-  }
-
-  @Post(':code/stages')
-  startStage(
-    @Param('code') code: string,
-    @Body() dto: StartStageDto,
-    @CurrentUser() user: AuthUserPayload,
-  ) {
-    return this.orders.startStage(code, dto, user);
   }
 
   @Patch(':code/stages/:stageId')

@@ -39,6 +39,7 @@ import {
   orderEntries,
   orderTicketAvailable,
   orderTicketState,
+  recentFirst,
   type OrderDetail,
   requireSubTicket,
   slowestStage,
@@ -107,6 +108,76 @@ const myTicketInclude = {
 
 type MyTicketRow = Prisma.ProductionSubTicketGetPayload<{
   include: typeof myTicketInclude;
+}>;
+
+/**
+ * Phiếu mẹ ở màn "Phiếu của tôi": chỉ những cột dựng nên một thẻ phiếu. Màn này thợ mở trên
+ * điện thoại và tự làm mới liên tục, nên không kéo cả chi tiết đơn (ảnh, mọi khâu, phiếu con,
+ * lịch sử trạng thái, dòng xuất hàng…) như `detailInclude`.
+ */
+const myOrderCardSelect = {
+  id: true,
+  code: true,
+  status: true,
+  description: true,
+  qty: true,
+  dueDate: true,
+  images: {
+    select: { url: true },
+    orderBy: [{ kind: 'desc' }, { sortOrder: 'asc' }],
+    take: 1,
+  },
+} satisfies Prisma.ProductionOrderSelect;
+
+/** Thẻ phiếu mẹ đang chờ nhận còn cần SL / bạc còn lại, nên kèm các khâu đã chạy của đơn. */
+const myOrderPendingSelect = {
+  ...myOrderCardSelect,
+  silverWeight: true,
+  pendingStage: true,
+  pendingAt: true,
+  claimedByUserId: true,
+  claimedAt: true,
+  receipt: { select: { id: true } },
+  stages: {
+    where: { subTicketId: null },
+    orderBy: { createdAt: 'asc' },
+    select: {
+      stage: true,
+      submittedAt: true,
+      returnedAt: true,
+      handedQty: true,
+      handedSilverWeight: true,
+      returnedQty: true,
+      returnedSilverWeight: true,
+    },
+  },
+} satisfies Prisma.ProductionOrderSelect;
+
+/** Khâu cấp đơn của chính mình — kèm đúng phần đơn mà thẻ phiếu cần hiển thị. */
+const myOrderEntrySelect = {
+  stage: true,
+  handedAt: true,
+  handedQty: true,
+  handedSilverWeight: true,
+  handedByName: true,
+  submittedAt: true,
+  returnedAt: true,
+  returnedByName: true,
+  returnedSilverWeight: true,
+  stoneWeight: true,
+  btpRecoveredWeight: true,
+  silverRecoveredWeight: true,
+  order: { select: myOrderCardSelect },
+} satisfies Prisma.ProductionStageEntrySelect;
+
+type MyOrderCard = Prisma.ProductionOrderGetPayload<{
+  select: typeof myOrderCardSelect;
+}>;
+type MyOrderPending = Prisma.ProductionOrderGetPayload<{
+  select: typeof myOrderPendingSelect;
+}>;
+type MyOrderEntry = Prisma.ProductionStageEntryGetPayload<{
+  select: typeof myOrderEntrySelect;
 }>;
 
 /**
@@ -1270,8 +1341,19 @@ export class ProductionSubTicketsService {
 
   /** Màn "Phiếu của tôi": phiếu đang mở chờ nhận, phiếu mình đang giữ, phiếu vừa nộp. */
   async myTickets(actor: AuthUserPayload) {
-    const [available, claimed, working, recent, parentOrders] =
-      await Promise.all([
+    // Phiếu mẹ chạy đúng bốn nhánh như phiếu con, mỗi nhánh một câu truy vấn riêng. Gộp
+    // chung một câu rồi lọc trong bộ nhớ thì `take` sẽ dùng chung: phiếu người khác đang mở
+    // đủ nhiều là đẩy mất việc của chính thợ ra khỏi danh sách.
+    const [
+      available,
+      claimed,
+      working,
+      recent,
+      parentAvailable,
+      parentClaimed,
+      parentWorking,
+      parentRecent,
+    ] = await Promise.all([
       this.prisma.productionSubTicket.findMany({
         where: {
           pendingStage: { not: null },
@@ -1309,46 +1391,46 @@ export class ProductionSubTicketsService {
       this.prisma.productionOrder.findMany({
         where: {
           subTickets: { none: {} },
-          OR: [
-            { pendingStage: { not: null } },
-            {
-              stages: {
-                some: { craftsmanUserId: actor.id, subTicketId: null },
-              },
-            },
-          ],
+          pendingStage: { not: null },
+          claimedByUserId: null,
+          status: { not: S.DELIVERED },
         },
-        include: detailInclude,
-        orderBy: { updatedAt: 'desc' },
+        select: myOrderPendingSelect,
+        orderBy: { pendingAt: 'asc' },
         take: AVAILABLE_LIMIT,
       }),
+      this.prisma.productionOrder.findMany({
+        where: {
+          subTickets: { none: {} },
+          claimedByUserId: actor.id,
+          pendingStage: { not: null },
+        },
+        select: myOrderPendingSelect,
+        orderBy: { claimedAt: 'asc' },
+      }),
+      this.prisma.productionStageEntry.findMany({
+        where: {
+          craftsmanUserId: actor.id,
+          subTicketId: null,
+          returnedAt: null,
+          // Đơn đã chia thì việc đi theo phiếu con; thẻ phiếu mẹ sẽ dẫn tới ngõ cụt.
+          order: { subTickets: { none: {} } },
+        },
+        select: myOrderEntrySelect,
+        orderBy: { handedAt: 'asc' },
+      }),
+      this.prisma.productionStageEntry.findMany({
+        where: {
+          craftsmanUserId: actor.id,
+          subTicketId: null,
+          returnedAt: { not: null },
+          order: { subTickets: { none: {} } },
+        },
+        select: myOrderEntrySelect,
+        orderBy: { returnedAt: 'desc' },
+        take: RECENT_LIMIT,
+      }),
     ]);
-
-    const parentAvailable = parentOrders.filter(
-      (order) => order.pendingStage && !order.claimedByUserId,
-    );
-    const parentClaimed = parentOrders.filter(
-      (order) =>
-        order.pendingStage && order.claimedByUserId === actor.id,
-    );
-    const parentEntries = parentOrders.flatMap((order) =>
-      orderEntries(order).map((entry) => ({ order, entry })),
-    );
-    const parentWorking = parentEntries.filter(
-      ({ entry }) =>
-        entry.craftsmanUserId === actor.id && entry.returnedAt == null,
-    );
-    const parentRecent = parentEntries
-      .filter(
-        ({ entry }) =>
-          entry.craftsmanUserId === actor.id && entry.returnedAt != null,
-      )
-      .sort(
-        (a, b) =>
-          (b.entry.returnedAt?.getTime() ?? 0) -
-          (a.entry.returnedAt?.getTime() ?? 0),
-      )
-      .slice(0, RECENT_LIMIT);
 
     return {
       available: [
@@ -1357,22 +1439,21 @@ export class ProductionSubTicketsService {
       ],
       mine: [
         ...parentClaimed.map((order) => parentPendingItem(order)),
-        ...parentWorking.map(({ order, entry }) =>
-          parentEntryItem(order, entry),
-        ),
+        ...parentWorking.map((entry) => parentEntryItem(entry)),
         ...claimed.map((row) => pendingItem(row)),
         ...working.flatMap((entry) =>
           entry.subTicket ? [entryItem(entry.subTicket, entry)] : [],
         ),
       ],
-      recent: [
-        ...parentRecent.map(({ order, entry }) =>
-          parentEntryItem(order, entry),
-        ),
-        ...recent.flatMap((entry) =>
-          entry.subTicket ? [entryItem(entry.subTicket, entry)] : [],
-        ),
-      ].slice(0, RECENT_LIMIT),
+      recent: recentFirst(
+        [
+          ...parentRecent.map((entry) => parentEntryItem(entry)),
+          ...recent.flatMap((entry) =>
+            entry.subTicket ? [entryItem(entry.subTicket, entry)] : [],
+          ),
+        ],
+        RECENT_LIMIT,
+      ),
     };
   }
 
@@ -1554,7 +1635,7 @@ function baseItem(row: MyTicketRow) {
   };
 }
 
-function parentBaseItem(order: OrderDetail) {
+function parentBaseItem(order: MyOrderCard) {
   return {
     scope: 'ORDER' as const,
     ticketCode: order.code,
@@ -1567,8 +1648,9 @@ function parentBaseItem(order: OrderDetail) {
   };
 }
 
-function parentPendingItem(order: OrderDetail) {
-  const entries = orderEntries(order);
+function parentPendingItem(order: MyOrderPending) {
+  // `stages` đã lọc sẵn khâu cấp đơn ngay trong câu truy vấn.
+  const entries = order.stages;
   const { state } = orderTicketState(order, entries);
   const available = orderTicketAvailable(order, entries);
   return {
@@ -1576,8 +1658,7 @@ function parentPendingItem(order: OrderDetail) {
     state,
     stage: order.pendingStage,
     qty: available.qty,
-    silverWeight:
-      available.silver != null ? decStr(available.silver) : null,
+    silverWeight: available.silver != null ? decStr(available.silver) : null,
     pendingAt: order.pendingAt?.toISOString() ?? null,
     claimedAt: order.claimedAt?.toISOString() ?? null,
     submittedAt: null,
@@ -1590,7 +1671,8 @@ function parentPendingItem(order: OrderDetail) {
   };
 }
 
-function parentEntryItem(order: OrderDetail, entry: StageEntry) {
+function parentEntryItem(entry: MyOrderEntry) {
+  const { order } = entry;
   const loss = silverLossOf(entry);
   return {
     ...parentBaseItem(order),

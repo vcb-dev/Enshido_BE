@@ -416,11 +416,6 @@ export class HandoverStageDto extends HandoverInfoDto {
   craftsmanUserId!: string;
 }
 
-export class StartStageDto extends HandoverStageDto {
-  @IsEnum(ProductionStage)
-  stage!: ProductionStage;
-}
-
 /** KCS nhận lại hàng từ thợ và cân lại bạc — người KCS là tài khoản đăng nhập. */
 export class ReturnStageDto {
   @IsDateString()

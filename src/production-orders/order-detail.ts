@@ -393,6 +393,20 @@ export function looseTopUps(
     );
 }
 
+/**
+ * Danh sách "vừa nộp" của thợ, gộp từ phiếu mẹ và phiếu con. Phải trộn theo thời gian rồi
+ * mới cắt: nối đuôi nhau thì một nguồn luôn chiếm chỗ và đẩy phiếu mới hơn của nguồn kia
+ * ra ngoài. Mốc là chuỗi ISO nên so trực tiếp được.
+ */
+export function recentFirst<T extends { returnedAt: string | null }>(
+  items: readonly T[],
+  limit: number,
+) {
+  return [...items]
+    .sort((a, b) => (b.returnedAt ?? '').localeCompare(a.returnedAt ?? ''))
+    .slice(0, limit);
+}
+
 /** Các lần giao khâu trực tiếp trên phiếu mẹ. */
 export function orderEntries(order: Pick<OrderDetail, 'stages'>) {
   return order.stages.filter((entry) => !entry.subTicketId);
@@ -400,10 +414,10 @@ export function orderEntries(order: Pick<OrderDetail, 'stages'>) {
 
 /** Phiếu mẹ dùng cùng state machine chờ nhận → đã nhận → đang làm → chờ KCS như phiếu con. */
 export function orderTicketState(
-  order: Pick<
-    OrderDetail,
-    'pendingStage' | 'claimedByUserId' | 'receipt'
-  >,
+  order: Pick<OrderDetail, 'pendingStage' | 'claimedByUserId'> & {
+    /** Chỉ cần biết đơn đã có phiếu nhập kho hay chưa, nên chỗ gọi được select gọn. */
+    receipt: { id: string } | null;
+  },
   entries: readonly StateEntry[],
 ) {
   return subTicketState(
@@ -421,10 +435,7 @@ export function orderTicketAvailable(
   order: Pick<OrderDetail, 'qty' | 'silverWeight'>,
   entries: readonly Pick<
     StageEntry,
-    | 'handedQty'
-    | 'handedSilverWeight'
-    | 'returnedQty'
-    | 'returnedSilverWeight'
+    'handedQty' | 'handedSilverWeight' | 'returnedQty' | 'returnedSilverWeight'
   >[],
 ) {
   const last = entries[entries.length - 1];
