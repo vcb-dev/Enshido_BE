@@ -154,6 +154,7 @@ type PriceTake = {
 export class InventoryService {
   private readonly cache = new TtlCache();
   private readonly inflight = new InflightMap();
+  private btpCatalogsReady = false;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -1937,12 +1938,14 @@ export class InventoryService {
   }
 
   async ensureBtpCatalogs() {
+    if (this.btpCatalogsReady) return;
     await Promise.all([
       this.listCatalogChildren('chat-lieu', 'Chất liệu', 9, OtherClassKind.OTHER),
       this.listCatalogChildren('danh-muc-btp', 'Danh mục BTP', 10, OtherClassKind.OTHER),
       this.listCatalogChildren('phan-loai-san-pham', 'Phân loại sản phẩm', 11, OtherClassKind.OTHER),
       this.listCatalogChildren('mau-xi', 'Màu xi', 12, OtherClassKind.OTHER),
     ]);
+    this.btpCatalogsReady = true;
   }
 
   private async assertConsumableClass(id?: string | null) {
@@ -2487,11 +2490,13 @@ export class InventoryService {
     warehouseId: string,
     materials: MaterialStock[],
   ) {
+    const materialIds = materials.map((m) => m.id);
+    if (!materialIds.length) return new Map();
     const [inboundLots, outboundConsumed] = await Promise.all([
       this.prisma.stockInbound.findMany({
         where: {
           warehouseId,
-          materialId: { not: null },
+          materialId: { in: materialIds },
           applyToStock: true,
           qty: { gt: 0 },
         },
@@ -2502,7 +2507,7 @@ export class InventoryService {
         by: ['materialId'],
         where: {
           warehouseId,
-          materialId: { not: null },
+          materialId: { in: materialIds },
           applyToStock: true,
           qty: { gt: 0 },
         },

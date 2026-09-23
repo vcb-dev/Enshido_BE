@@ -62,7 +62,7 @@ export const detailInclude = {
     orderBy: { no: 'asc' },
     include: { topUps: { orderBy: { createdAt: 'asc' } } },
   },
-  statusLogs: { orderBy: { changedAt: 'desc' } },
+  statusLogs: { orderBy: { changedAt: 'desc' }, take: 80 },
   parent: {
     select: {
       code: true,

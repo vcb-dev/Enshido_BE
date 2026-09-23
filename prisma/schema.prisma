@@ -283,6 +283,7 @@ model StockBalance {
 
   @@unique([warehouseId, materialId])
   @@index([warehouseId])
+  @@index([warehouseId, qty])
   @@map("stock_balances")
 }
 
@@ -540,6 +541,11 @@ model ProductionOrder {
   bomLines      ProductionOrderBomLine[]
 
   @@index([status, createdAt])
+  @@index([status, seq])
+  @@index([receivedDate])
+  @@index([dueDate])
+  @@index([trackingCode])
+  @@index([closedBy])
   @@index([requestType])
   @@index([parentId])
   @@index([btpMaterialId])

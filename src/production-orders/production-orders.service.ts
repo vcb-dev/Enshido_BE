@@ -14,6 +14,7 @@ import {
 import { Permission } from '../auth/permissions';
 import type { AuthUserPayload } from '../auth/types';
 import { InventoryService } from '../inventory/inventory.service';
+import { dbTable } from '../prisma/database-url';
 import { PrismaService } from '../prisma/prisma.service';
 import { CloudinaryService } from '../uploads/cloudinary.service';
 import { decStr, METAL_KIND_LABEL } from '../util/money';
@@ -81,6 +82,19 @@ const MANUAL_STATUSES: ProductionStatus[] = [S.NEW, S.REDO_3D, S.DEFECT];
 const DEFAULT_LEAD_TIMES = ['3-5 ngày', '7-15 ngày', '15-30 ngày'];
 
 const SUGGEST_FIELDS = ['closedBy', 'leadTime', 'debtStatus'] as const;
+const SUGGEST_COLUMNS = {
+  closedBy: Prisma.raw('"closed_by"'),
+  leadTime: Prisma.raw('"lead_time"'),
+  debtStatus: Prisma.raw('"debt_status"'),
+} as const;
+
+const warehouseMaterialSelect = {
+  id: true,
+  name: true,
+  sku: true,
+  warehouseId: true,
+  unit: { select: { id: true, name: true } },
+} as const;
 
 const CREATE_RETRIES = 3;
 const LOOKUPS_TTL_MS = 2 * 60_000;
@@ -457,6 +471,7 @@ export class ProductionOrdersService {
                 height: true,
               },
               orderBy: { sortOrder: 'asc' },
+              take: 12,
             },
             shipmentLines: { select: { qty: true } },
             bomLines: {
@@ -1781,17 +1796,13 @@ export class ProductionOrdersService {
     if (new Set(ids).size !== ids.length) {
       throw new BadRequestException('Mã NVL bị trùng trên đơn');
     }
-    const materials = await Promise.all(
-      ids.map((id) =>
-        this.resolveWarehouseMaterial(
-          id,
-          NVL_WAREHOUSE_CODE,
-          'Không tìm thấy mã NVL trong kho NVL chính',
-        ),
-      ),
+    const materials = await this.resolveWarehouseMaterials(
+      ids,
+      NVL_WAREHOUSE_CODE,
+      'Không tìm thấy mã NVL trong kho NVL chính',
     );
-    return lines.map((line, index) => ({
-      material: materials[index],
+    return lines.map((line) => ({
+      material: materials.get(line.materialId)!,
       qty: line.qty,
       platingColor: optional(line.platingColor),
       stoneWeight: line.stoneWeight ?? null,
@@ -2010,16 +2021,29 @@ export class ProductionOrdersService {
         isActive: true,
         warehouse: { code: warehouseCode },
       },
-      select: {
-        id: true,
-        name: true,
-        sku: true,
-        warehouseId: true,
-        unit: { select: { id: true, name: true } },
-      },
+      select: warehouseMaterialSelect,
     });
     if (!material) throw new BadRequestException(missing);
     return material;
+  }
+
+  private async resolveWarehouseMaterials(
+    materialIds: string[],
+    warehouseCode: string,
+    missing: string,
+  ) {
+    const rows = await this.prisma.material.findMany({
+      where: {
+        id: { in: materialIds },
+        isActive: true,
+        warehouse: { code: warehouseCode },
+      },
+      select: warehouseMaterialSelect,
+    });
+    if (rows.length !== materialIds.length) {
+      throw new BadRequestException(missing);
+    }
+    return new Map(rows.map((row) => [row.id, row]));
   }
 
   private async resolveUser(userId: string) {
@@ -2033,26 +2057,26 @@ export class ProductionOrdersService {
     return { id: user.id, name: actorName(user) };
   }
 
-  /** Giá trị đã từng nhập, dùng làm gợi ý. Đi qua Prisma Client để khỏi lệch schema. */
+  /** Giá trị đã từng nhập, dùng làm gợi ý. DISTINCT trên cột thay vì quét cả bảng. */
   private async distinctValues(field: (typeof SUGGEST_FIELDS)[number]) {
-    // Không lọc null ở where: closedBy là cột NOT NULL, Prisma từ chối `not: null` trên cột này
-    // (lookups trả 500). Null / chuỗi rỗng bị bỏ ở filter bên dưới.
-    const rows = await this.prisma.productionOrder.findMany({
-      distinct: [field],
-      select: { closedBy: true, leadTime: true, debtStatus: true },
-      take: 200,
-    });
-    return rows
-      .map((row) => row[field])
-      .filter((value): value is string => Boolean(value));
+    const column = SUGGEST_COLUMNS[field];
+    const rows = await this.prisma.$queryRaw<Array<{ value: string }>>`
+      SELECT DISTINCT ${column} AS value
+      FROM ${dbTable('production_orders')}
+      WHERE ${column} IS NOT NULL AND ${column} <> ''
+      LIMIT 200
+    `;
+    return rows.map((row) => row.value);
   }
 
   private async usedStoneTypes() {
-    const rows = await this.prisma.productionOrder.findMany({
-      where: { stoneTypes: { isEmpty: false } },
-      select: { stoneTypes: true },
-    });
-    return rows.flatMap((row) => row.stoneTypes);
+    const rows = await this.prisma.$queryRaw<Array<{ stone_type: string }>>`
+      SELECT DISTINCT unnest(stone_types) AS stone_type
+      FROM ${dbTable('production_orders')}
+      WHERE cardinality(stone_types) > 0
+      LIMIT 200
+    `;
+    return rows.map((row) => row.stone_type).filter(Boolean);
   }
 }
 
