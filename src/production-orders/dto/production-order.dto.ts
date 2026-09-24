@@ -184,7 +184,7 @@ export class UpsertProductionOrderDto {
   @IsOptional()
   @IsString()
   @MaxLength(200)
-  customerName?: string;
+  customerName?: string | null;
 
   /** Bắt buộc khi sửa đơn. */
   @IsOptional()
