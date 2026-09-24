@@ -5,6 +5,9 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { OtherClassKind } from '@prisma/client';
+import type { AuthUserPayload } from '../auth/types';
+import { recordEditLog } from '../edit-logs/edit-log';
+import { actorName } from '../production-orders/order-detail';
 import { PrismaService } from '../prisma/prisma.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { slugFromName } from '../util/slug';
@@ -80,7 +83,7 @@ export class CatalogsService {
     return created;
   }
 
-  async update(id: string, dto: UpdateOtherClassDto) {
+  async update(id: string, dto: UpdateOtherClassDto, actor: AuthUserPayload) {
     const current = await this.prisma.otherClass.findUnique({
       where: { id },
       select: { id: true, parentId: true, kind: true },
@@ -108,6 +111,12 @@ export class CatalogsService {
         ...(dto.sortOrder != null ? { sortOrder: dto.sortOrder } : {}),
       },
       select: catalogSelect,
+    });
+    await recordEditLog(this.prisma, {
+      entityType: 'catalog',
+      entityId: updated.id,
+      reason: dto.editReason,
+      changedBy: actorName(actor),
     });
     this.inventory.bustLookups();
     return updated;

@@ -12,6 +12,7 @@ import {
   ProductionStatus,
 } from '@prisma/client';
 import type { AuthUserPayload } from '../auth/types';
+import { recordEditLog } from '../edit-logs/edit-log';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProductionCostingService } from '../production-orders/production-costing.service';
 import { randomUUID } from 'node:crypto';
@@ -613,6 +614,12 @@ export class FinishedGoodsService {
     if (dto.bomLines !== undefined) {
       await this.replaceBomLines(receipt.order.id, dto.bomLines);
     }
+    await recordEditLog(this.prisma, {
+      entityType: 'fg_receipt',
+      entityId: receipt.id,
+      reason: dto.editReason,
+      changedBy,
+    });
     return { success: true };
   }
 
@@ -1023,6 +1030,12 @@ export class FinishedGoodsService {
         existing.code,
         changedBy,
       );
+    });
+    await recordEditLog(this.prisma, {
+      entityType: 'fg_shipment',
+      entityId: existing.code,
+      reason: dto.editReason,
+      changedBy,
     });
     return this.shipment(existing.code);
   }

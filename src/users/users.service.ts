@@ -5,6 +5,9 @@ import {
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import { RoleCode } from '@prisma/client';
+import type { AuthUserPayload } from '../auth/types';
+import { recordEditLog } from '../edit-logs/edit-log';
+import { actorName } from '../production-orders/order-detail';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateUserDto, UpdateUserDto } from './dto/user.dto';
 import { AuthService, BCRYPT_COST } from '../auth/auth.service';
@@ -99,7 +102,7 @@ export class UsersService {
     return created;
   }
 
-  async update(id: string, dto: UpdateUserDto) {
+  async update(id: string, dto: UpdateUserDto, actor?: AuthUserPayload) {
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException('Không tìm thấy user');
 
@@ -138,6 +141,14 @@ export class UsersService {
       data,
       select: userSelect,
     });
+    if (dto.editReason && actor) {
+      await recordEditLog(this.prisma, {
+        entityType: 'user',
+        entityId: updated.id,
+        reason: dto.editReason,
+        changedBy: actorName(actor),
+      });
+    }
     this.inventory.bustLookups();
     this.bustUsers();
     this.auth.bustSession(id);

@@ -10,6 +10,7 @@ import {
   OtherClassKind,
   Prisma,
 } from '@prisma/client';
+import { recordEditLog } from '../edit-logs/edit-log';
 import { PrismaService } from '../prisma/prisma.service';
 import { CloudinaryService } from '../uploads/cloudinary.service';
 import { InflightMap, TtlCache } from '../util/ttl-cache';
@@ -67,6 +68,7 @@ const materialStockSelect = {
   sizeLabel: true,
   classification: true,
   metalKind: true,
+  stoneWeight: true,
   note: true,
   sortOrder: true,
   reorderPoint: true,
@@ -76,6 +78,7 @@ const materialStockSelect = {
   otherClass: {
     select: {
       id: true,
+      code: true,
       name: true,
       parentId: true,
       parent: { select: { id: true, code: true, name: true } },
@@ -474,6 +477,11 @@ export class InventoryService {
       : isConsumable
         ? dto.otherClassId || null
         : await this.resolveOtherClassId(dto.otherClassName);
+    const metalKind = isBtp || otherClassId ? null : (dto.metalKind ?? defaultMetalKind(warehouse.code));
+    await this.assertStoneWeight({
+      metalKind,
+      stoneWeight: dto.stoneWeight,
+    });
 
     const materialId = await this.prisma.runTx(async (tx) => {
       const sku = await allocateMaterialSku(tx, warehouse.code);
@@ -493,6 +501,7 @@ export class InventoryService {
           productKindId: dto.productKindId || null,
           platingColorId: dto.platingColorId || null,
           sizeLabel: dto.sizeLabel?.trim() || null,
+          stoneWeight: isBtp ? null : optionalDecimal(dto.stoneWeight),
           images: { create: images },
           classification: classificationOf(warehouse.code),
           metalKind:
@@ -535,7 +544,12 @@ export class InventoryService {
     );
   }
 
-  async updateStock(code: string, materialId: string, dto: UpdateStockDto) {
+  async updateStock(
+    code: string,
+    materialId: string,
+    dto: UpdateStockDto,
+    actor: AuthUserPayload,
+  ) {
     assertNvlWarehouse(code);
     const warehouse = await this.prisma.warehouse.findUnique({
       where: { code },
@@ -550,6 +564,9 @@ export class InventoryService {
         name: true,
         sku: true,
         unitId: true,
+        metalKind: true,
+        otherClassId: true,
+        stoneWeight: true,
         images: { select: { publicId: true } },
       },
     });
@@ -620,6 +637,15 @@ export class InventoryService {
     if (dto.otherClassId !== undefined) {
       await this.assertConsumableClass(dto.otherClassId);
     }
+    await this.assertStoneWeight({
+      metalKind: dto.metalKind !== undefined ? dto.metalKind : material.metalKind,
+      stoneWeight:
+        dto.stoneWeight !== undefined
+          ? dto.stoneWeight
+          : material.stoneWeight != null
+            ? decStr(material.stoneWeight)
+            : null,
+    });
 
     await this.prisma.runTx(async (tx) => {
       await tx.material.update({
@@ -656,6 +682,9 @@ export class InventoryService {
             : {}),
           ...(dto.sizeLabel !== undefined
             ? { sizeLabel: dto.sizeLabel?.trim() || null }
+            : {}),
+          ...(dto.stoneWeight !== undefined
+            ? { stoneWeight: optionalDecimal(dto.stoneWeight) }
             : {}),
           ...(images !== undefined
             ? { images: { deleteMany: {}, create: images } }
@@ -714,6 +743,12 @@ export class InventoryService {
         this.firstInboundDates(warehouse.id, [material.id]),
         this.listPriceLayers(this.prisma, warehouse.id, material.id),
       ]);
+    await recordEditLog(this.prisma, {
+      entityType: 'stock',
+      entityId: material.id,
+      reason: dto.editReason,
+      changedBy: actorDisplayName(actor),
+    });
     this.bustWarehouseCaches(code);
     await this.cloudinary.destroy(removedImages);
     return this.toStockRow(
@@ -808,7 +843,7 @@ export class InventoryService {
 
     const sortOrder = (last._max.sortOrder ?? 0) + 1;
     const unitName = dto.unitName?.trim() || unit?.name || 'viên';
-    const receivedAt = new Date(`${dto.receivedAt.slice(0, 10)}T00:00:00.000Z`);
+    const receivedAt = inboundReceivedAt(dto.receivedAt);
 
     if (!existing) {
       if (warehouse.code !== 'nvl-tieu-hao') {
@@ -879,7 +914,12 @@ export class InventoryService {
     return this.toInboundRow(created);
   }
 
-  async updateInbound(code: string, inboundId: string, dto: CreateInboundDto) {
+  async updateInbound(
+    code: string,
+    inboundId: string,
+    dto: CreateInboundDto,
+    actor: AuthUserPayload,
+  ) {
     assertNvlWarehouse(code);
     const warehouse = await this.prisma.warehouse.findUnique({
       where: { code },
@@ -895,6 +935,7 @@ export class InventoryService {
         applyToStock: true,
         qty: true,
         amount: true,
+        receivedAt: true,
         sourceOutboundId: true,
       },
     });
@@ -930,7 +971,7 @@ export class InventoryService {
     if (dto.supplierId && !supplier)
       throw new NotFoundException('Không tìm thấy NCC');
 
-    const receivedAt = new Date(`${dto.receivedAt.slice(0, 10)}T00:00:00.000Z`);
+    const receivedAt = inboundReceivedAt(dto.receivedAt, inbound.receivedAt);
     const unitName = dto.unitName?.trim() || unit?.name || 'viên';
     if (dto.locationCode !== undefined) {
       await this.assertAssignableLocation(
@@ -998,6 +1039,12 @@ export class InventoryService {
       return row;
     });
 
+    await recordEditLog(this.prisma, {
+      entityType: 'inbound',
+      entityId: inbound.id,
+      reason: dto.editReason,
+      changedBy: actorDisplayName(actor),
+    });
     this.bustWarehouseCaches(code);
     return this.toInboundRow(updated);
   }
@@ -1187,7 +1234,7 @@ export class InventoryService {
         material: { name, sku: material.sku },
         unit: lotUnit,
         unitName,
-        receivedAt: issuedAt,
+        receivedAt: inboundReceivedAt(issuedAt.toISOString()),
         qty,
         unitPrice: row.inboundUnitPrice,
         amount: row.amount,
@@ -1214,6 +1261,7 @@ export class InventoryService {
     code: string,
     outboundId: string,
     dto: CreateOutboundDto,
+    actor: AuthUserPayload,
   ) {
     assertNvlWarehouse(code);
     const warehouse = await this.prisma.warehouse.findUnique({
@@ -1345,13 +1393,13 @@ export class InventoryService {
       if (outbound.destInboundId && outbound.destWarehouse) {
         const destIn = await tx.stockInbound.findUnique({
           where: { id: outbound.destInboundId },
-          select: { id: true, materialId: true },
+          select: { id: true, materialId: true, receivedAt: true },
         });
         if (destIn) {
           await tx.stockInbound.update({
             where: { id: destIn.id },
             data: {
-              receivedAt: issuedAt,
+              receivedAt: inboundReceivedAt(issuedAt.toISOString(), destIn.receivedAt),
               name,
               sku: materialSku,
               unitId: unit?.id ?? undefined,
@@ -1375,6 +1423,12 @@ export class InventoryService {
       return row;
     });
 
+    await recordEditLog(this.prisma, {
+      entityType: 'outbound',
+      entityId: outbound.id,
+      reason: dto.editReason,
+      changedBy: actorDisplayName(actor),
+    });
     this.bustWarehouseCaches(code, outbound.destWarehouse?.code);
     return this.toOutboundRow(updated);
   }
@@ -1636,7 +1690,7 @@ export class InventoryService {
     return {
       id: row.id,
       stt: row.sortOrder,
-      receivedAt: row.receivedAt.toISOString().slice(0, 10),
+      receivedAt: row.receivedAt.toISOString(),
       name: row.name,
       sku: row.sku ?? row.material?.sku ?? null,
       unit: row.unit?.name ?? row.unitName,
@@ -1989,6 +2043,7 @@ export class InventoryService {
       materialType: m.materialType?.name ?? m.otherClass?.name ?? null,
       otherClassId: m.otherClassId,
       otherClass: m.otherClass?.name ?? null,
+      otherClassCode: m.otherClass?.code ?? null,
       otherClassParentId:
         m.otherClass?.parent?.id ??
         (m.otherClass && !m.otherClass.parentId ? m.otherClass.id : null),
@@ -2002,6 +2057,7 @@ export class InventoryService {
       platingColorId: m.platingColorId,
       platingColor: m.platingColor?.name ?? null,
       sizeLabel: m.sizeLabel,
+      stoneWeight: m.stoneWeight != null ? decStr(m.stoneWeight) : null,
       images: m.images,
       classificationCode: m.classification,
       classification: CLASS_LABEL[m.classification] ?? m.classification,
@@ -2161,6 +2217,17 @@ export class InventoryService {
       this.listCatalogChildren('mau-xi', 'Màu xi', 12, OtherClassKind.OTHER),
     ]);
     this.btpCatalogsReady = true;
+  }
+
+  private async assertStoneWeight(params: {
+    metalKind?: MetalKind | null;
+    stoneWeight?: string | null;
+  }) {
+    if (params.metalKind !== MetalKind.STONE) return;
+    const weight = params.stoneWeight?.trim();
+    if (!weight || new Prisma.Decimal(weight).lte(0)) {
+      throw new BadRequestException('Nhập trọng lượng đá');
+    }
   }
 
   private async assertConsumableClass(id?: string | null) {
@@ -3059,6 +3126,19 @@ function openingMoney(qty: Prisma.Decimal, unitPrice: Prisma.Decimal) {
   return qty.mul(unitPrice).toDecimalPlaces(2);
 }
 
+function optionalDecimal(value?: string | null) {
+  if (value == null || value === '') return null;
+  return new Prisma.Decimal(value);
+}
+
 function actorDisplayName(actor: { fullName: string; username: string }) {
   return actor.fullName.trim() || actor.username;
+}
+
+/** Ngày nhập + giờ Việt Nam lúc nhập xong (sửa thì giữ giờ cũ). */
+function inboundReceivedAt(ymd: string, previous?: Date) {
+  const day = ymd.slice(0, 10);
+  const clock = previous ?? new Date();
+  const vn = new Date(clock.getTime() + 7 * 60 * 60 * 1000);
+  return new Date(`${day}T${vn.toISOString().slice(11, 23)}+07:00`);
 }

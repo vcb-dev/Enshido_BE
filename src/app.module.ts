@@ -21,6 +21,7 @@ import { WarehousesModule } from './warehouses/warehouses.module';
 import { UploadsModule } from './uploads/uploads.module';
 import { ProductionOrdersModule } from './production-orders/production-orders.module';
 import { FinishedGoodsModule } from './finished-goods/finished-goods.module';
+import { EditLogsModule } from './edit-logs/edit-logs.module';
 
 @Module({
   imports: [
@@ -46,6 +47,7 @@ import { FinishedGoodsModule } from './finished-goods/finished-goods.module';
     ProductionOrdersModule,
     FinishedGoodsModule,
     CatalogsModule,
+    EditLogsModule,
   ],
   controllers: [AppController],
   providers: [

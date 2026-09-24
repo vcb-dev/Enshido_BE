@@ -3,6 +3,9 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import type { AuthUserPayload } from '../auth/types';
+import { recordEditLog } from '../edit-logs/edit-log';
+import { actorName } from '../production-orders/order-detail';
 import { PrismaService } from '../prisma/prisma.service';
 import { GenerateLocationsDto, UpdateLocationDto } from './dto/location.dto';
 import { decStr } from '../util/money';
@@ -143,7 +146,7 @@ export class LocationsService {
     };
   }
 
-  async update(id: string, dto: UpdateLocationDto) {
+  async update(id: string, dto: UpdateLocationDto, actor: AuthUserPayload) {
     const slot = await this.prisma.warehouseLocation.findUnique({
       where: { id },
     });
@@ -172,6 +175,12 @@ export class LocationsService {
       });
     });
 
+    await recordEditLog(this.prisma, {
+      entityType: 'location',
+      entityId: updated.id,
+      reason: dto.editReason,
+      changedBy: actorName(actor),
+    });
     return {
       id: updated.id,
       code: updated.code,

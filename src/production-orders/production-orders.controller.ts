@@ -117,8 +117,9 @@ export class ProductionOrdersController {
     @Param('code') code: string,
     @Param('costId', ParseUUIDPipe) costId: string,
     @Body() dto: OrderCostDto,
+    @CurrentUser() user: AuthUserPayload,
   ) {
-    return this.orders.updateCost(code, costId, dto);
+    return this.orders.updateCost(code, costId, dto, user);
   }
 
   @Patch(':code/stages/:stageId/labor')
@@ -127,8 +128,9 @@ export class ProductionOrdersController {
     @Param('code') code: string,
     @Param('stageId', ParseUUIDPipe) stageId: string,
     @Body() dto: StageLaborDto,
+    @CurrentUser() user: AuthUserPayload,
   ) {
-    return this.orders.updateStageLabor(code, stageId, dto);
+    return this.orders.updateStageLabor(code, stageId, dto, user);
   }
 
   @Delete(':code/costs/:costId')

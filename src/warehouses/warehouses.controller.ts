@@ -52,8 +52,9 @@ export class WarehousesController {
     @Param('code') code: string,
     @Param('inboundId', ParseUUIDPipe) inboundId: string,
     @Body() dto: CreateInboundDto,
+    @CurrentUser() user: AuthUserPayload,
   ) {
-    return this.inventory.updateInbound(code, inboundId, dto);
+    return this.inventory.updateInbound(code, inboundId, dto, user);
   }
 
   @Delete(':code/inbounds/:inboundId')
@@ -83,8 +84,9 @@ export class WarehousesController {
     @Param('code') code: string,
     @Param('outboundId', ParseUUIDPipe) outboundId: string,
     @Body() dto: CreateOutboundDto,
+    @CurrentUser() user: AuthUserPayload,
   ) {
-    return this.inventory.updateOutbound(code, outboundId, dto);
+    return this.inventory.updateOutbound(code, outboundId, dto, user);
   }
 
   @Delete(':code/outbounds/:outboundId')
@@ -110,8 +112,9 @@ export class WarehousesController {
     @Param('code') code: string,
     @Param('materialId', ParseUUIDPipe) materialId: string,
     @Body() dto: UpdateStockDto,
+    @CurrentUser() user: AuthUserPayload,
   ) {
-    return this.inventory.updateStock(code, materialId, dto);
+    return this.inventory.updateStock(code, materialId, dto, user);
   }
 
   @Get(':code')

@@ -61,6 +61,12 @@ export class UpsertShipmentDto {
   @ValidateNested({ each: true })
   @Type(() => ShipmentLineDto)
   lines!: ShipmentLineDto[];
+
+  /** Bắt buộc khi sửa phiếu xuất. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  editReason?: string;
 }
 
 export class ListShipmentsQuery {
@@ -158,6 +164,12 @@ export class UpsertReceiptDto {
   @ValidateNested({ each: true })
   @Type(() => BomLineDto)
   bomLines?: BomLineDto[];
+
+  /** Bắt buộc khi sửa phiếu nhập / tồn thành phẩm. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  editReason?: string;
 }
 
 export class BomLineDto {

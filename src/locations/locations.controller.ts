@@ -9,7 +9,8 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
-import { RequirePermissions } from '../auth/decorators';
+import { CurrentUser, RequirePermissions } from '../auth/decorators';
+import type { AuthUserPayload } from '../auth/types';
 import { Permission } from '../auth/permissions';
 import { GenerateLocationsDto, UpdateLocationDto } from './dto/location.dto';
 import { LocationsService } from './locations.service';
@@ -34,8 +35,9 @@ export class LocationsController {
   update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateLocationDto,
+    @CurrentUser() user: AuthUserPayload,
   ) {
-    return this.locations.update(id, dto);
+    return this.locations.update(id, dto, user);
   }
 
   @Delete(':id')

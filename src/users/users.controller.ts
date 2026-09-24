@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
-import { RequirePermissions } from '../auth/decorators';
+import { CurrentUser, RequirePermissions } from '../auth/decorators';
+import type { AuthUserPayload } from '../auth/types';
 import { Permission } from '../auth/permissions';
 import { CreateUserDto, UpdateUserDto } from './dto/user.dto';
 import { UsersService } from './users.service';
@@ -22,7 +23,11 @@ export class UsersController {
 
   @Patch(':id')
   @RequirePermissions(Permission.USERS_MANAGE)
-  update(@Param('id') id: string, @Body() dto: UpdateUserDto) {
-    return this.usersService.update(id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateUserDto,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.usersService.update(id, dto, user);
   }
 }

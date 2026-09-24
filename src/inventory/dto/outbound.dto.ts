@@ -85,4 +85,10 @@ export class CreateOutboundDto {
   @Transform(({ value }) => (value === '' ? null : value))
   @IsString()
   destWarehouseCode?: string | null;
+
+  /** Bắt buộc khi sửa phiếu xuất. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  editReason?: string;
 }

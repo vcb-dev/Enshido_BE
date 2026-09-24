@@ -6,6 +6,7 @@ import {
   IsString,
   IsUUID,
   Matches,
+  MaxLength,
 } from 'class-validator';
 
 const DECIMAL = /^-?\d+(\.\d+)?$/;
@@ -80,4 +81,10 @@ export class CreateInboundDto {
   @Transform(({ value }) => (value === '' ? null : value))
   @IsUUID()
   otherClassId?: string | null;
+
+  /** Bắt buộc khi sửa phiếu nhập. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  editReason?: string;
 }

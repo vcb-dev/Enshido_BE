@@ -5,6 +5,7 @@ import {
   IsDateString,
   IsEnum,
   IsInt,
+  IsNotEmpty,
   IsOptional,
   IsString,
   IsUrl,
@@ -123,6 +124,11 @@ export class UpdateStockDto {
   sizeLabel?: string | null;
 
   @IsOptional()
+  @Transform(({ value }) => (value === '' ? null : value))
+  @Matches(DECIMAL, { message: 'Trọng lượng đá không hợp lệ' })
+  stoneWeight?: string | null;
+
+  @IsOptional()
   @IsArray()
   @ArrayMaxSize(20)
   @ValidateNested({ each: true })
@@ -168,6 +174,11 @@ export class UpdateStockDto {
   @IsOptional()
   @Matches(DECIMAL, { message: 'Tồn kho TT không hợp lệ' })
   amount?: string;
+
+  @IsString()
+  @IsNotEmpty({ message: 'Nhập lý do chỉnh sửa' })
+  @MaxLength(500)
+  editReason!: string;
 }
 
 export class CreateStockDto {
@@ -243,6 +254,11 @@ export class CreateStockDto {
   @IsString()
   @MaxLength(60)
   sizeLabel?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => (value === '' ? null : value))
+  @Matches(DECIMAL, { message: 'Trọng lượng đá không hợp lệ' })
+  stoneWeight?: string | null;
 
   @IsOptional()
   @IsArray()

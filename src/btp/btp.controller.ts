@@ -39,8 +39,9 @@ export class BtpController {
     @Param('code') code: string,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpsertBtpWaitingDto,
+    @CurrentUser() user: AuthUserPayload,
   ) {
-    return this.btp.update(code, id, dto);
+    return this.btp.update(code, id, dto, user);
   }
 
   @Delete(':id')

@@ -45,4 +45,7 @@ export class UpdateLocationDto {
   @Min(1)
   @Max(99)
   position!: number;
+
+  @IsString()
+  editReason!: string;
 }

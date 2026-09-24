@@ -38,4 +38,9 @@ export class UpsertBtpWaitingDto {
   @IsOptional()
   @IsString()
   note?: string;
+
+  /** Bắt buộc khi sửa dòng BTP. */
+  @IsOptional()
+  @IsString()
+  editReason?: string;
 }

@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type { AuthUserPayload } from '../auth/types';
+import { recordEditLog } from '../edit-logs/edit-log';
 import { PrismaService } from '../prisma/prisma.service';
 import { decStr } from '../util/money';
 import { UpsertBtpWaitingDto } from './dto/waiting-item.dto';
@@ -80,7 +81,7 @@ export class BtpService {
     return this.toRow(row);
   }
 
-  async update(code: string, id: string, dto: UpsertBtpWaitingDto) {
+  async update(code: string, id: string, dto: UpsertBtpWaitingDto, actor: AuthUserPayload) {
     const warehouse = await this.requireWarehouse(code);
     const existing = await this.prisma.btpWaitingItem.findFirst({
       where: { id, warehouseId: warehouse.id },
@@ -105,6 +106,12 @@ export class BtpService {
         note: dto.note?.trim() || null,
       },
       include: { unit: { select: { id: true, name: true } } },
+    });
+    await recordEditLog(this.prisma, {
+      entityType: 'btp_waiting',
+      entityId: row.id,
+      reason: dto.editReason,
+      changedBy: actorDisplayName(actor),
     });
     return this.toRow(row);
   }

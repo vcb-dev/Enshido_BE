@@ -181,6 +181,17 @@ export class UpsertProductionOrderDto {
   @MaxLength(5000)
   description?: string;
 
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  customerName?: string;
+
+  /** Bắt buộc khi sửa đơn. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  editReason?: string;
+
   @Type(() => Number)
   @IsInt()
   @Min(1)
@@ -295,6 +306,12 @@ export class UpsertProductionOrderDto {
   @IsString()
   @MaxLength(120)
   btpCategory?: string;
+
+  /** Tên bán thành phẩm — điền sẵn khi chọn mã. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  btpName?: string;
 
   /** Phân loại sản phẩm (kho BTP). */
   @IsOptional()
@@ -474,6 +491,11 @@ export class StageLaborDto {
   @Transform(emptyToNull)
   @Matches(MONEY, { message: 'Tiền công không hợp lệ' })
   laborCost?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  editReason?: string;
 }
 
 export class OrderOptionsQuery {
@@ -496,6 +518,11 @@ export class OrderCostDto {
   @IsString()
   @MaxLength(500)
   note?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  editReason?: string;
 }
 
 /** Phiếu con: phần số lượng + gram bạc chia cho thợ. */

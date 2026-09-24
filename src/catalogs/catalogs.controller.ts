@@ -10,7 +10,8 @@ import {
   Query,
 } from '@nestjs/common';
 import { OtherClassKind } from '@prisma/client';
-import { RequirePermissions } from '../auth/decorators';
+import { CurrentUser, RequirePermissions } from '../auth/decorators';
+import type { AuthUserPayload } from '../auth/types';
 import { Permission } from '../auth/permissions';
 import { CatalogsService } from './catalogs.service';
 import {
@@ -42,8 +43,9 @@ export class CatalogsController {
   update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateOtherClassDto,
+    @CurrentUser() user: AuthUserPayload,
   ) {
-    return this.catalogs.update(id, dto);
+    return this.catalogs.update(id, dto, user);
   }
 
   @Delete(':id')

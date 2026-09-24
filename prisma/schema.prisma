@@ -203,6 +203,8 @@ model Material {
   note           String?
   classification MaterialClass @default(RAW_MATERIAL)
   metalKind      MetalKind?    @map("metal_kind")
+  /// Trọng lượng đá (g) — bắt buộc khi danh mục NVL/BTP là Đá, lên đơn lấy sẵn.
+  stoneWeight    Decimal?      @map("stone_weight") @db.Decimal(18, 4)
   sortOrder      Int           @default(0) @map("sort_order")
   /// Tồn kho SL < ngưỡng này → Trạng thái "Sắp hết hàng". Mặc định 5.
   reorderPoint   Decimal       @default(5) @map("reorder_point") @db.Decimal(18, 4)
@@ -305,7 +307,7 @@ model StockInbound {
   warehouseId    String   @map("warehouse_id") @db.Uuid
   materialId     String?  @map("material_id") @db.Uuid
   sortOrder      Int      @default(0) @map("sort_order")
-  receivedAt     DateTime @map("received_at") @db.Date
+  receivedAt     DateTime @map("received_at")
   name           String
   sku            String?
   unitId         String?  @map("unit_id") @db.Uuid
@@ -486,6 +488,8 @@ model ProductionOrder {
   /// Mã theo dõi đơn bên bán hàng, vd V-9147.
   trackingCode        String?               @map("tracking_code")
   closedBy            String                @map("closed_by")
+  /// Khách hàng trên phiếu lên đơn.
+  customerName        String?               @map("customer_name")
   description         String
   stoneColor          String?               @map("stone_color")
   stoneTypes          String[]              @default([]) @map("stone_types")
@@ -500,6 +504,8 @@ model ProductionOrder {
   platingColor        String?               @map("plating_color")
   /// Danh mục BTP (form Đơn BTP).
   btpCategory         String?               @map("btp_category")
+  /// Tên bán thành phẩm — điền sẵn khi chọn mã BTP / mã thành phẩm.
+  btpName             String?               @map("btp_name")
   /// Phân loại sản phẩm kho BTP.
   productKind         String?               @map("product_kind")
   askedUserId         String?               @map("asked_user_id") @db.Uuid
@@ -831,6 +837,19 @@ model ShipmentLine {
   @@index([shipmentId, sortOrder])
   @@index([orderId])
   @@map("shipment_lines")
+}
+
+/// Lý do và lịch sử mỗi lần chỉnh sửa (kho, đơn, thành phẩm…).
+model EditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  entityType String   @map("entity_type")
+  entityId   String   @map("entity_id")
+  reason     String
+  changedBy  String   @map("changed_by")
+  changedAt  DateTime @default(now()) @map("changed_at")
+
+  @@index([entityType, entityId, changedAt])
+  @@map("edit_logs")
 }
 
 model RefreshToken {

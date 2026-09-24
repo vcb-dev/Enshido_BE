@@ -17,6 +17,7 @@ import type { AuthUserPayload } from '../auth/types';
 import { InventoryService } from '../inventory/inventory.service';
 import { dbTable } from '../prisma/database-url';
 import { PrismaService } from '../prisma/prisma.service';
+import { recordEditLog } from '../edit-logs/edit-log';
 import { CloudinaryService } from '../uploads/cloudinary.service';
 import { decStr, METAL_KIND_LABEL } from '../util/money';
 import { InflightMap, TtlCache } from '../util/ttl-cache';
@@ -86,11 +87,12 @@ const MANUAL_STATUSES: ProductionStatus[] = [S.NEW, S.REDO_3D, S.DEFECT];
 
 const DEFAULT_LEAD_TIMES = ['3-5 ngày', '7-15 ngày', '15-30 ngày'];
 
-const SUGGEST_FIELDS = ['closedBy', 'leadTime', 'debtStatus'] as const;
+const SUGGEST_FIELDS = ['closedBy', 'leadTime', 'debtStatus', 'customerName'] as const;
 const SUGGEST_COLUMNS = {
   closedBy: Prisma.raw('"closed_by"'),
   leadTime: Prisma.raw('"lead_time"'),
   debtStatus: Prisma.raw('"debt_status"'),
+  customerName: Prisma.raw('"customer_name"'),
 } as const;
 
 const warehouseMaterialSelect = {
@@ -150,6 +152,8 @@ export class ProductionOrdersService {
         { model3dCode: contains },
         { closedBy: contains },
         { description: contains },
+        { btpName: contains },
+        { customerName: contains },
       ];
     }
     const orderBy: Prisma.ProductionOrderOrderByWithRelationInput[] =
@@ -253,6 +257,7 @@ export class ProductionOrdersService {
           leadTime: true,
           trackingCode: true,
           closedBy: true,
+          customerName: true,
           description: true,
           stoneColor: true,
           stoneTypes: true,
@@ -261,6 +266,7 @@ export class ProductionOrdersService {
           mainMaterial: true,
           platingColor: true,
           btpCategory: true,
+          btpName: true,
           productKind: true,
           askedUserName: true,
           receivedDate: true,
@@ -332,6 +338,7 @@ export class ProductionOrdersService {
           leadTime: row.leadTime,
           trackingCode: row.trackingCode,
           closedBy: row.closedBy,
+          customerName: row.customerName,
           description: row.description,
           stoneColor: row.stoneColor,
           stoneTypes: row.stoneTypes,
@@ -340,6 +347,7 @@ export class ProductionOrdersService {
           mainMaterial: row.mainMaterial,
           platingColor: row.platingColor,
           btpCategory: row.btpCategory,
+          btpName: row.btpName,
           productKind: row.productKind,
           askedUserName: row.askedUserName,
           receivedDate: ymd(row.receivedDate),
@@ -376,7 +384,7 @@ export class ProductionOrdersService {
   }
 
   private async loadLookups() {
-    const [users, materialTypes, closers, usedStoneTypes, leadTimes, debts] =
+    const [users, materialTypes, closers, usedStoneTypes, leadTimes, debts, customers, shipmentCustomers] =
       await Promise.all([
         this.prisma.user.findMany({
           where: { isActive: true },
@@ -398,6 +406,14 @@ export class ProductionOrdersService {
         this.usedStoneTypes(),
         this.distinctValues('leadTime'),
         this.distinctValues('debtStatus'),
+        this.distinctValues('customerName'),
+        this.prisma.shipment.findMany({
+          where: { customerName: { not: '' } },
+          distinct: ['customerName'],
+          select: { customerName: true },
+          orderBy: { customerName: 'asc' },
+          take: 200,
+        }),
       ]);
 
     return {
@@ -429,6 +445,10 @@ export class ProductionOrdersService {
       ]),
       leadTimes: unique([...DEFAULT_LEAD_TIMES, ...leadTimes]),
       debtStatuses: uniqueSorted(debts),
+      customers: uniqueSorted([
+        ...customers,
+        ...shipmentCustomers.map((row) => row.customerName),
+      ]),
     };
   }
 
@@ -490,9 +510,10 @@ export class ProductionOrdersService {
         balance: { select: { qty: true } },
         bodyMetal: { select: { name: true } },
         productKind: { select: { name: true } },
-        otherClass: { select: { name: true } },
+        otherClass: { select: { name: true, code: true } },
         platingColor: { select: { name: true } },
         color: { select: { name: true } },
+        stoneWeight: true,
         images: {
           select: { url: true, publicId: true, width: true, height: true },
           orderBy: { sortOrder: 'asc' },
@@ -508,9 +529,11 @@ export class ProductionOrdersService {
       bodyMetal: row.bodyMetal?.name ?? null,
       productKind: row.productKind?.name ?? null,
       category: row.otherClass?.name ?? null,
+      categoryCode: row.otherClass?.code ?? null,
       platingColor: row.platingColor?.name ?? null,
       stoneColor: row.color?.name ?? null,
       sizeLabel: row.sizeLabel,
+      stoneWeight: row.stoneWeight != null ? decStr(row.stoneWeight) : null,
       images: row.images,
     }));
   }
@@ -527,6 +550,7 @@ export class ProductionOrdersService {
                 OR: [
                   { code: { contains: keyword, mode: 'insensitive' } },
                   { description: { contains: keyword, mode: 'insensitive' } },
+                  { btpName: { contains: keyword, mode: 'insensitive' } },
                   { trackingCode: { contains: keyword, mode: 'insensitive' } },
                 ],
               },
@@ -540,6 +564,7 @@ export class ProductionOrdersService {
           select: {
             code: true,
             description: true,
+            btpName: true,
             requestType: true,
             qty: true,
             qtyUnit: true,
@@ -585,6 +610,7 @@ export class ProductionOrdersService {
                     bodyMetal: { select: { name: true } },
                     shape: { select: { name: true } },
                     color: { select: { name: true } },
+                    stoneWeight: true,
                     images: {
                       select: { url: true },
                       orderBy: { sortOrder: 'asc' },
@@ -611,6 +637,7 @@ export class ProductionOrdersService {
       items.push({
         code: receipt.order.code,
         description: receipt.order.description,
+        btpName: receipt.order.btpName,
         requestType: receipt.order.requestType,
         qty: receipt.order.qty,
         size: receipt.order.size,
@@ -645,6 +672,7 @@ export class ProductionOrdersService {
               line.material.metalKind)
             : null,
           sizeLabel: line.material.sizeLabel,
+          stoneWeight: line.material.stoneWeight != null ? decStr(line.material.stoneWeight) : null,
           note: line.material.note,
           imageUrl: line.material.images[0]?.url ?? null,
         })),
@@ -686,6 +714,7 @@ export class ProductionOrdersService {
         bodyMetal: { select: { name: true } },
         shape: { select: { name: true } },
         color: { select: { name: true } },
+        stoneWeight: true,
         images: {
           select: { url: true, publicId: true, width: true, height: true },
           orderBy: { sortOrder: 'asc' },
@@ -706,6 +735,7 @@ export class ProductionOrdersService {
         ? (METAL_KIND_LABEL[row.metalKind] ?? row.metalKind)
         : null,
       sizeLabel: row.sizeLabel,
+      stoneWeight: row.stoneWeight != null ? decStr(row.stoneWeight) : null,
       note: row.note,
       images: row.images,
     }));
@@ -725,7 +755,7 @@ export class ProductionOrdersService {
     return { success: true };
   }
 
-  async updateCost(code: string, costId: string, dto: OrderCostDto) {
+  async updateCost(code: string, costId: string, dto: OrderCostDto, actor: AuthUserPayload) {
     const order = await this.requireCostEditable(code);
     const { count } = await this.prisma.productionOrderCost.updateMany({
       where: { id: costId, orderId: order.id },
@@ -737,6 +767,12 @@ export class ProductionOrdersService {
     });
     if (count === 0)
       throw new NotFoundException('Không tìm thấy khoản chi phí');
+    await recordEditLog(this.prisma, {
+      entityType: 'order_cost',
+      entityId: costId,
+      reason: dto.editReason,
+      changedBy: actorName(actor),
+    });
     return { success: true };
   }
 
@@ -751,7 +787,12 @@ export class ProductionOrdersService {
   }
 
   /** Sửa tiền công một khâu ngay ở phần chi phí, không phải gỡ KCS nhận lại. */
-  async updateStageLabor(code: string, stageId: string, dto: StageLaborDto) {
+  async updateStageLabor(
+    code: string,
+    stageId: string,
+    dto: StageLaborDto,
+    actor: AuthUserPayload,
+  ) {
     const order = await this.requireCostEditable(code);
     const entry = await this.prisma.productionStageEntry.findFirst({
       where: { id: stageId, orderId: order.id },
@@ -770,6 +811,12 @@ export class ProductionOrdersService {
     await this.prisma.productionOrder.update({
       where: { id: order.id },
       data: { dataChangedAt: new Date() },
+    });
+    await recordEditLog(this.prisma, {
+      entityType: 'stage_labor',
+      entityId: entry.id,
+      reason: dto.editReason,
+      changedBy: actorName(actor),
     });
     return { success: true };
   }
@@ -1001,6 +1048,12 @@ export class ProductionOrdersService {
               }
             : {}),
         },
+      });
+      await recordEditLog(tx, {
+        entityType: 'production_order',
+        entityId: order.id,
+        reason: dto.editReason,
+        changedBy,
       });
       if (nvlLines.length) {
         await this.replaceBomLines(tx, order.id, nvlLines);
@@ -1757,6 +1810,33 @@ export class ProductionOrdersService {
     ) {
       throw new BadRequestException('Nhập số lượng BTP cần lên đơn');
     }
+    if (dto.finishedProductQty && dto.finishedProductQty >= 1) {
+      const nvlNeed = nvlLines.length
+        ? Math.min(...nvlLines.map((line) => line.qty))
+        : dto.stoneCount ?? null;
+      const caps: Array<{ qty: number; label: string }> = [];
+      if (dto.source === ProductionSource.BTP && dto.btpQty) {
+        caps.push({ qty: dto.btpQty, label: 'BTP' });
+      }
+      if (nvlNeed && nvlNeed >= 1) {
+        caps.push({ qty: nvlNeed, label: 'NVL' });
+      }
+      if (caps.length) {
+        const minQty = Math.min(...caps.map((item) => item.qty));
+        if (dto.finishedProductQty !== minQty) {
+          const labels = caps
+            .filter((item) => item.qty === minQty)
+            .map((item) => item.label);
+          throw new BadRequestException(
+            dto.finishedProductQty > minQty
+              ? labels.length === 1
+                ? `Không đủ số lượng ${labels[0]}`
+                : `Không đủ số lượng ${labels.join(' và ')}`
+              : `Số lượng thành phẩm phải bằng ${minQty}`,
+          );
+        }
+      }
+    }
 
     let parentId: string | null = null;
     if (parentCode) {
@@ -1782,6 +1862,7 @@ export class ProductionOrdersService {
       receivedDate,
       dueDate,
       closedBy,
+      customerName: optional(dto.customerName),
       description,
       qty: dto.qty,
       qtyUnit: optional(dto.qtyUnit),
@@ -1802,6 +1883,7 @@ export class ProductionOrdersService {
       mainMaterial: optional(dto.mainMaterial),
       platingColor: optional(nvlLines[0]?.platingColor ?? dto.platingColor),
       btpCategory: optional(dto.btpCategory),
+      btpName: optional(dto.btpName) ?? optional(btpMaterial?.name),
       productKind: optional(dto.productKind),
       laserEngraving: optional(
         nvlLines[0]?.laserEngraving ?? dto.laserEngraving,

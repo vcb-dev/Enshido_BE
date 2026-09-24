@@ -86,4 +86,9 @@ export class UpdateUserDto {
   @IsString()
   @MinLength(6)
   password?: string;
+
+  /** Có khi sửa từ form (icon bút). Khoá/mở tài khoản thì không gửi. */
+  @IsOptional()
+  @IsString()
+  editReason?: string;
 }

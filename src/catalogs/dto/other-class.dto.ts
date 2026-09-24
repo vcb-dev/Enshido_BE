@@ -42,4 +42,7 @@ export class UpdateOtherClassDto {
   @IsInt()
   @Min(0)
   sortOrder?: number;
+
+  @IsString()
+  editReason!: string;
 }
