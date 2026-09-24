@@ -479,10 +479,6 @@ export class InventoryService {
         ? dto.otherClassId || null
         : await this.resolveOtherClassId(dto.otherClassName);
     const metalKind = isBtp || otherClassId ? null : (dto.metalKind ?? defaultMetalKind(warehouse.code));
-    await this.assertStoneWeight({
-      metalKind,
-      stoneWeight: dto.stoneWeight,
-    });
 
     const materialId = await this.prisma.runTx(async (tx) => {
       const sku = await allocateMaterialSku(tx, warehouse.code);
@@ -568,7 +564,6 @@ export class InventoryService {
         unitId: true,
         metalKind: true,
         otherClassId: true,
-        stoneWeight: true,
         images: { select: { publicId: true } },
       },
     });
@@ -639,16 +634,6 @@ export class InventoryService {
     if (dto.otherClassId !== undefined) {
       await this.assertConsumableClass(dto.otherClassId);
     }
-    await this.assertStoneWeight({
-      metalKind: dto.metalKind !== undefined ? dto.metalKind : material.metalKind,
-      stoneWeight:
-        dto.stoneWeight !== undefined
-          ? dto.stoneWeight
-          : material.stoneWeight != null
-            ? decStr(material.stoneWeight)
-            : null,
-    });
-
     await this.prisma.runTx(async (tx) => {
       await tx.material.update({
         where: { id: material.id },
@@ -2223,17 +2208,6 @@ export class InventoryService {
       this.listCatalogChildren('mau-xi', 'Màu xi', 12, OtherClassKind.OTHER),
     ]);
     this.btpCatalogsReady = true;
-  }
-
-  private async assertStoneWeight(params: {
-    metalKind?: MetalKind | null;
-    stoneWeight?: string | null;
-  }) {
-    if (params.metalKind !== MetalKind.STONE) return;
-    const weight = params.stoneWeight?.trim();
-    if (!weight || new Prisma.Decimal(weight).lte(0)) {
-      throw new BadRequestException('Nhập trọng lượng đá');
-    }
   }
 
   private async assertConsumableClass(id?: string | null) {
