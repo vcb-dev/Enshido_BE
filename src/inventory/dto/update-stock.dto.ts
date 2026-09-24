@@ -129,6 +129,11 @@ export class UpdateStockDto {
   stoneWeight?: string | null;
 
   @IsOptional()
+  @Transform(({ value }) => (value === '' ? null : value))
+  @Matches(DECIMAL, { message: 'Trọng lượng không hợp lệ' })
+  weight?: string | null;
+
+  @IsOptional()
   @IsArray()
   @ArrayMaxSize(20)
   @ValidateNested({ each: true })
@@ -259,6 +264,11 @@ export class CreateStockDto {
   @Transform(({ value }) => (value === '' ? null : value))
   @Matches(DECIMAL, { message: 'Trọng lượng đá không hợp lệ' })
   stoneWeight?: string | null;
+
+  @IsOptional()
+  @Transform(({ value }) => (value === '' ? null : value))
+  @Matches(DECIMAL, { message: 'Trọng lượng không hợp lệ' })
+  weight?: string | null;
 
   @IsOptional()
   @IsArray()

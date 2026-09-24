@@ -492,6 +492,7 @@ export function toDetail(order: OrderDetail) {
     stoneTypes: order.stoneTypes,
     stoneCount: order.stoneCount,
     stoneWeight: order.stoneWeight != null ? decStr(order.stoneWeight) : null,
+    weight: order.weight != null ? decStr(order.weight) : null,
     silverWeight:
       order.silverWeight != null ? decStr(order.silverWeight) : null,
     size: order.size,

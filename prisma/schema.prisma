@@ -205,6 +205,8 @@ model Material {
   metalKind      MetalKind?    @map("metal_kind")
   /// Trọng lượng đá (g) — bắt buộc khi danh mục NVL/BTP là Đá, lên đơn lấy sẵn.
   stoneWeight    Decimal?      @map("stone_weight") @db.Decimal(18, 4)
+  /// Trọng lượng NVL (g) — lên đơn và kho thành phẩm lấy sẵn.
+  weight         Decimal?      @map("weight") @db.Decimal(18, 4)
   sortOrder      Int           @default(0) @map("sort_order")
   /// Tồn kho SL < ngưỡng này → Trạng thái "Sắp hết hàng". Mặc định 5.
   reorderPoint   Decimal       @default(5) @map("reorder_point") @db.Decimal(18, 4)
@@ -498,6 +500,8 @@ model ProductionOrder {
   sizeLabel           String?               @map("size_label")
   stoneCount          Int?                  @map("stone_count")
   stoneWeight         Decimal?              @map("stone_weight") @db.Decimal(18, 4)
+  /// Trọng lượng NVL / thành phẩm (g) — lấy từ NVL khi lên đơn.
+  weight              Decimal?              @map("weight") @db.Decimal(18, 4)
   laserEngraving      String?               @map("laser_engraving")
   otherRequirements   String?               @map("other_requirements")
   mainMaterial        String?               @map("main_material")

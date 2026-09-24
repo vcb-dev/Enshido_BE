@@ -514,6 +514,7 @@ export class ProductionOrdersService {
         platingColor: { select: { name: true } },
         color: { select: { name: true } },
         stoneWeight: true,
+        weight: true,
         images: {
           select: { url: true, publicId: true, width: true, height: true },
           orderBy: { sortOrder: 'asc' },
@@ -534,6 +535,7 @@ export class ProductionOrdersService {
       stoneColor: row.color?.name ?? null,
       sizeLabel: row.sizeLabel,
       stoneWeight: row.stoneWeight != null ? decStr(row.stoneWeight) : null,
+      weight: row.weight != null ? decStr(row.weight) : null,
       images: row.images,
     }));
   }
@@ -576,6 +578,7 @@ export class ProductionOrdersService {
             stoneTypes: true,
             stoneCount: true,
             stoneWeight: true,
+            weight: true,
             laserEngraving: true,
             otherRequirements: true,
             // Trả đủ ảnh mọi loại: form lên đơn chép cả bộ ảnh sản phẩm (không có thì lấy ảnh
@@ -611,6 +614,7 @@ export class ProductionOrdersService {
                     shape: { select: { name: true } },
                     color: { select: { name: true } },
                     stoneWeight: true,
+                    weight: true,
                     images: {
                       select: { url: true },
                       orderBy: { sortOrder: 'asc' },
@@ -651,6 +655,8 @@ export class ProductionOrdersService {
           receipt.order.stoneWeight != null
             ? decStr(receipt.order.stoneWeight)
             : null,
+        weight:
+          receipt.order.weight != null ? decStr(receipt.order.weight) : null,
         laserEngraving: receipt.order.laserEngraving,
         otherRequirements: receipt.order.otherRequirements,
         remainingQty: receipt.stockedQty - shippedQty,
@@ -673,6 +679,7 @@ export class ProductionOrdersService {
             : null,
           sizeLabel: line.material.sizeLabel,
           stoneWeight: line.material.stoneWeight != null ? decStr(line.material.stoneWeight) : null,
+          weight: line.material.weight != null ? decStr(line.material.weight) : null,
           note: line.material.note,
           imageUrl: line.material.images[0]?.url ?? null,
         })),
@@ -715,6 +722,7 @@ export class ProductionOrdersService {
         shape: { select: { name: true } },
         color: { select: { name: true } },
         stoneWeight: true,
+        weight: true,
         images: {
           select: { url: true, publicId: true, width: true, height: true },
           orderBy: { sortOrder: 'asc' },
@@ -736,6 +744,7 @@ export class ProductionOrdersService {
         : null,
       sizeLabel: row.sizeLabel,
       stoneWeight: row.stoneWeight != null ? decStr(row.stoneWeight) : null,
+      weight: row.weight != null ? decStr(row.weight) : null,
       note: row.note,
       images: row.images,
     }));
@@ -1877,6 +1886,7 @@ export class ProductionOrdersService {
       ),
       stoneCount: nvlLines[0]?.qty ?? dto.stoneCount ?? null,
       stoneWeight: decimalOrNull(nvlLines[0]?.stoneWeight ?? dto.stoneWeight),
+      weight: decimalOrNull(dto.weight),
       silverWeight: decimalOrNull(dto.silverWeight),
       size: optional(dto.size),
       sizeLabel: optional(dto.sizeLabel),

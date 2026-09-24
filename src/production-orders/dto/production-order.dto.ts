@@ -275,6 +275,11 @@ export class UpsertProductionOrderDto {
   @Matches(DECIMAL, { message: 'Trọng lượng đá không hợp lệ' })
   stoneWeight?: string | null;
 
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Matches(DECIMAL, { message: 'Trọng lượng không hợp lệ' })
+  weight?: string | null;
+
   /** Tổng TL bạc của đơn (g) — mốc chia gram cho phiếu con. */
   @IsOptional()
   @Transform(emptyToNull)

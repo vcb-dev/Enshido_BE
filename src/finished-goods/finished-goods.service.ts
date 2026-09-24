@@ -45,6 +45,8 @@ const nvlSelect = {
   bodyMetal: { select: { name: true } },
   shape: { select: { name: true } },
   color: { select: { name: true } },
+  stoneWeight: true,
+  weight: true,
   images: {
     select: { url: true },
     orderBy: { sortOrder: 'asc' as const },
@@ -70,6 +72,8 @@ function mapNvl(row: NvlSnapshot) {
       ? (METAL_KIND_LABEL[row.metalKind] ?? row.metalKind)
       : null,
     sizeLabel: row.sizeLabel,
+    stoneWeight: row.stoneWeight != null ? decStr(row.stoneWeight) : null,
+    weight: row.weight != null ? decStr(row.weight) : null,
     note: row.note,
     imageUrl: row.images[0]?.url ?? null,
   };
@@ -160,6 +164,7 @@ export class FinishedGoodsService {
             requestType: true,
             qtyUnit: true,
             sizeLabel: true,
+            weight: true,
             mainMaterial: true,
             platingColor: true,
             trackingCode: true,
@@ -233,6 +238,7 @@ export class FinishedGoodsService {
         requestType: receipt.order.requestType,
         qtyUnit: receipt.order.qtyUnit,
         sizeLabel: receipt.order.sizeLabel,
+        weight: receipt.order.weight != null ? decStr(receipt.order.weight) : null,
         mainMaterial: receipt.order.mainMaterial,
         platingColor: receipt.order.platingColor,
         imageUrl: receipt.order.images[0]?.url ?? null,
@@ -320,6 +326,7 @@ export class FinishedGoodsService {
             description: true,
             qtyUnit: true,
             sizeLabel: true,
+            weight: true,
             mainMaterial: true,
             images: {
               where: { kind: ProductionImageKind.PRODUCT },
@@ -352,6 +359,7 @@ export class FinishedGoodsService {
         description: receipt.order.description,
         qtyUnit: receipt.order.qtyUnit,
         sizeLabel: receipt.order.sizeLabel,
+        weight: receipt.order.weight != null ? decStr(receipt.order.weight) : null,
         mainMaterial: receipt.order.mainMaterial,
         imageUrl: receipt.order.images[0]?.url ?? null,
         qty: decStr(qty),
@@ -401,6 +409,7 @@ export class FinishedGoodsService {
             description: true,
             qtyUnit: true,
             sizeLabel: true,
+            weight: true,
             mainMaterial: true,
             shipmentLines: { select: { qty: true } },
           },
@@ -420,6 +429,8 @@ export class FinishedGoodsService {
           qty: receipt.stockedQty,
           qtyUnit: receipt.order.qtyUnit,
           sizeLabel: receipt.order.sizeLabel,
+          weight:
+            receipt.order.weight != null ? decStr(receipt.order.weight) : null,
           mainMaterial: receipt.order.mainMaterial,
           inStock: true as const,
           remainingQty: receipt.stockedQty - shippedQty,
@@ -474,7 +485,11 @@ export class FinishedGoodsService {
         receivedByName: actorName(actor),
       },
     });
-    if (dto.sizeLabel !== undefined || dto.qtyUnit !== undefined) {
+    if (
+      dto.sizeLabel !== undefined ||
+      dto.qtyUnit !== undefined ||
+      dto.weight !== undefined
+    ) {
       await this.prisma.productionOrder.update({
         where: { id: order.id },
         data: {
@@ -483,6 +498,9 @@ export class FinishedGoodsService {
             : {}),
           ...(dto.qtyUnit !== undefined
             ? { qtyUnit: dto.qtyUnit.trim() || null }
+            : {}),
+          ...(dto.weight !== undefined
+            ? { weight: optionalWeight(dto.weight) }
             : {}),
         },
       });
@@ -587,6 +605,9 @@ export class FinishedGoodsService {
         ...(dto.qtyUnit !== undefined
           ? { qtyUnit: dto.qtyUnit.trim() || null }
           : {}),
+        ...(dto.weight !== undefined
+          ? { weight: optionalWeight(dto.weight) }
+          : {}),
         receipt: {
           update: {
             qty: dto.qty,
@@ -686,6 +707,10 @@ export class FinishedGoodsService {
               mainMaterial: dto.mainMaterial?.trim() || null,
               platingColor: dto.platingColor?.trim() || null,
               sizeLabel: dto.sizeLabel?.trim() || null,
+              weight:
+                optionalWeight(dto.weight) ??
+                bomLines.find((line) => line.weight != null)?.weight ??
+                null,
               closedBy: changedBy,
               createdBy: changedBy,
               receivedDate: receivedAt,
@@ -704,7 +729,10 @@ export class FinishedGoodsService {
               ...(bomLines.length
                 ? {
                     bomLines: {
-                      create: bomLines,
+                      create: bomLines.map(({ materialId, sortOrder }) => ({
+                        materialId,
+                        sortOrder,
+                      })),
                     },
                   }
                 : {}),
@@ -814,14 +842,19 @@ export class FinishedGoodsService {
         id: { in: unique },
         warehouse: { code: NVL_WAREHOUSE_CODE },
       },
-      select: { id: true },
+      select: { id: true, weight: true },
     });
     if (rows.length !== unique.length) {
       throw new BadRequestException(
         'Mã NVL không hợp lệ hoặc không thuộc kho NVL chính',
       );
     }
-    return unique.map((materialId, sortOrder) => ({ materialId, sortOrder }));
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    return unique.map((materialId, sortOrder) => ({
+      materialId,
+      sortOrder,
+      weight: byId.get(materialId)?.weight ?? null,
+    }));
   }
 
   private async replaceBomLines(
@@ -1289,6 +1322,11 @@ function receiptDate(value: string) {
 
 function actorName(actor: { fullName: string; username: string }) {
   return actor.fullName.trim() || actor.username;
+}
+
+function optionalWeight(value?: string | null) {
+  const text = value?.trim();
+  return text ? new Prisma.Decimal(text) : null;
 }
 
 function isUniqueViolation(error: unknown) {

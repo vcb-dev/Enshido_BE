@@ -69,6 +69,7 @@ const materialStockSelect = {
   classification: true,
   metalKind: true,
   stoneWeight: true,
+  weight: true,
   note: true,
   sortOrder: true,
   reorderPoint: true,
@@ -502,6 +503,7 @@ export class InventoryService {
           platingColorId: dto.platingColorId || null,
           sizeLabel: dto.sizeLabel?.trim() || null,
           stoneWeight: isBtp ? null : optionalDecimal(dto.stoneWeight),
+          weight: isBtp ? null : optionalDecimal(dto.weight),
           images: { create: images },
           classification: classificationOf(warehouse.code),
           metalKind:
@@ -685,6 +687,9 @@ export class InventoryService {
             : {}),
           ...(dto.stoneWeight !== undefined
             ? { stoneWeight: optionalDecimal(dto.stoneWeight) }
+            : {}),
+          ...(dto.weight !== undefined
+            ? { weight: optionalDecimal(dto.weight) }
             : {}),
           ...(images !== undefined
             ? { images: { deleteMany: {}, create: images } }
@@ -2058,6 +2063,7 @@ export class InventoryService {
       platingColor: m.platingColor?.name ?? null,
       sizeLabel: m.sizeLabel,
       stoneWeight: m.stoneWeight != null ? decStr(m.stoneWeight) : null,
+      weight: m.weight != null ? decStr(m.weight) : null,
       images: m.images,
       classificationCode: m.classification,
       classification: CLASS_LABEL[m.classification] ?? m.classification,

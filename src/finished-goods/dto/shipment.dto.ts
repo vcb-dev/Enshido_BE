@@ -146,6 +146,11 @@ export class UpsertReceiptDto {
   sizeLabel?: string;
 
   @IsOptional()
+  @Transform(({ value }) => (value === '' ? null : value))
+  @Matches(/^\d+(\.\d+)?$/, { message: 'Trọng lượng không hợp lệ' })
+  weight?: string | null;
+
+  @IsOptional()
   @IsString()
   @MaxLength(20)
   qtyUnit?: string;
