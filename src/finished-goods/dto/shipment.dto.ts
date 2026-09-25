@@ -146,14 +146,16 @@ export class UpsertReceiptDto {
   sizeLabel?: string;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
-  @Matches(/^\d+(\.\d+)?$/, { message: 'Trọng lượng không hợp lệ' })
-  weight?: string | null;
-
-  @IsOptional()
   @IsString()
   @MaxLength(20)
   qtyUnit?: string;
+
+  /** Mã sản xuất — nhập trên Tồn; đơn SX lấy từ lệnh sản xuất. */
+  @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @MaxLength(120)
+  model3dCode?: string;
 
   /** NVL cấu thành — chỉ gửi khi tạo / sửa trên tab Tồn. */
   @IsOptional()
