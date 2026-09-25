@@ -951,7 +951,6 @@ export class ProductionOrdersService {
           });
           return row;
         });
-        if (btpMaterial) this.inventory.bustBtpStock();
         if (nvlMaterial || nvlLines.length) this.inventory.bustNvlStock();
         await this.touchSiblings([data.parentId], created.id);
         this.logger.log(
@@ -962,8 +961,7 @@ export class ProductionOrdersService {
             created,
             btpMaterial,
             nvlMaterial,
-            Number(Boolean(btpMaterial)) +
-              (nvlLines.length || Number(Boolean(nvlMaterial))),
+            nvlLines.length || Number(Boolean(nvlMaterial)),
             nvlLines,
           ),
         );
@@ -1004,12 +1002,10 @@ export class ProductionOrdersService {
     // Đổi loại đơn / mã / số lượng tự xuất thì hoàn phiếu cũ và xuất lại.
     const reissue =
       fields.source !== order.source ||
-      fields.btpMaterialId !== order.btpMaterialId ||
       fields.sourceOrderCode !== order.sourceOrderCode ||
       (fields.finishedProductQty ?? fields.qty) !==
         (order.finishedProductQty ?? order.qty) ||
-      nextNvlKey !== prevNvlKey ||
-      (fields.source === ProductionSource.BTP && fields.qty !== order.qty);
+      nextNvlKey !== prevNvlKey;
     if (reissue && order.stages.length > 0) {
       throw new BadRequestException(
         'Đơn đã giao khâu cho thợ, không đổi loại đơn, mã hoặc số lượng xuất kho được',
@@ -1099,13 +1095,8 @@ export class ProductionOrdersService {
       return order.id;
     });
     if (reissue) {
-      if (btpMaterial || order.source === ProductionSource.BTP)
-        this.inventory.bustBtpStock();
-      if (
-        nvlMaterial ||
-        order.source === ProductionSource.NVL ||
-        order.source === ProductionSource.BTP
-      ) {
+      if (order.source === ProductionSource.BTP) this.inventory.bustBtpStock();
+      if (nvlMaterial || order.source === ProductionSource.NVL) {
         this.inventory.bustNvlStock();
       }
     }
@@ -1811,11 +1802,8 @@ export class ProductionOrdersService {
     }
     const btpQty =
       dto.source === ProductionSource.BTP
-        ? (dto.btpQty ?? dto.finishedProductQty ?? null)
-        : (dto.btpQty ?? null);
-    if (dto.source === ProductionSource.BTP && !(btpQty && btpQty >= 1)) {
-      throw new BadRequestException('Nhập số lượng thành phẩm cần lên đơn');
-    }
+        ? (dto.finishedProductQty ?? dto.qty ?? null)
+        : null;
 
     let parentId: string | null = null;
     if (parentCode) {
@@ -2024,7 +2012,7 @@ export class ProductionOrdersService {
     });
   }
 
-  /** Xuất kho gắn đơn: BTP và/hoặc NVL; Đơn mới thêm xuất thành phẩm nguồn. */
+  /** Xuất kho gắn đơn: NVL; Đơn NVL mới thêm xuất thành phẩm nguồn. Lên đơn BTP không xuất kho. */
   private async issueAutoStockForOrder(
     tx: Prisma.TransactionClient,
     params: {
@@ -2041,18 +2029,8 @@ export class ProductionOrdersService {
       finishedProductQty: number;
     },
   ) {
-    if (params.btpMaterial || params.nvlIssues.length) {
+    if (params.nvlIssues.length) {
       await tx.$executeRaw`SELECT set_config('lock_timeout', '2000', true)`;
-    }
-    if (params.btpMaterial && params.source === ProductionSource.BTP) {
-      await this.inventory.issueStockForOrder(tx, {
-        orderId: params.orderId,
-        orderCode: params.orderCode,
-        material: params.btpMaterial,
-        qty: params.btpQty,
-        issuedAt: params.issuedAt,
-        issuedBy: params.issuedBy,
-      });
     }
     for (const line of params.nvlIssues) {
       if (line.qty < 1) {

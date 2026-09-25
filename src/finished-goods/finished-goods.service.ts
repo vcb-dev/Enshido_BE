@@ -135,20 +135,7 @@ export class FinishedGoodsService {
                 OR: [
                   { code: { contains: keyword, mode: 'insensitive' } },
                   { description: { contains: keyword, mode: 'insensitive' } },
-                  {
-                    bomLines: {
-                      some: {
-                        material: {
-                          OR: [
-                            { sku: { contains: keyword, mode: 'insensitive' } },
-                            {
-                              name: { contains: keyword, mode: 'insensitive' },
-                            },
-                          ],
-                        },
-                      },
-                    },
-                  },
+                  { model3dCode: { contains: keyword, mode: 'insensitive' } },
                 ],
               },
             }
@@ -160,11 +147,11 @@ export class FinishedGoodsService {
           select: {
             id: true,
             code: true,
+            model3dCode: true,
             description: true,
             requestType: true,
             qtyUnit: true,
             sizeLabel: true,
-            weight: true,
             mainMaterial: true,
             platingColor: true,
             trackingCode: true,
@@ -175,10 +162,6 @@ export class FinishedGoodsService {
               take: 1,
             },
             shipmentLines: { select: { qty: true } },
-            bomLines: {
-              orderBy: { sortOrder: 'asc' },
-              select: { material: { select: nvlSelect } },
-            },
           },
         },
       },
@@ -234,15 +217,15 @@ export class FinishedGoodsService {
       items.push({
         id: receipt.id,
         orderCode: receipt.order.code,
+        model3dCode: receipt.order.model3dCode?.trim() || null,
         description: receipt.order.description,
         requestType: receipt.order.requestType,
         qtyUnit: receipt.order.qtyUnit,
         sizeLabel: receipt.order.sizeLabel,
-        weight: receipt.order.weight != null ? decStr(receipt.order.weight) : null,
         mainMaterial: receipt.order.mainMaterial,
         platingColor: receipt.order.platingColor,
         imageUrl: receipt.order.images[0]?.url ?? null,
-        bomLines: receipt.order.bomLines.map((line) => mapNvl(line.material)),
+        bomLines: [],
         isOpening,
         openingQty: decStr(openingQty),
         openingAmount: decStr(openingAmount),
@@ -485,11 +468,7 @@ export class FinishedGoodsService {
         receivedByName: actorName(actor),
       },
     });
-    if (
-      dto.sizeLabel !== undefined ||
-      dto.qtyUnit !== undefined ||
-      dto.weight !== undefined
-    ) {
+    if (dto.sizeLabel !== undefined || dto.qtyUnit !== undefined) {
       await this.prisma.productionOrder.update({
         where: { id: order.id },
         data: {
@@ -498,9 +477,6 @@ export class FinishedGoodsService {
             : {}),
           ...(dto.qtyUnit !== undefined
             ? { qtyUnit: dto.qtyUnit.trim() || null }
-            : {}),
-          ...(dto.weight !== undefined
-            ? { weight: optionalWeight(dto.weight) }
             : {}),
         },
       });
@@ -605,8 +581,8 @@ export class FinishedGoodsService {
         ...(dto.qtyUnit !== undefined
           ? { qtyUnit: dto.qtyUnit.trim() || null }
           : {}),
-        ...(dto.weight !== undefined
-          ? { weight: optionalWeight(dto.weight) }
+        ...(dto.model3dCode !== undefined
+          ? { model3dCode: dto.model3dCode.trim() || null }
           : {}),
         receipt: {
           update: {
@@ -631,9 +607,6 @@ export class FinishedGoodsService {
         dto.stockUnitPrice,
         changedBy,
       );
-    }
-    if (dto.bomLines !== undefined) {
-      await this.replaceBomLines(receipt.order.id, dto.bomLines);
     }
     await recordEditLog(this.prisma, {
       entityType: 'fg_receipt',
@@ -672,6 +645,8 @@ export class FinishedGoodsService {
   ) {
     const description = dto.description?.trim();
     if (!description) throw new BadRequestException('Nhập tên thành phẩm');
+    const model3dCode = dto.model3dCode?.trim();
+    if (!model3dCode) throw new BadRequestException('Nhập mã sản xuất');
     await this.assertUniqueStockName(description);
     const changedBy = actorName(actor);
     const receivedAt = receiptDate(dto.receivedAt);
@@ -681,11 +656,6 @@ export class FinishedGoodsService {
     const costAmount = unitPrice
       .mul(dto.qty)
       .toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP);
-    const bomLines = await this.requireBomMaterials(
-      this.prisma,
-      dto.bomLines ?? [],
-    );
-
     for (let attempt = 1; ; attempt += 1) {
       try {
         await this.prisma.runTx(async (tx) => {
@@ -707,10 +677,8 @@ export class FinishedGoodsService {
               mainMaterial: dto.mainMaterial?.trim() || null,
               platingColor: dto.platingColor?.trim() || null,
               sizeLabel: dto.sizeLabel?.trim() || null,
-              weight:
-                optionalWeight(dto.weight) ??
-                bomLines.find((line) => line.weight != null)?.weight ??
-                null,
+              model3dCode,
+              weight: null,
               closedBy: changedBy,
               createdBy: changedBy,
               receivedDate: receivedAt,
@@ -726,16 +694,6 @@ export class FinishedGoodsService {
                   receivedByName: changedBy,
                 },
               },
-              ...(bomLines.length
-                ? {
-                    bomLines: {
-                      create: bomLines.map(({ materialId, sortOrder }) => ({
-                        materialId,
-                        sortOrder,
-                      })),
-                    },
-                  }
-                : {}),
               ...(costAmount.gt(0)
                 ? {
                     costs: {
