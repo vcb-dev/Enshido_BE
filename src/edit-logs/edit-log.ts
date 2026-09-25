@@ -15,7 +15,8 @@ export type EditEntityType =
   | 'btp_waiting'
   | 'user'
   | 'order_cost'
-  | 'stage_labor';
+  | 'stage_labor'
+  | 'casting_order';
 
 export function requireEditReason(reason: string | undefined) {
   const value = reason?.trim();

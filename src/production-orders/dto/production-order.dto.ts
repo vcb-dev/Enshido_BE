@@ -113,13 +113,60 @@ export class OrderImageDto {
   height?: number | null;
 }
 
+/** Một mã NVL trên đơn — số lượng / xi / khắc nhập riêng từng dòng. */
+export class ProductionNvlLineDto {
+  @IsUUID()
+  materialId!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  platingColor?: string;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  qty!: number;
+
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Matches(DECIMAL, { message: 'Trọng lượng đá không hợp lệ' })
+  stoneWeight?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  laserEngraving?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  otherRequirements?: string;
+}
+
 export class UpsertProductionOrderDto {
-  /**
-   * Đơn mới (qua 3D → Đúc) hoặc Đơn BTP (vào thẳng Nguội). Lên đơn chỉ ghi thông tin, không
-   * chọn mã kho và không xuất kho — NVL xuất ở từng bước giao khâu.
-   */
+  /** Đơn NVL (làm từ đầu) hoặc Đơn BTP (lấy BTP có sẵn theo mã). */
   @IsEnum(ProductionSource)
   source!: ProductionSource;
+
+  /** Dòng kho BTP — bắt buộc với Đơn BTP. */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @IsUUID()
+  btpMaterialId?: string | null;
+
+  /** Dòng kho NVL — bắt buộc với Đơn mới. */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @IsUUID()
+  nvlMaterialId?: string | null;
+
+  /** Mã thành phẩm trong kho thành phẩm — bắt buộc với Đơn mới. */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @IsString()
+  @MaxLength(20)
+  finishedProductCode?: string | null;
 
   @IsEnum(ProductionRequestType)
   requestType!: ProductionRequestType;
@@ -157,6 +204,22 @@ export class UpsertProductionOrderDto {
   @Transform(emptyToNull)
   @IsIn(['chiếc', 'đôi'])
   qtyUnit?: string | null;
+
+  /** Số lượng thành phẩm cần lên đơn. */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  finishedProductQty?: number | null;
+
+  /** Số lượng BTP xuất kho — Đơn BTP. */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  btpQty?: number | null;
 
   @IsOptional()
   @IsString()
@@ -245,7 +308,7 @@ export class UpsertProductionOrderDto {
   @MaxLength(120)
   btpCategory?: string;
 
-  /** Tên bán thành phẩm. */
+  /** Tên bán thành phẩm — điền sẵn khi chọn mã. */
   @IsOptional()
   @IsString()
   @MaxLength(300)
@@ -278,6 +341,13 @@ export class UpsertProductionOrderDto {
   @Type(() => OrderImageDto)
   images!: OrderImageDto[];
 
+  /** NVL gắn thành phẩm — số lượng / xi / khắc từng mã khi lên đơn. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => ProductionNvlLineDto)
+  nvlLines?: ProductionNvlLineDto[];
 }
 
 export class ChangeStatusDto {
