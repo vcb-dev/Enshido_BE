@@ -19,6 +19,8 @@ import {
   ValidateNested,
 } from 'class-validator';
 import {
+  MaterialRequestKind,
+  MaterialRequestStatus,
   ProductionImageKind,
   ProductionRequestType,
   ProductionSource,
@@ -111,60 +113,13 @@ export class OrderImageDto {
   height?: number | null;
 }
 
-/** Một mã NVL trên đơn — số lượng / xi / khắc nhập riêng từng dòng. */
-export class ProductionNvlLineDto {
-  @IsUUID()
-  materialId!: string;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(120)
-  platingColor?: string;
-
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  qty!: number;
-
-  @IsOptional()
-  @Transform(emptyToNull)
-  @Matches(DECIMAL, { message: 'Trọng lượng đá không hợp lệ' })
-  stoneWeight?: string | null;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(500)
-  laserEngraving?: string;
-
-  @IsOptional()
-  @IsString()
-  @MaxLength(2000)
-  otherRequirements?: string;
-}
-
 export class UpsertProductionOrderDto {
-  /** Đơn NVL (làm từ đầu) hoặc Đơn BTP (lấy BTP có sẵn theo mã). */
+  /**
+   * Đơn mới (qua 3D → Đúc) hoặc Đơn BTP (vào thẳng Nguội). Lên đơn chỉ ghi thông tin, không
+   * chọn mã kho và không xuất kho — NVL xuất ở từng bước giao khâu.
+   */
   @IsEnum(ProductionSource)
   source!: ProductionSource;
-
-  /** Dòng kho BTP — bắt buộc với Đơn BTP. */
-  @IsOptional()
-  @Transform(emptyToNull)
-  @IsUUID()
-  btpMaterialId?: string | null;
-
-  /** Dòng kho NVL — bắt buộc với Đơn mới. */
-  @IsOptional()
-  @Transform(emptyToNull)
-  @IsUUID()
-  nvlMaterialId?: string | null;
-
-  /** Mã thành phẩm trong kho thành phẩm — bắt buộc với Đơn mới. */
-  @IsOptional()
-  @Transform(emptyToNull)
-  @IsString()
-  @MaxLength(20)
-  finishedProductCode?: string | null;
 
   @IsEnum(ProductionRequestType)
   requestType!: ProductionRequestType;
@@ -202,22 +157,6 @@ export class UpsertProductionOrderDto {
   @Transform(emptyToNull)
   @IsIn(['chiếc', 'đôi'])
   qtyUnit?: string | null;
-
-  /** Số lượng thành phẩm cần lên đơn. */
-  @IsOptional()
-  @Transform(emptyToNull)
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  finishedProductQty?: number | null;
-
-  /** Số lượng BTP xuất kho — Đơn BTP. */
-  @IsOptional()
-  @Transform(emptyToNull)
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  btpQty?: number | null;
 
   @IsOptional()
   @IsString()
@@ -280,12 +219,6 @@ export class UpsertProductionOrderDto {
   @Matches(DECIMAL, { message: 'Trọng lượng không hợp lệ' })
   weight?: string | null;
 
-  /** Tổng TL bạc của đơn (g) — mốc chia gram cho phiếu con. */
-  @IsOptional()
-  @Transform(emptyToNull)
-  @Matches(DECIMAL, { message: 'Tổng TL bạc không hợp lệ' })
-  silverWeight?: string | null;
-
   @IsOptional()
   @IsString()
   @MaxLength(500)
@@ -312,7 +245,7 @@ export class UpsertProductionOrderDto {
   @MaxLength(120)
   btpCategory?: string;
 
-  /** Tên bán thành phẩm — điền sẵn khi chọn mã. */
+  /** Tên bán thành phẩm. */
   @IsOptional()
   @IsString()
   @MaxLength(300)
@@ -345,13 +278,6 @@ export class UpsertProductionOrderDto {
   @Type(() => OrderImageDto)
   images!: OrderImageDto[];
 
-  /** NVL gắn thành phẩm — số lượng / xi / khắc từng mã khi lên đơn. */
-  @IsOptional()
-  @IsArray()
-  @ArrayMaxSize(20)
-  @ValidateNested({ each: true })
-  @Type(() => ProductionNvlLineDto)
-  nvlLines?: ProductionNvlLineDto[];
 }
 
 export class ChangeStatusDto {
@@ -386,12 +312,33 @@ export class CastingDto {
   @Transform(emptyToNull)
   @IsDateString()
   returnedDate?: string | null;
+}
 
-  /** Tổng TL bạc (g) cân lúc Đúc về; bỏ trống thì giữ giá trị cũ. */
+/** Một dòng NVL xuất kho cho thợ ngay lúc giao khâu. */
+export class HandoverMaterialDto {
+  @IsUUID('all', { message: 'Chọn mã NVL cần xuất' })
+  materialId!: string;
+
+  @IsEnum(MaterialRequestKind)
+  kind!: MaterialRequestKind;
+
+  @Transform(emptyToNull)
+  @Matches(DECIMAL, { message: 'Số lượng xuất không hợp lệ' })
+  qty!: string;
+
+  /** TL cân lúc xuất (g) — bắt buộc với bạc / kim loại. */
   @IsOptional()
   @Transform(emptyToNull)
-  @Matches(DECIMAL, { message: 'Tổng TL bạc không hợp lệ' })
-  silverWeight?: string | null;
+  @Matches(DECIMAL, { message: 'Trọng lượng xuất không hợp lệ' })
+  weight?: string | null;
+
+  /** Đá: số viên — đơn vị không phải viên thì bắt buộc nhập. */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  stoneCount?: number | null;
 }
 
 /** Thông tin một lần giao khâu — người giao là tài khoản đăng nhập. */
@@ -407,9 +354,14 @@ export class HandoverInfoDto {
   @Min(1)
   handedQty?: number | null;
 
+  /**
+   * TL hàng chuyển từ khâu trước (g). Khâu đầu để trống nếu toàn bộ hàng lấy từ các dòng NVL
+   * xuất kho bên dưới — bạc vào khâu = số này + bạc xuất.
+   */
+  @IsOptional()
   @Transform(emptyToNull)
   @Matches(DECIMAL, { message: 'Trọng lượng giao (bạc) không hợp lệ' })
-  handedSilverWeight!: string;
+  handedSilverWeight?: string | null;
 
   /** Khâu Vào đá: số viên đá phát cho thợ. Khâu khác không nhận hai trường đá này. */
   @IsOptional()
@@ -429,6 +381,14 @@ export class HandoverInfoDto {
   @IsString()
   @MaxLength(1000)
   note?: string;
+
+  /** NVL xuất kho cho thợ ngay lúc giao — người lên đơn / admin chọn. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
+  @Type(() => HandoverMaterialDto)
+  materials?: HandoverMaterialDto[];
 }
 
 /** Giao khâu cho thợ (đơn chưa chia phiếu con). */
@@ -468,6 +428,14 @@ export class ReturnStageDto {
   @Transform(emptyToNull)
   @Matches(DECIMAL, { message: 'Trọng lượng đá không hợp lệ' })
   stoneWeight?: string | null;
+
+  /** Khâu Vào đá: số viên đá thợ trả lại (không gắn hết). */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  returnedStoneCount?: number | null;
 
   @IsOptional()
   @Transform(emptyToNull)
@@ -530,16 +498,12 @@ export class OrderCostDto {
   editReason?: string;
 }
 
-/** Phiếu con: phần số lượng + gram bạc chia cho thợ. */
+/** Phiếu con: phần số lượng chia cho thợ. Bạc / đá thợ xin xuất dần trong lúc làm. */
 export class SubTicketDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
   qty!: number;
-
-  @Transform(emptyToNull)
-  @Matches(DECIMAL, { message: 'Gram bạc của phiếu con không hợp lệ' })
-  silverWeight!: string;
 
   @IsOptional()
   @IsString()
@@ -585,22 +549,54 @@ export class SubTicketOutcomeDto {
   note?: string;
 }
 
-/** Cấp thêm SL / gram bạc cho phiếu con khi thợ làm giữa chừng phát hiện thiếu. */
-export class SubTicketTopUpDto {
-  @IsOptional()
-  @Transform(emptyToNull)
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  qty?: number | null;
+/** Thợ xin xuất thêm NVL trong lúc đang làm khâu. */
+export class MaterialRequestDto {
+  @IsUUID('all', { message: 'Chọn mã NVL cần xuất' })
+  materialId!: string;
 
-  @IsOptional()
   @Transform(emptyToNull)
-  @Matches(DECIMAL, { message: 'Gram bạc cấp thêm không hợp lệ' })
-  silverWeight?: string | null;
+  @Matches(DECIMAL, { message: 'Số lượng xin xuất không hợp lệ' })
+  qty!: string;
 
   @IsOptional()
   @IsString()
   @MaxLength(500)
-  reason?: string;
+  note?: string;
+}
+
+/** Kho / người giao cân rồi xuất theo yêu cầu. Số thực xuất có thể khác số thợ xin. */
+export class IssueMaterialRequestDto {
+  @IsEnum(MaterialRequestKind)
+  kind!: MaterialRequestKind;
+
+  @Transform(emptyToNull)
+  @Matches(DECIMAL, { message: 'Số lượng xuất không hợp lệ' })
+  qty!: string;
+
+  /** TL cân lúc xuất (g) — bắt buộc với bạc / kim loại. */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Matches(DECIMAL, { message: 'Trọng lượng xuất không hợp lệ' })
+  weight?: string | null;
+
+  /** Đá: số viên xuất — đơn vị không phải viên (ct…) thì bắt buộc nhập. */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  stoneCount?: number | null;
+}
+
+export class RejectMaterialRequestDto {
+  @IsString()
+  @IsNotEmpty({ message: 'Nhập lý do không xuất' })
+  @MaxLength(500)
+  reason!: string;
+}
+
+export class MaterialRequestListQuery {
+  @IsOptional()
+  @IsEnum(MaterialRequestStatus)
+  status?: MaterialRequestStatus;
 }

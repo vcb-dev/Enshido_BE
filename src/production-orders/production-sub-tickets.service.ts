@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  MaterialRequestStatus,
   Prisma,
   ProductionStage,
   ProductionStatus,
@@ -23,7 +24,6 @@ import {
   SplitSubTicketsDto,
   SubTicketDto,
   SubTicketOutcomeDto,
-  SubTicketTopUpDto,
 } from './dto/production-order.dto';
 import {
   actorName,
@@ -54,7 +54,20 @@ import {
   ticketPosition,
   toDetail,
 } from './order-detail';
-import { silverLossOf } from './stage-math';
+import {
+  ACTIVITY,
+  activity,
+  entrySnapshot,
+  logActivity,
+  ticketSnapshot,
+} from './activity-log';
+import { ProductionMaterialRequestsService } from './production-material-requests.service';
+import {
+  issuedOf,
+  lossPercentOf,
+  silverInOf,
+  silverLossOf,
+} from './stage-math';
 
 const S = ProductionStatus;
 
@@ -94,17 +107,34 @@ const myTicketInclude = {
     },
   },
   stages: { orderBy: { createdAt: 'asc' } },
-  topUps: {
-    orderBy: { createdAt: 'asc' },
+} satisfies Prisma.ProductionSubTicketInclude;
+
+/** NVL đã xuất / đang xin của một khâu — thợ xem mình đã nhận gì và tính hao hụt cho đúng. */
+const entryRequestsSelect = {
+  materialRequests: {
+    where: {
+      status: {
+        in: [MaterialRequestStatus.ISSUED, MaterialRequestStatus.PENDING],
+      },
+    },
+    orderBy: { requestedAt: 'asc' },
     select: {
-      id: true,
-      qty: true,
-      silverWeight: true,
-      stageEntryId: true,
-      createdAt: true,
+      status: true,
+      kind: true,
+      atHandover: true,
+      issuedQty: true,
+      issuedWeight: true,
+      issuedStoneCount: true,
+      material: {
+        select: { sku: true, name: true, unit: { select: { name: true } } },
+      },
     },
   },
-} satisfies Prisma.ProductionSubTicketInclude;
+} satisfies Prisma.ProductionStageEntryInclude;
+
+type EntryRequests = Prisma.ProductionStageEntryGetPayload<{
+  include: typeof entryRequestsSelect;
+}>['materialRequests'];
 
 type MyTicketRow = Prisma.ProductionSubTicketGetPayload<{
   include: typeof myTicketInclude;
@@ -132,7 +162,6 @@ const myOrderCardSelect = {
 /** Thẻ phiếu mẹ đang chờ nhận còn cần SL / bạc còn lại, nên kèm các khâu đã chạy của đơn. */
 const myOrderPendingSelect = {
   ...myOrderCardSelect,
-  silverWeight: true,
   pendingStage: true,
   pendingAt: true,
   claimedByUserId: true,
@@ -167,6 +196,7 @@ const myOrderEntrySelect = {
   stoneWeight: true,
   btpRecoveredWeight: true,
   silverRecoveredWeight: true,
+  ...entryRequestsSelect,
   order: { select: myOrderCardSelect },
 } satisfies Prisma.ProductionStageEntrySelect;
 
@@ -186,7 +216,10 @@ type MyOrderEntry = Prisma.ProductionStageEntryGetPayload<{
  */
 @Injectable()
 export class ProductionSubTicketsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly materials: ProductionMaterialRequestsService,
+  ) {}
 
   /** Mở khâu trên phiếu mẹ; thợ sẽ thấy ở "Phiếu của tôi" và tự nhận. */
   async openOrderStage(
@@ -235,10 +268,14 @@ export class ProductionSubTicketsService {
           dataChangedAt: new Date(),
         },
       });
+      await logActivity(tx, order.id, actor, ACTIVITY.STAGE_OPEN, {
+        orderCode: order.code,
+        stage: dto.stage,
+      });
     });
   }
 
-  async cancelOrderPending(code: string) {
+  async cancelOrderPending(code: string, actor: AuthUserPayload) {
     return this.mutate(code, async (tx, order) => {
       const { state } = orderTicketState(order, orderEntries(order));
       if (state !== 'WAITING' && state !== 'CLAIMED') {
@@ -249,6 +286,15 @@ export class ProductionSubTicketsService {
       await tx.productionOrder.update({
         where: { id: order.id },
         data: { ...CLEAR_ORDER_PENDING, dataChangedAt: new Date() },
+      });
+      await logActivity(tx, order.id, actor, ACTIVITY.STAGE_CANCEL_OPEN, {
+        orderCode: order.code,
+        stage: order.pendingStage,
+        before: {
+          pendingByName: order.pendingByName,
+          pendingAt: order.pendingAt,
+          claimedByName: order.claimedByName,
+        },
       });
     });
   }
@@ -288,6 +334,10 @@ export class ProductionSubTicketsService {
       if (count === 0) {
         throw new BadRequestException('Phiếu đã có thợ khác nhận');
       }
+      await logActivity(tx, order.id, actor, ACTIVITY.STAGE_CLAIM, {
+        orderCode: order.code,
+        stage: order.pendingStage,
+      });
     });
   }
 
@@ -311,17 +361,27 @@ export class ProductionSubTicketsService {
           dataChangedAt: new Date(),
         },
       });
+      await logActivity(tx, order.id, actor, ACTIVITY.STAGE_UNCLAIM, {
+        orderCode: order.code,
+        stage: order.pendingStage,
+        before: {
+          claimedByName: order.claimedByName,
+          claimedAt: order.claimedAt,
+        },
+      });
     });
   }
 
-  /** Người giao xác nhận số lượng/bạc cho thợ đã tự nhận phiếu mẹ. */
+  /** Người lên đơn / admin chọn NVL xuất kho và xác nhận giao cho thợ đã tự nhận phiếu mẹ. */
   async handoverOrder(
     code: string,
     dto: HandoverInfoDto,
     actor: AuthUserPayload,
   ) {
-    return this.mutate(code, async (tx, order) => {
+    const touched: string[] = [];
+    const detail = await this.mutate(code, async (tx, order) => {
       assertOrderActive(order);
+      assertHandoverManager(order, actor);
       assertCastingReady(
         order,
         'Ghi ngày báo Đúc và ngày Đúc về trước khi giao khâu cho thợ',
@@ -365,7 +425,7 @@ export class ProductionSubTicketsService {
       const craftsmanName = actorName(craftsman);
       const changedBy = actorName(actor);
       const nextStatus = STAGE_STATUS[stage];
-      await tx.productionStageEntry.create({
+      const created = await tx.productionStageEntry.create({
         data: {
           orderId: order.id,
           stage,
@@ -374,7 +434,7 @@ export class ProductionSubTicketsService {
           handedByName: changedBy,
           handedAt,
           handedQty,
-          handedSilverWeight: new Prisma.Decimal(dto.handedSilverWeight),
+          handedSilverWeight: handedSilverOf(dto, entries),
           ...handedStoneOf(stage, dto, order),
           craftsmanUserId: craftsman.id,
           craftsmanName,
@@ -400,7 +460,23 @@ export class ProductionSubTicketsService {
                 },
         },
       });
+      touched.push(
+        ...(await this.materials.issueAtHandover(
+          tx,
+          order,
+          created,
+          dto.materials ?? [],
+          actor,
+        )),
+      );
+      await logActivity(tx, order.id, actor, ACTIVITY.STAGE_HANDOVER, {
+        orderCode: order.code,
+        stage,
+        after: { ...entrySnapshot(created), materials: dto.materials ?? [] },
+      });
     });
+    for (const code of new Set(touched)) this.materials.bustStock(code);
+    return detail;
   }
 
   async submitOrder(code: string, actor: AuthUserPayload) {
@@ -425,7 +501,10 @@ export class ProductionSubTicketsService {
             : `Phiếu ${order.code} chưa báo xong khâu nào`,
         );
       }
-      if (open.craftsmanUserId !== actor.id && !isAdmin(actor)) {
+      // Báo xong chỉ chính thợ đang giữ khâu bấm, không ai ghi hộ; gỡ nhầm thì admin gỡ được.
+      const allowed =
+        open.craftsmanUserId === actor.id || (!submitted && isAdmin(actor));
+      if (!allowed) {
         throw new ForbiddenException(
           submitted
             ? 'Chỉ thợ đang giữ khâu này mới báo xong được'
@@ -446,6 +525,22 @@ export class ProductionSubTicketsService {
               submittedByName: null,
             },
       });
+      await logActivity(
+        tx,
+        order.id,
+        actor,
+        submitted ? ACTIVITY.STAGE_SUBMIT : ACTIVITY.STAGE_UNSUBMIT,
+        {
+          orderCode: order.code,
+          stage: open.stage,
+          before: submitted
+            ? undefined
+            : {
+                submittedByName: open.submittedByName,
+                submittedAt: open.submittedAt,
+              },
+        },
+      );
       await touch(tx, order.id);
     });
   }
@@ -485,16 +580,9 @@ export class ProductionSubTicketsService {
           `Đơn đã giao khâu ${STAGE_LABEL[parentStage.stage]} trên phiếu mẹ — làm tiếp trên phiếu mẹ, không chia phiếu con được nữa`,
         );
       }
-      const rows = dto.tickets.map((ticket) => ({
-        ...ticket,
-        silver: positiveSilver(ticket.silverWeight),
-      }));
+      const rows = dto.tickets;
       const totalQty = rows.reduce((sum, ticket) => sum + ticket.qty, 0);
-      const totalSilver = rows.reduce(
-        (sum, ticket) => sum.add(ticket.silver),
-        new Prisma.Decimal(0),
-      );
-      assertWithinTotals(order, totalQty, totalSilver);
+      assertWithinTotals(order, totalQty);
 
       const firstNo = order.subTicketSeq + 1;
       const name = actorName(actor);
@@ -510,10 +598,16 @@ export class ProductionSubTicketsService {
           orderId: order.id,
           no: firstNo + index,
           qty: ticket.qty,
-          silverWeight: ticket.silver,
           note: ticket.note?.trim() || null,
           createdByUserId: actor.id,
           createdByName: name,
+        })),
+      });
+      await logActivity(tx, order.id, actor, ACTIVITY.TICKET_SPLIT, {
+        orderCode: order.code,
+        after: rows.map((ticket, index) => ({
+          no: firstNo + index,
+          qty: ticket.qty,
         })),
       });
     });
@@ -538,8 +632,7 @@ export class ProductionSubTicketsService {
           `Khâu ${STAGE_LABEL[open.stage]} của cả đơn chưa được KCS nhận lại, chưa chia phiếu con được`,
         );
       }
-      const silver = positiveSilver(dto.silverWeight);
-      assertWithinTotals(order, dto.qty, silver);
+      assertWithinTotals(order, dto.qty);
 
       // Phiếu mới đi cùng khâu các phiếu con khác đang làm, nếu chúng đang cùng một khâu.
       const stage = currentStage(order);
@@ -554,13 +647,21 @@ export class ProductionSubTicketsService {
           orderId: order.id,
           no,
           qty: dto.qty,
-          silverWeight: silver,
           note: dto.note?.trim() || null,
           pendingStage: stage,
           pendingAt: stage ? new Date() : null,
           pendingByName: stage ? name : null,
           createdByUserId: actor.id,
           createdByName: name,
+        },
+      });
+      await logActivity(tx, order.id, actor, ACTIVITY.TICKET_CREATE, {
+        orderCode: order.code,
+        subTicketNo: no,
+        stage,
+        after: {
+          qty: dto.qty,
+          note: dto.note?.trim() || null,
         },
       });
     });
@@ -576,27 +677,29 @@ export class ProductionSubTicketsService {
       assertManager(order, actor);
       assertOrderActive(order);
       const ticket = requireSubTicket(order, no);
-      const silver = positiveSilver(dto.silverWeight);
-      const changed =
-        dto.qty !== ticket.qty || !silver.equals(ticket.silverWeight);
+      const changed = dto.qty !== ticket.qty;
       if (changed && entriesOf(order, ticket.id).length > 0) {
         throw new BadRequestException(
-          `Phiếu ${ticketCode(order, ticket)} đã giao khâu, không đổi số lượng / gram được`,
+          `Phiếu ${ticketCode(order, ticket)} đã giao khâu, không đổi số lượng được`,
         );
       }
-      // Số lượng / gram của phiếu đã cộng phần cấp thêm; ghi đè ở đây là xoá sổ phần
-      // vật tư đã giao thật cho thợ, trong khi lịch sử cấp thêm vẫn ghi là có.
-      if (changed && ticket.topUps.length > 0) {
-        throw new BadRequestException(
-          `Phiếu ${ticketCode(order, ticket)} đã được cấp thêm, không đổi số lượng / gram được`,
-        );
-      }
-      assertWithinTotals(order, dto.qty, silver, ticket.id);
+      assertWithinTotals(order, dto.qty, ticket.id);
       await tx.productionSubTicket.update({
         where: { id: ticket.id },
         data: {
           qty: dto.qty,
-          silverWeight: silver,
+          note: dto.note?.trim() || null,
+        },
+      });
+      await logActivity(tx, order.id, actor, ACTIVITY.TICKET_UPDATE, {
+        orderCode: order.code,
+        subTicketNo: ticket.no,
+        before: {
+          qty: ticket.qty,
+          note: ticket.note,
+        },
+        after: {
+          qty: dto.qty,
           note: dto.note?.trim() || null,
         },
       });
@@ -615,7 +718,6 @@ export class ProductionSubTicketsService {
       const started = order.subTickets.find(
         (ticket) =>
           entriesOf(order, ticket.id).length > 0 ||
-          ticket.topUps.length > 0 ||
           ticket.outcome ||
           ticket.pendingStage ||
           ticket.claimedByUserId,
@@ -625,6 +727,10 @@ export class ProductionSubTicketsService {
           `Phiếu ${ticketCode(order, started)} đã mở hoặc bắt đầu làm, không hủy chia được`,
         );
       }
+      await logActivity(tx, order.id, actor, ACTIVITY.TICKET_CLEAR_SPLIT, {
+        orderCode: order.code,
+        before: order.subTickets.map(ticketSnapshot),
+      });
       await tx.productionSubTicket.deleteMany({ where: { orderId: order.id } });
       await touch(tx, order.id);
     });
@@ -644,13 +750,11 @@ export class ProductionSubTicketsService {
           `Phiếu ${ticketCode(order, ticket)} đã giao khâu, không xoá được`,
         );
       }
-      // Cấp thêm có thể đã nâng tổng của đơn; xoá phiếu đi thì tổng đơn treo lại ở mức
-      // cao mà không còn gì giải thích, sau đó chia được nhiều hơn mức từng dự kiến.
-      if (ticket.topUps.length > 0) {
-        throw new BadRequestException(
-          `Phiếu ${ticketCode(order, ticket)} đã được cấp thêm vật tư, không xoá được`,
-        );
-      }
+      await logActivity(tx, order.id, actor, ACTIVITY.TICKET_DELETE, {
+        orderCode: order.code,
+        subTicketNo: ticket.no,
+        before: ticketSnapshot(ticket),
+      });
       await tx.productionSubTicket.delete({ where: { id: ticket.id } });
       await touch(tx, order.id);
     });
@@ -723,11 +827,18 @@ export class ProductionSubTicketsService {
           pendingByName: actorName(actor),
         },
       });
+      for (const row of targets) {
+        await logActivity(tx, order.id, actor, ACTIVITY.STAGE_OPEN, {
+          orderCode: order.code,
+          subTicketNo: row.ticket.no,
+          stage: dto.stage,
+        });
+      }
     });
   }
 
   /** Huỷ khâu đang mở (kể cả khi thợ đã nhận nhưng chưa được giao). */
-  async cancelPending(code: string, no: number) {
+  async cancelPending(code: string, no: number, actor: AuthUserPayload) {
     return this.mutate(code, async (tx, order) => {
       const ticket = requireSubTicket(order, no);
       const { state } = subTicketState(ticket, entriesOf(order, ticket.id));
@@ -739,6 +850,16 @@ export class ProductionSubTicketsService {
       await tx.productionSubTicket.update({
         where: { id: ticket.id },
         data: CLEAR_PENDING,
+      });
+      await logActivity(tx, order.id, actor, ACTIVITY.STAGE_CANCEL_OPEN, {
+        orderCode: order.code,
+        subTicketNo: ticket.no,
+        stage: ticket.pendingStage,
+        before: {
+          pendingByName: ticket.pendingByName,
+          pendingAt: ticket.pendingAt,
+          claimedByName: ticket.claimedByName,
+        },
       });
     });
   }
@@ -777,6 +898,11 @@ export class ProductionSubTicketsService {
       if (count === 0) {
         throw new BadRequestException('Phiếu đã có thợ khác nhận');
       }
+      await logActivity(tx, order.id, actor, ACTIVITY.STAGE_CLAIM, {
+        orderCode: order.code,
+        subTicketNo: ticket.no,
+        stage: ticket.pendingStage,
+      });
     });
   }
 
@@ -803,18 +929,29 @@ export class ProductionSubTicketsService {
           claimedAt: null,
         },
       });
+      await logActivity(tx, order.id, actor, ACTIVITY.STAGE_UNCLAIM, {
+        orderCode: order.code,
+        subTicketNo: ticket.no,
+        stage: ticket.pendingStage,
+        before: {
+          claimedByName: ticket.claimedByName,
+          claimedAt: ticket.claimedAt,
+        },
+      });
     });
   }
 
-  /** Người giao cân bạc và xác nhận giao khâu cho thợ đã nhận phiếu. */
+  /** Người lên đơn / admin chọn NVL xuất kho và xác nhận giao khâu cho thợ đã nhận phiếu. */
   async handover(
     code: string,
     no: number,
     dto: HandoverInfoDto,
     actor: AuthUserPayload,
   ) {
-    return this.mutate(code, async (tx, order) => {
+    const touched: string[] = [];
+    const detail = await this.mutate(code, async (tx, order) => {
       assertOrderActive(order);
+      assertHandoverManager(order, actor);
       assertCastingReady(
         order,
         'Ghi ngày báo Đúc và ngày Đúc về trước khi giao khâu cho thợ',
@@ -845,7 +982,7 @@ export class ProductionSubTicketsService {
           'Tài khoản thợ đã nhận phiếu không còn hoạt động — gỡ lượt nhận để thợ khác nhận',
         );
       }
-      const available = subTicketAvailable(ticket, entries, ticket.topUps);
+      const available = subTicketAvailable(ticket, entries);
       const handedQty = dto.handedQty ?? available.qty;
       if (handedQty > available.qty) {
         throw new BadRequestException(
@@ -891,17 +1028,12 @@ export class ProductionSubTicketsService {
           handedByName: changedBy,
           handedAt,
           handedQty,
-          handedSilverWeight: new Prisma.Decimal(dto.handedSilverWeight),
+          handedSilverWeight: handedSilverOf(dto, entries),
           ...handedStoneOf(stage, dto, order),
           craftsmanUserId: craftsman.id,
           craftsmanName,
           note: dto.note?.trim() || null,
         },
-      });
-      // Phần cấp thêm lúc phiếu đang rảnh nay đã nằm trong số giao của khâu này.
-      await tx.productionSubTicketTopUp.updateMany({
-        where: { subTicketId: ticket.id, stageEntryId: null },
-        data: { stageEntryId: created.id },
       });
       await tx.productionOrder.update({
         where: { id: order.id },
@@ -921,7 +1053,24 @@ export class ProductionSubTicketsService {
                 },
         },
       });
+      touched.push(
+        ...(await this.materials.issueAtHandover(
+          tx,
+          order,
+          created,
+          dto.materials ?? [],
+          actor,
+        )),
+      );
+      await logActivity(tx, order.id, actor, ACTIVITY.STAGE_HANDOVER, {
+        orderCode: order.code,
+        subTicketNo: ticket.no,
+        stage,
+        after: { ...entrySnapshot(created), materials: dto.materials ?? [] },
+      });
     });
+    for (const code of new Set(touched)) this.materials.bustStock(code);
+    return detail;
   }
 
   /**
@@ -967,7 +1116,7 @@ export class ProductionSubTicketsService {
         throw new BadRequestException('Ghi lý do lỗi');
       }
 
-      const available = subTicketAvailable(ticket, entries, ticket.topUps);
+      const available = subTicketAvailable(ticket, entries);
       await tx.productionSubTicket.update({
         where: { id: ticket.id },
         data: {
@@ -981,6 +1130,17 @@ export class ProductionSubTicketsService {
             outcome === SubTicketOutcome.FINISH ? available.qty : null,
           outcomeNote: note,
         },
+      });
+      await logActivity(tx, order.id, actor, ACTIVITY.TICKET_OUTCOME, {
+        orderCode: order.code,
+        subTicketNo: ticket.no,
+        stage: lastOf(entries)?.stage ?? null,
+        after: {
+          outcome,
+          outcomeQty:
+            outcome === SubTicketOutcome.FINISH ? available.qty : null,
+        },
+        note,
       });
       await this.syncOrder(tx, order, actor);
     });
@@ -1011,6 +1171,12 @@ export class ProductionSubTicketsService {
           outcomeQty: null,
           outcomeNote: null,
         },
+      });
+      await logActivity(tx, order.id, actor, ACTIVITY.TICKET_CLEAR_OUTCOME, {
+        orderCode: order.code,
+        subTicketNo: ticket.no,
+        stage: ticket.outcomeStage,
+        before: ticketSnapshot(ticket),
       });
       await this.syncOrder(tx, order, actor);
     });
@@ -1153,8 +1319,9 @@ export class ProductionSubTicketsService {
           `Khâu ${STAGE_LABEL[open.stage]} đã được báo xong lúc ${open.submittedAt.toLocaleString('vi-VN')}`,
         );
       }
-      // Dấu vết của một hành động người thật: chỉ chính thợ đang giữ khâu được bấm.
-      if (open.craftsmanUserId !== actor.id && !isAdmin(actor)) {
+      // Dấu vết của một hành động người thật: chỉ chính thợ đang giữ khâu được bấm, kể cả
+      // admin cũng không ghi hộ.
+      if (open.craftsmanUserId !== actor.id) {
         throw new ForbiddenException(
           'Chỉ thợ đang giữ khâu này mới báo xong được',
         );
@@ -1166,6 +1333,11 @@ export class ProductionSubTicketsService {
           submittedByUserId: actor.id,
           submittedByName: actorName(actor),
         },
+      });
+      await logActivity(tx, order.id, actor, ACTIVITY.STAGE_SUBMIT, {
+        orderCode: order.code,
+        subTicketNo: ticket.no,
+        stage: open.stage,
       });
       await touch(tx, order.id);
     });
@@ -1195,136 +1367,28 @@ export class ProductionSubTicketsService {
           submittedByName: null,
         },
       });
+      await logActivity(tx, order.id, actor, ACTIVITY.STAGE_UNSUBMIT, {
+        orderCode: order.code,
+        subTicketNo: ticket.no,
+        stage: open.stage,
+        before: {
+          submittedByName: open.submittedByName,
+          submittedAt: open.submittedAt,
+        },
+      });
       await touch(tx, order.id);
     });
   }
 
-  /**
-   * Cấp thêm số lượng / bạc cho phiếu con khi thợ làm giữa chừng phát hiện thiếu.
-   *
-   * Đang có khâu mở thì cộng thẳng vào số giao của khâu đó — nếu không, công thức hao hụt
-   * (giao − nhận lại − thu hồi) sẽ ra số âm. Phiếu đang rảnh thì phần này vào khâu kế tiếp.
-   * Vượt tổng của đơn thì nâng tổng đơn theo, vì đơn thực tế tốn nhiều hơn dự kiến.
-   */
-  async topUp(
-    code: string,
-    no: number,
-    dto: SubTicketTopUpDto,
-    actor: AuthUserPayload,
-  ) {
-    return this.mutate(code, async (tx, order) => {
-      assertOrderActive(order);
-      const ticket = requireSubTicket(order, no);
-      if (ticket.outcome) {
-        throw new BadRequestException(
-          `Phiếu ${ticketCode(order, ticket)} đã chốt ${OUTCOME_LABEL[ticket.outcome]}, không cấp thêm được`,
-        );
-      }
-      const addQty = dto.qty ?? 0;
-      const addSilver = new Prisma.Decimal(dto.silverWeight ?? '0');
-      if (addQty < 0 || addSilver.lt(0)) {
-        throw new BadRequestException('Số cấp thêm không được âm');
-      }
-      if (addQty === 0 && addSilver.isZero()) {
-        throw new BadRequestException('Nhập số lượng hoặc gram bạc cấp thêm');
-      }
-
-      const entries = entriesOf(order, ticket.id);
-      const open = entries.find((entry) => !entry.returnedAt);
-      const changedBy = actorName(actor);
-
-      // Phiếu con giữ tổng đã cấp; số đang có trong tay tính ở subTicketAvailable.
-      await tx.productionSubTicket.update({
-        where: { id: ticket.id },
-        data: {
-          qty: ticket.qty + addQty,
-          silverWeight: ticket.silverWeight.add(addSilver),
-        },
-      });
-      if (open) {
-        await tx.productionStageEntry.update({
-          where: { id: open.id },
-          data: {
-            handedQty: (open.handedQty ?? 0) + addQty,
-            handedSilverWeight: (
-              open.handedSilverWeight ?? new Prisma.Decimal(0)
-            ).add(addSilver),
-          },
-        });
-      }
-      await tx.productionSubTicketTopUp.create({
-        data: {
-          subTicketId: ticket.id,
-          stageEntryId: open?.id ?? null,
-          qty: addQty,
-          silverWeight: addSilver,
-          reason: dto.reason?.trim() || null,
-          createdByUserId: actor.id,
-          createdByName: changedBy,
-        },
-      });
-
-      await this.raiseOrderTotals(
-        tx,
-        order,
-        addQty,
-        addSilver,
-        changedBy,
-        ticket,
-      );
-    });
-  }
-
-  /** Tổng phiếu con vượt tổng đơn thì nâng tổng đơn lên vừa đủ và ghi vào lịch sử trạng thái. */
-  private async raiseOrderTotals(
-    tx: Prisma.TransactionClient,
-    order: OrderDetail,
-    addQty: number,
-    addSilver: Prisma.Decimal,
-    changedBy: string,
-    ticket: SubTicket,
-  ) {
-    const totalQty =
-      order.subTickets.reduce((sum, item) => sum + item.qty, 0) + addQty;
-    const totalSilver = order.subTickets
-      .reduce((sum, item) => sum.add(item.silverWeight), new Prisma.Decimal(0))
-      .add(addSilver);
-
-    const nextQty = Math.max(order.qty, totalQty);
-    const nextSilver =
-      order.silverWeight == null || order.silverWeight.lt(totalSilver)
-        ? totalSilver
-        : order.silverWeight;
-    const raised =
-      nextQty !== order.qty ||
-      !nextSilver.equals(order.silverWeight ?? nextSilver);
-
-    await tx.productionOrder.update({
-      where: { id: order.id },
-      data: {
-        qty: nextQty,
-        silverWeight: nextSilver,
-        dataChangedAt: new Date(),
-        statusLogs: raised
-          ? {
-              create: {
-                fromStatus: order.status,
-                toStatus: order.status,
-                note: `Cấp thêm cho phiếu ${ticketCode(order, ticket)} vượt dự kiến — đơn nâng lên ${nextQty} sp · ${decStr(nextSilver)} g bạc`,
-                changedBy,
-              },
-            }
-          : undefined,
-      },
-    });
-  }
-
-  async markPrinted(code: string, no: number) {
+  async markPrinted(code: string, no: number, actor: AuthUserPayload) {
     const ticket = await this.prisma.productionSubTicket.findFirst({
       where: { no, order: { code: normalizeCode(code) } },
       select: {
         id: true,
-        order: { select: { source: true, castingSentDate: true } },
+        no: true,
+        order: {
+          select: { id: true, code: true, source: true, castingSentDate: true },
+        },
       },
     });
     if (!ticket) throw new NotFoundException('Không tìm thấy phiếu con');
@@ -1335,6 +1399,15 @@ export class ProductionSubTicketsService {
       where: { id: ticket.id },
       data: { lastPrintedAt: new Date() },
       select: { lastPrintedAt: true },
+    });
+    await this.prisma.productionActivityLog.create({
+      data: {
+        orderId: ticket.order.id,
+        ...activity(actor, ACTIVITY.TICKET_PRINT, {
+          orderCode: ticket.order.code,
+          subTicketNo: ticket.no,
+        }),
+      },
     });
     return { lastPrintedAt: updated.lastPrintedAt?.toISOString() ?? null };
   }
@@ -1375,7 +1448,10 @@ export class ProductionSubTicketsService {
           subTicketId: { not: null },
           returnedAt: null,
         },
-        include: { subTicket: { include: myTicketInclude } },
+        include: {
+          ...entryRequestsSelect,
+          subTicket: { include: myTicketInclude },
+        },
         orderBy: { handedAt: 'asc' },
       }),
       this.prisma.productionStageEntry.findMany({
@@ -1384,7 +1460,10 @@ export class ProductionSubTicketsService {
           subTicketId: { not: null },
           returnedAt: { not: null },
         },
-        include: { subTicket: { include: myTicketInclude } },
+        include: {
+          ...entryRequestsSelect,
+          subTicket: { include: myTicketInclude },
+        },
         orderBy: { returnedAt: 'desc' },
         take: RECENT_LIMIT,
       }),
@@ -1528,6 +1607,41 @@ function assertManager(
   }
 }
 
+/** Giao khâu là lúc chọn NVL xuất kho cho thợ — chỉ người lên đơn / admin. */
+function assertHandoverManager(
+  order: Pick<OrderDetail, 'createdByUserId'>,
+  actor: AuthUserPayload,
+) {
+  if (!canManage(order, actor)) {
+    throw new ForbiddenException(
+      'Chỉ người lên đơn hoặc admin được chọn NVL và xác nhận giao khâu',
+    );
+  }
+}
+
+/**
+ * TL hàng chuyển từ khâu trước. Khâu đầu được để trống nếu hàng lấy từ các dòng NVL xuất
+ * kho; nhưng phải có ít nhất một nguồn — không thì khâu không có mốc tính hao hụt.
+ */
+function handedSilverOf(
+  dto: HandoverInfoDto,
+  entries: readonly unknown[],
+): Prisma.Decimal | null {
+  const handed =
+    dto.handedSilverWeight != null && dto.handedSilverWeight !== ''
+      ? new Prisma.Decimal(dto.handedSilverWeight)
+      : null;
+  const metal = (dto.materials ?? []).some((line) => line.kind === 'METAL');
+  if (handed == null && !metal) {
+    throw new BadRequestException(
+      entries.length
+        ? 'Nhập TL hàng nhận từ khâu trước'
+        : 'Khâu đầu: chọn NVL bạc xuất cho thợ hoặc nhập TL giao',
+    );
+  }
+  return handed;
+}
+
 function assertOrderActive(order: OrderDetail) {
   if (order.status === S.DELIVERED) {
     throw new BadRequestException('Đơn đã giao');
@@ -1541,40 +1655,17 @@ function assertOrderActive(order: OrderDetail) {
   }
 }
 
-function positiveSilver(value: string) {
-  const silver = new Prisma.Decimal(value);
-  if (silver.lte(0)) {
-    throw new BadRequestException('Gram bạc của phiếu con phải lớn hơn 0');
-  }
-  return silver;
-}
-
-/** Tổng các phiếu con không vượt số lượng đơn và Tổng TL bạc. */
+/** Tổng số lượng các phiếu con không vượt số lượng đơn. */
 function assertWithinTotals(
   order: OrderDetail,
   qty: number,
-  silver: Prisma.Decimal,
   exceptId?: string,
 ) {
-  if (order.silverWeight == null) {
-    throw new BadRequestException(
-      'Nhập Tổng TL bạc của đơn trước khi chia phiếu con',
-    );
-  }
   const others = order.subTickets.filter((ticket) => ticket.id !== exceptId);
   const totalQty = others.reduce((sum, ticket) => sum + ticket.qty, qty);
-  const totalSilver = others.reduce(
-    (sum, ticket) => sum.add(ticket.silverWeight),
-    silver,
-  );
   if (totalQty > order.qty) {
     throw new BadRequestException(
       `Tổng số lượng phiếu con (${totalQty}) vượt số lượng đơn (${order.qty})`,
-    );
-  }
-  if (totalSilver.gt(order.silverWeight)) {
-    throw new BadRequestException(
-      `Tổng gram phiếu con (${decStr(totalSilver)} g) vượt Tổng TL bạc của đơn (${decStr(order.silverWeight)} g)`,
     );
   }
 }
@@ -1648,6 +1739,47 @@ function parentBaseItem(order: MyOrderCard) {
   };
 }
 
+/**
+ * Phần NVL của một khâu cho thẻ phiếu: bạc vào khâu (TL giao + bạc xuất), hao hụt có tính phần
+ * xuất thêm, các dòng đã nhận và số yêu cầu còn chờ kho.
+ */
+function entryMaterials(
+  entry: Parameters<typeof silverLossOf>[0] & { returnedAt: Date | null },
+  requests: EntryRequests,
+) {
+  const issued = issuedOf(requests);
+  const silverIn = silverInOf(entry, issued.metal);
+  const loss = silverLossOf(entry, issued.metal);
+  return {
+    silverWeight: silverIn != null ? decStr(silverIn) : null,
+    silverLoss: loss != null ? decStr(loss) : null,
+    silverLossPercent: (() => {
+      const percent = lossPercentOf(loss, silverIn);
+      return percent != null ? decStr(percent) : null;
+    })(),
+    issuedLines: requests
+      .filter((request) => request.status === MaterialRequestStatus.ISSUED)
+      .map((request) => ({
+        atHandover: request.atHandover,
+        sku: request.material.sku,
+        name: request.material.name,
+        unit: request.material.unit.name,
+        qty: request.issuedQty != null ? decStr(request.issuedQty) : null,
+        weight:
+          request.issuedWeight != null ? decStr(request.issuedWeight) : null,
+      })),
+    pendingRequests: requests.filter(
+      (request) => request.status === MaterialRequestStatus.PENDING,
+    ).length,
+  };
+}
+
+const NO_MATERIALS = {
+  silverLossPercent: null,
+  issuedLines: [],
+  pendingRequests: 0,
+};
+
 function parentPendingItem(order: MyOrderPending) {
   // `stages` đã lọc sẵn khâu cấp đơn ngay trong câu truy vấn.
   const entries = order.stages;
@@ -1668,12 +1800,13 @@ function parentPendingItem(order: MyOrderPending) {
     returnedByName: null,
     returnedSilverWeight: null,
     silverLoss: null,
+    ...NO_MATERIALS,
   };
 }
 
 function parentEntryItem(entry: MyOrderEntry) {
   const { order } = entry;
-  const loss = silverLossOf(entry);
+  const materials = entryMaterials(entry, entry.materialRequests);
   return {
     ...parentBaseItem(order),
     state: entry.returnedAt
@@ -1684,10 +1817,6 @@ function parentEntryItem(entry: MyOrderEntry) {
     submittedAt: entry.submittedAt?.toISOString() ?? null,
     stage: entry.stage,
     qty: entry.handedQty ?? order.qty,
-    silverWeight:
-      entry.handedSilverWeight != null
-        ? decStr(entry.handedSilverWeight)
-        : null,
     pendingAt: null,
     claimedAt: null,
     handedAt: entry.handedAt.toISOString(),
@@ -1698,19 +1827,19 @@ function parentEntryItem(entry: MyOrderEntry) {
       entry.returnedSilverWeight != null
         ? decStr(entry.returnedSilverWeight)
         : null,
-    silverLoss: loss != null ? decStr(loss) : null,
+    ...materials,
   };
 }
 
 function pendingItem(row: MyTicketRow) {
   const { state } = subTicketState(row, row.stages);
-  const available = subTicketAvailable(row, row.stages, row.topUps);
+  const available = subTicketAvailable(row, row.stages);
   return {
     ...baseItem(row),
     state,
     stage: row.pendingStage,
     qty: available.qty,
-    silverWeight: decStr(available.silver),
+    silverWeight: available.silver != null ? decStr(available.silver) : null,
     pendingAt: row.pendingAt?.toISOString() ?? null,
     claimedAt: row.claimedAt?.toISOString() ?? null,
     submittedAt: null,
@@ -1720,11 +1849,15 @@ function pendingItem(row: MyTicketRow) {
     returnedByName: null,
     returnedSilverWeight: null,
     silverLoss: null,
+    ...NO_MATERIALS,
   };
 }
 
-function entryItem(row: MyTicketRow, entry: StageEntry) {
-  const loss = silverLossOf(entry);
+function entryItem(
+  row: MyTicketRow,
+  entry: StageEntry & { materialRequests: EntryRequests },
+) {
+  const materials = entryMaterials(entry, entry.materialRequests);
   return {
     ...baseItem(row),
     state: entry.returnedAt
@@ -1735,10 +1868,6 @@ function entryItem(row: MyTicketRow, entry: StageEntry) {
     submittedAt: entry.submittedAt?.toISOString() ?? null,
     stage: entry.stage,
     qty: entry.handedQty ?? row.qty,
-    silverWeight:
-      entry.handedSilverWeight != null
-        ? decStr(entry.handedSilverWeight)
-        : null,
     pendingAt: null,
     claimedAt: null,
     handedAt: entry.handedAt.toISOString(),
@@ -1749,6 +1878,6 @@ function entryItem(row: MyTicketRow, entry: StageEntry) {
       entry.returnedSilverWeight != null
         ? decStr(entry.returnedSilverWeight)
         : null,
-    silverLoss: loss != null ? decStr(loss) : null,
+    ...materials,
   };
 }

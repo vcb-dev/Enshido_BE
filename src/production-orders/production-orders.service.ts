@@ -4,8 +4,9 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
 import {
+  MaterialRequestKind,
+  MaterialRequestStatus,
   Prisma,
   ProductionSource,
   ProductionStage,
@@ -20,6 +21,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { recordEditLog } from '../edit-logs/edit-log';
 import { CloudinaryService } from '../uploads/cloudinary.service';
 import { decStr, METAL_KIND_LABEL } from '../util/money';
+import { ACTIVITY, activity, entrySnapshot, logActivity } from './activity-log';
+import { issuedOf, silverInOf } from './stage-math';
 import { InflightMap, TtlCache } from '../util/ttl-cache';
 import {
   CastingDto,
@@ -32,7 +35,6 @@ import {
   ReturnStageDto,
   StageLaborDto,
   UpsertProductionOrderDto,
-  type ProductionNvlLineDto,
 } from './dto/production-order.dto';
 import {
   actorName,
@@ -48,7 +50,9 @@ import {
   orderListStatuses,
   orderTicketAvailable,
   orderTicketState,
+  type MaterialRequest,
   type OrderDetail,
+  requestsOf,
   requireStage,
   STAGE_LABEL,
   STAGE_STATUS,
@@ -62,22 +66,6 @@ import {
 } from './order-detail';
 
 const S = ProductionStatus;
-type WarehouseMaterial = {
-  id: string;
-  name: string;
-  sku: string | null;
-  warehouseId: string;
-  unit: { id: string; name: string };
-};
-
-type ResolvedNvlLine = {
-  material: WarehouseMaterial;
-  qty: number;
-  platingColor: string | null;
-  stoneWeight: string | null;
-  laserEngraving: string | null;
-  otherRequirements: string | null;
-};
 
 /**
  * Đổi tay được. Đúc đi qua báo Đúc, các khâu đi qua giao thợ, Đã giao đến từ phiếu xuất
@@ -87,20 +75,17 @@ const MANUAL_STATUSES: ProductionStatus[] = [S.NEW, S.REDO_3D, S.DEFECT];
 
 const DEFAULT_LEAD_TIMES = ['3-5 ngày', '7-15 ngày', '15-30 ngày'];
 
-const SUGGEST_FIELDS = ['closedBy', 'leadTime', 'debtStatus', 'customerName'] as const;
+const SUGGEST_FIELDS = [
+  'closedBy',
+  'leadTime',
+  'debtStatus',
+  'customerName',
+] as const;
 const SUGGEST_COLUMNS = {
   closedBy: Prisma.raw('"closed_by"'),
   leadTime: Prisma.raw('"lead_time"'),
   debtStatus: Prisma.raw('"debt_status"'),
   customerName: Prisma.raw('"customer_name"'),
-} as const;
-
-const warehouseMaterialSelect = {
-  id: true,
-  name: true,
-  sku: true,
-  warehouseId: true,
-  unit: { select: { id: true, name: true } },
 } as const;
 
 const CREATE_RETRIES = 3;
@@ -286,7 +271,6 @@ export class ProductionOrdersService {
               id: true,
               no: true,
               qty: true,
-              silverWeight: true,
               note: true,
               createdAt: true,
               pendingStage: true,
@@ -384,37 +368,45 @@ export class ProductionOrdersService {
   }
 
   private async loadLookups() {
-    const [users, materialTypes, closers, usedStoneTypes, leadTimes, debts, customers, shipmentCustomers] =
-      await Promise.all([
-        this.prisma.user.findMany({
-          where: { isActive: true },
-          select: {
-            id: true,
-            username: true,
-            fullName: true,
-            roleCode: true,
-            extraRoles: true,
-            allowedScreens: true,
-          },
-          orderBy: { fullName: 'asc' },
-        }),
-        this.prisma.materialType.findMany({
-          select: { code: true, name: true },
-          orderBy: { sortOrder: 'asc' },
-        }),
-        this.distinctValues('closedBy'),
-        this.usedStoneTypes(),
-        this.distinctValues('leadTime'),
-        this.distinctValues('debtStatus'),
-        this.distinctValues('customerName'),
-        this.prisma.shipment.findMany({
-          where: { customerName: { not: '' } },
-          distinct: ['customerName'],
-          select: { customerName: true },
-          orderBy: { customerName: 'asc' },
-          take: 200,
-        }),
-      ]);
+    const [
+      users,
+      materialTypes,
+      closers,
+      usedStoneTypes,
+      leadTimes,
+      debts,
+      customers,
+      shipmentCustomers,
+    ] = await Promise.all([
+      this.prisma.user.findMany({
+        where: { isActive: true },
+        select: {
+          id: true,
+          username: true,
+          fullName: true,
+          roleCode: true,
+          extraRoles: true,
+          allowedScreens: true,
+        },
+        orderBy: { fullName: 'asc' },
+      }),
+      this.prisma.materialType.findMany({
+        select: { code: true, name: true },
+        orderBy: { sortOrder: 'asc' },
+      }),
+      this.distinctValues('closedBy'),
+      this.usedStoneTypes(),
+      this.distinctValues('leadTime'),
+      this.distinctValues('debtStatus'),
+      this.distinctValues('customerName'),
+      this.prisma.shipment.findMany({
+        where: { customerName: { not: '' } },
+        distinct: ['customerName'],
+        select: { customerName: true },
+        orderBy: { customerName: 'asc' },
+        take: 200,
+      }),
+    ]);
 
     return {
       users: users.map((user) => ({
@@ -678,8 +670,12 @@ export class ProductionOrdersService {
               line.material.metalKind)
             : null,
           sizeLabel: line.material.sizeLabel,
-          stoneWeight: line.material.stoneWeight != null ? decStr(line.material.stoneWeight) : null,
-          weight: line.material.weight != null ? decStr(line.material.weight) : null,
+          stoneWeight:
+            line.material.stoneWeight != null
+              ? decStr(line.material.stoneWeight)
+              : null,
+          weight:
+            line.material.weight != null ? decStr(line.material.weight) : null,
           note: line.material.note,
           imageUrl: line.material.images[0]?.url ?? null,
         })),
@@ -752,30 +748,44 @@ export class ProductionOrdersService {
 
   async addCost(code: string, dto: OrderCostDto, actor: AuthUserPayload) {
     const order = await this.requireCostEditable(code);
-    await this.prisma.productionOrderCost.create({
-      data: {
-        orderId: order.id,
-        name: requireText(dto.name, 'Nhập tên khoản chi phí'),
-        amount: new Prisma.Decimal(dto.amount),
-        note: dto.note?.trim() || null,
-        createdByName: actorName(actor),
-      },
+    const data = {
+      name: requireText(dto.name, 'Nhập tên khoản chi phí'),
+      amount: new Prisma.Decimal(dto.amount),
+      note: dto.note?.trim() || null,
+    };
+    await this.prisma.runTx(async (tx) => {
+      await tx.productionOrderCost.create({
+        data: { orderId: order.id, ...data, createdByName: actorName(actor) },
+      });
+      await logActivity(tx, order.id, actor, ACTIVITY.COST_ADD, {
+        orderCode: order.code,
+        after: data,
+      });
     });
     return { success: true };
   }
 
-  async updateCost(code: string, costId: string, dto: OrderCostDto, actor: AuthUserPayload) {
+  async updateCost(
+    code: string,
+    costId: string,
+    dto: OrderCostDto,
+    actor: AuthUserPayload,
+  ) {
     const order = await this.requireCostEditable(code);
-    const { count } = await this.prisma.productionOrderCost.updateMany({
-      where: { id: costId, orderId: order.id },
-      data: {
-        name: requireText(dto.name, 'Nhập tên khoản chi phí'),
-        amount: new Prisma.Decimal(dto.amount),
-        note: dto.note?.trim() || null,
-      },
+    const before = await this.requireCost(order.id, costId);
+    const data = {
+      name: requireText(dto.name, 'Nhập tên khoản chi phí'),
+      amount: new Prisma.Decimal(dto.amount),
+      note: dto.note?.trim() || null,
+    };
+    await this.prisma.runTx(async (tx) => {
+      await tx.productionOrderCost.update({ where: { id: before.id }, data });
+      await logActivity(tx, order.id, actor, ACTIVITY.COST_UPDATE, {
+        orderCode: order.code,
+        before,
+        after: data,
+      });
     });
-    if (count === 0)
-      throw new NotFoundException('Không tìm thấy khoản chi phí');
     await recordEditLog(this.prisma, {
       entityType: 'order_cost',
       entityId: costId,
@@ -785,14 +795,26 @@ export class ProductionOrdersService {
     return { success: true };
   }
 
-  async removeCost(code: string, costId: string) {
+  async removeCost(code: string, costId: string, actor: AuthUserPayload) {
     const order = await this.requireCostEditable(code);
-    const { count } = await this.prisma.productionOrderCost.deleteMany({
-      where: { id: costId, orderId: order.id },
+    const before = await this.requireCost(order.id, costId);
+    await this.prisma.runTx(async (tx) => {
+      await tx.productionOrderCost.delete({ where: { id: before.id } });
+      await logActivity(tx, order.id, actor, ACTIVITY.COST_DELETE, {
+        orderCode: order.code,
+        before,
+      });
     });
-    if (count === 0)
-      throw new NotFoundException('Không tìm thấy khoản chi phí');
     return { success: true };
+  }
+
+  private async requireCost(orderId: string, costId: string) {
+    const cost = await this.prisma.productionOrderCost.findFirst({
+      where: { id: costId, orderId },
+      select: { id: true, name: true, amount: true, note: true },
+    });
+    if (!cost) throw new NotFoundException('Không tìm thấy khoản chi phí');
+    return cost;
   }
 
   /** Sửa tiền công một khâu ngay ở phần chi phí, không phải gỡ KCS nhận lại. */
@@ -805,7 +827,14 @@ export class ProductionOrdersService {
     const order = await this.requireCostEditable(code);
     const entry = await this.prisma.productionStageEntry.findFirst({
       where: { id: stageId, orderId: order.id },
-      select: { id: true, returnedAt: true },
+      select: {
+        id: true,
+        stage: true,
+        attempt: true,
+        returnedAt: true,
+        laborCost: true,
+        subTicket: { select: { no: true } },
+      },
     });
     if (!entry) throw new NotFoundException('Không tìm thấy khâu trên đơn');
     if (!entry.returnedAt) {
@@ -813,13 +842,24 @@ export class ProductionOrdersService {
         'Khâu chưa được KCS nhận lại — tiền công nhập ở bước nhận lại',
       );
     }
-    await this.prisma.productionStageEntry.update({
-      where: { id: entry.id },
-      data: { laborCost: decimalOrNull(dto.laborCost) },
-    });
+    const laborCost = decimalOrNull(dto.laborCost);
     await this.prisma.productionOrder.update({
       where: { id: order.id },
-      data: { dataChangedAt: new Date() },
+      data: {
+        dataChangedAt: new Date(),
+        stages: {
+          update: { where: { id: entry.id }, data: { laborCost } },
+        },
+        activityLogs: {
+          create: activity(actor, ACTIVITY.STAGE_LABOR, {
+            orderCode: order.code,
+            subTicketNo: entry.subTicket?.no,
+            stage: entry.stage,
+            before: { attempt: entry.attempt, laborCost: entry.laborCost },
+            after: { attempt: entry.attempt, laborCost },
+          }),
+        },
+      },
     });
     await recordEditLog(this.prisma, {
       entityType: 'stage_labor',
@@ -834,7 +874,7 @@ export class ProductionOrdersService {
   private async requireCostEditable(code: string) {
     const order = await this.prisma.productionOrder.findUnique({
       where: { code: normalizeCode(code) },
-      select: { id: true, status: true },
+      select: { id: true, code: true, status: true },
     });
     if (!order) throw new NotFoundException('Không tìm thấy đơn sản xuất');
     if (order.status === S.DELIVERED) {
@@ -847,6 +887,26 @@ export class ProductionOrdersService {
 
   async detail(code: string) {
     return toDetail(await this.requireOrder(code));
+  }
+
+  /** Nhật ký thao tác của đơn, mới nhất trước. Tìm theo mã nên đơn đã xoá vẫn xem được. */
+  async activityLog(code: string) {
+    const rows = await this.prisma.productionActivityLog.findMany({
+      where: { orderCode: normalizeCode(code) },
+      orderBy: { createdAt: 'desc' },
+      take: 500,
+    });
+    return rows.map((row) => ({
+      id: row.id,
+      subTicketNo: row.subTicketNo,
+      stage: row.stage,
+      action: row.action,
+      actorName: row.actorName,
+      before: row.before,
+      after: row.after,
+      note: row.note,
+      createdAt: row.createdAt.toISOString(),
+    }));
   }
 
   /**
@@ -893,8 +953,7 @@ export class ProductionOrdersService {
   async create(dto: UpsertProductionOrderDto, actor: AuthUserPayload) {
     const started = Date.now();
     this.logger.log(`Lên đơn ${dto.source}…`);
-    const fields = await this.orderFields(dto);
-    const { btpMaterial, nvlMaterial, nvlLines, btpQty, ...data } = fields;
+    const data = await this.orderFields(dto);
     const images = this.newImages(dto.images, new Set());
     const changedBy = actorName(actor);
 
@@ -918,55 +977,25 @@ export class ProductionOrdersService {
               createdByUserId: actor.id,
               images: { create: images },
               statusLogs: { create: { toStatus: initialStatus, changedBy } },
+              activityLogs: {
+                create: activity(actor, ACTIVITY.ORDER_CREATE, {
+                  orderCode: orderCode(seq),
+                  after: orderAuditFields(data),
+                }),
+              },
             },
             include: {
               images: { orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }] },
               statusLogs: { orderBy: { changedAt: 'desc' } },
             },
           });
-          if (nvlLines.length) {
-            await this.replaceBomLines(tx, row.id, nvlLines);
-          } else if (data.sourceOrderCode) {
-            await this.copyBomFromSource(tx, row.id, data.sourceOrderCode);
-          }
-          await this.issueAutoStockForOrder(tx, {
-            orderId: row.id,
-            orderCode: row.code,
-            issuedAt: data.receivedDate,
-            issuedBy: changedBy,
-            actorId: actor.id,
-            source: data.source,
-            btpMaterial,
-            btpQty: btpQty ?? data.finishedProductQty ?? data.qty,
-            nvlIssues: nvlLines.length
-              ? nvlLines.map((line) => ({
-                  material: line.material,
-                  qty: line.qty,
-                }))
-              : nvlMaterial
-                ? [{ material: nvlMaterial, qty: data.stoneCount ?? 0 }]
-                : [],
-            sourceOrderCode: data.sourceOrderCode,
-            finishedProductQty: data.finishedProductQty ?? 0,
-          });
           return row;
         });
-        if (btpMaterial) this.inventory.bustBtpStock();
-        if (nvlMaterial || nvlLines.length) this.inventory.bustNvlStock();
         await this.touchSiblings([data.parentId], created.id);
         this.logger.log(
           `Đã lên đơn ${created.code} (${Date.now() - started}ms)`,
         );
-        return toDetail(
-          asCreatedDetail(
-            created,
-            btpMaterial,
-            nvlMaterial,
-            Number(Boolean(btpMaterial)) +
-              (nvlLines.length || Number(Boolean(nvlMaterial))),
-            nvlLines,
-          ),
-        );
+        return toDetail(asCreatedDetail(created));
       } catch (error) {
         // Hai người lên đơn cùng lúc có thể lấy trùng số — thử lại với số kế tiếp.
         if (isUniqueViolation(error) && attempt < CREATE_RETRIES) continue;
@@ -990,29 +1019,11 @@ export class ProductionOrdersService {
         'Đơn đã vào kho thành phẩm, không đổi số lượng được',
       );
     }
-    const { btpMaterial, nvlMaterial, nvlLines, btpQty, ...fields } =
-      await this.orderFields(dto, order.id);
-    assertCoversSubTickets(order, fields.qty, fields.silverWeight);
-    const nextNvlKey = nvlLines.length
-      ? nvlLines.map((line) => `${line.material.id}:${line.qty}`).join('|')
-      : `${fields.nvlMaterialId ?? ''}:${fields.stoneCount ?? 0}`;
-    const prevNvlKey = order.bomLines.length
-      ? order.bomLines
-          .map((line) => `${line.materialId}:${line.qty ?? 0}`)
-          .join('|')
-      : `${order.nvlMaterialId ?? ''}:${order.stoneCount ?? 0}`;
-    // Đổi loại đơn / mã / số lượng tự xuất thì hoàn phiếu cũ và xuất lại.
-    const reissue =
-      fields.source !== order.source ||
-      fields.btpMaterialId !== order.btpMaterialId ||
-      fields.sourceOrderCode !== order.sourceOrderCode ||
-      (fields.finishedProductQty ?? fields.qty) !==
-        (order.finishedProductQty ?? order.qty) ||
-      nextNvlKey !== prevNvlKey ||
-      (fields.source === ProductionSource.BTP && fields.qty !== order.qty);
-    if (reissue && order.stages.length > 0) {
+    const fields = await this.orderFields(dto, order.id);
+    assertCoversSubTickets(order, fields.qty);
+    if (fields.source !== order.source && order.stages.length > 0) {
       throw new BadRequestException(
-        'Đơn đã giao khâu cho thợ, không đổi loại đơn, mã hoặc số lượng xuất kho được',
+        'Đơn đã giao khâu cho thợ, không đổi loại đơn được',
       );
     }
     if (
@@ -1037,7 +1048,21 @@ export class ProductionOrdersService {
       order.stages.length === 0;
     const changedBy = actorName(actor);
 
+    const changes = diffAudit(
+      orderAuditFields(order),
+      orderAuditFields(fields),
+    );
+    const imagesChanged =
+      removed.length > 0 || images.some((i) => !existing.has(i.publicId));
     const updated = await this.prisma.runTx(async (tx) => {
+      if (changes || imagesChanged) {
+        await logActivity(tx, order.id, actor, ACTIVITY.ORDER_UPDATE, {
+          orderCode: order.code,
+          before: changes?.before,
+          after: changes?.after,
+          note: imagesChanged ? 'Có đổi ảnh' : null,
+        });
+      }
       await tx.productionOrder.update({
         where: { id: order.id },
         data: {
@@ -1064,51 +1089,8 @@ export class ProductionOrdersService {
         reason: dto.editReason,
         changedBy,
       });
-      if (nvlLines.length) {
-        await this.replaceBomLines(tx, order.id, nvlLines);
-      } else if (fields.sourceOrderCode !== order.sourceOrderCode) {
-        await tx.productionOrderBomLine.deleteMany({
-          where: { orderId: order.id },
-        });
-        await this.copyBomFromSource(tx, order.id, fields.sourceOrderCode);
-      }
-      if (reissue) {
-        await this.inventory.revokeBtpForOrder(tx, order.id);
-        await this.revokeFinishedGoodsForOrder(tx, order.id);
-        await this.issueAutoStockForOrder(tx, {
-          orderId: order.id,
-          orderCode: order.code,
-          issuedAt: fields.receivedDate,
-          issuedBy: changedBy,
-          actorId: actor.id,
-          source: fields.source,
-          btpMaterial,
-          btpQty: btpQty ?? fields.finishedProductQty ?? fields.qty,
-          nvlIssues: nvlLines.length
-            ? nvlLines.map((line) => ({
-                material: line.material,
-                qty: line.qty,
-              }))
-            : nvlMaterial
-              ? [{ material: nvlMaterial, qty: fields.stoneCount ?? 0 }]
-              : [],
-          sourceOrderCode: fields.sourceOrderCode,
-          finishedProductQty: fields.finishedProductQty ?? 0,
-        });
-      }
       return order.id;
     });
-    if (reissue) {
-      if (btpMaterial || order.source === ProductionSource.BTP)
-        this.inventory.bustBtpStock();
-      if (
-        nvlMaterial ||
-        order.source === ProductionSource.NVL ||
-        order.source === ProductionSource.BTP
-      ) {
-        this.inventory.bustNvlStock();
-      }
-    }
     this.cache.delete('lookups');
     if (order.parentId !== fields.parentId) {
       await this.touchSiblings([order.parentId, fields.parentId], order.id);
@@ -1122,7 +1104,7 @@ export class ProductionOrdersService {
     );
   }
 
-  async remove(code: string) {
+  async remove(code: string, actor: AuthUserPayload) {
     const order = await this.requireOrder(code);
     const freshBtp =
       order.source === ProductionSource.BTP && order.status === S.FILING;
@@ -1151,6 +1133,11 @@ export class ProductionOrdersService {
       );
     }
     await this.prisma.runTx(async (tx) => {
+      // Ghi trước khi xoá: nhật ký giữ mã đơn, `orderId` tự về null khi đơn mất.
+      await logActivity(tx, order.id, actor, ACTIVITY.ORDER_DELETE, {
+        orderCode: order.code,
+        before: orderAuditFields(order),
+      });
       await this.inventory.revokeBtpForOrder(tx, order.id);
       await this.revokeFinishedGoodsForOrder(tx, order.id);
       await tx.productionOrder.delete({ where: { id: order.id } });
@@ -1275,6 +1262,14 @@ export class ProductionOrdersService {
             changedBy: actorName(actor),
           },
         },
+        activityLogs: {
+          create: activity(actor, ACTIVITY.ORDER_STATUS, {
+            orderCode: order.code,
+            before: { status: order.status },
+            after: { status: target },
+            note: logNote || null,
+          }),
+        },
       },
       include: detailInclude,
     });
@@ -1307,9 +1302,6 @@ export class ProductionOrdersService {
         'Đơn đã chia phiếu con, không bỏ ngày Đúc về được',
       );
     }
-    // Bỏ trống Tổng TL bạc thì giữ số cũ.
-    const silverWeight = decimalOrNull(dto.silverWeight);
-    if (silverWeight) assertCoversSubTickets(order, order.qty, silverWeight);
     // Báo Đúc lần đầu hoặc đúc lại sau lỗi thì đơn chuyển sang Đúc.
     const toCasting = (
       [S.NEW, S.REDO_3D, S.DEFECT] as ProductionStatus[]
@@ -1320,8 +1312,22 @@ export class ProductionOrdersService {
       data: {
         castingSentDate: sentDate,
         castingReturnedDate: returnedDate,
-        ...(silverWeight ? { silverWeight } : null),
         dataChangedAt: new Date(),
+        activityLogs: {
+          create: activity(actor, ACTIVITY.ORDER_CASTING, {
+            orderCode: order.code,
+            before: {
+              status: order.status,
+              castingSentDate: ymdOrNull(order.castingSentDate),
+              castingReturnedDate: ymdOrNull(order.castingReturnedDate),
+            },
+            after: {
+              status: toCasting ? S.CASTING : order.status,
+              castingSentDate: ymd(sentDate),
+              castingReturnedDate: ymdOrNull(returnedDate),
+            },
+          }),
+        },
         ...(toCasting
           ? {
               status: S.CASTING,
@@ -1342,11 +1348,22 @@ export class ProductionOrdersService {
   }
 
   /** Sửa thông tin giao khi KCS chưa nhận lại. Người giao giữ nguyên. */
-  async updateHandover(code: string, stageId: string, dto: HandoverStageDto) {
+  async updateHandover(
+    code: string,
+    stageId: string,
+    dto: HandoverStageDto,
+    actor: AuthUserPayload,
+  ) {
     const order = await this.requireOrder(code);
     const entry = requireStage(order, stageId);
     if (entry.returnedAt) {
       throw new BadRequestException('KCS đã nhận lại khâu này, không sửa được');
+    }
+    // NVL xuất lúc giao đã thành phiếu xuất kho — sửa thông tin giao không thêm / bớt được.
+    if (dto.materials?.length) {
+      throw new BadRequestException(
+        'NVL đã xuất lúc giao không sửa ở đây — thiếu thì thợ xin xuất thêm',
+      );
     }
     // Cả phiếu mẹ và phiếu con đều giữ nguyên người đã tự nhận khâu.
     if (dto.craftsmanUserId !== entry.craftsmanUserId) {
@@ -1355,26 +1372,37 @@ export class ProductionOrdersService {
       );
     }
     const craftsman = await this.resolveUser(dto.craftsmanUserId);
+    const next = {
+      craftsmanUserId: craftsman.id,
+      craftsmanName: craftsman.name,
+      handedAt: new Date(dto.handedAt),
+      handedQty:
+        dto.handedQty ?? (entry.subTicketId ? entry.handedQty : order.qty),
+      handedSilverWeight:
+        dto.handedSilverWeight != null && dto.handedSilverWeight !== ''
+          ? new Prisma.Decimal(dto.handedSilverWeight)
+          : entry.handedSilverWeight,
+      ...handedStoneOf(entry.stage, dto, order, entry.id),
+      note: dto.note?.trim() || null,
+    };
 
     const updated = await this.prisma.productionOrder.update({
       where: { id: order.id },
       data: {
         dataChangedAt: new Date(),
-        stages: {
-          update: {
-            where: { id: entry.id },
-            data: {
-              craftsmanUserId: craftsman.id,
-              craftsmanName: craftsman.name,
-              handedAt: new Date(dto.handedAt),
-              handedQty:
-                dto.handedQty ??
-                (entry.subTicketId ? entry.handedQty : order.qty),
-              handedSilverWeight: new Prisma.Decimal(dto.handedSilverWeight),
-              ...handedStoneOf(entry.stage, dto, order, entry.id),
-              note: dto.note?.trim() || null,
+        stages: { update: { where: { id: entry.id }, data: next } },
+        activityLogs: {
+          create: activity(actor, ACTIVITY.STAGE_HANDOVER_EDIT, {
+            orderCode: order.code,
+            subTicketNo: ticketNoOf(order, entry.subTicketId),
+            stage: entry.stage,
+            before: entrySnapshot(entry),
+            after: {
+              attempt: entry.attempt,
+              ...next,
+              craftsmanUserId: undefined,
             },
-          },
+          }),
         },
       },
       include: detailInclude,
@@ -1400,6 +1428,16 @@ export class ProductionOrdersService {
         'Thợ chưa báo làm xong khâu này — chờ thợ bấm "Đã làm xong" rồi KCS mới nhận lại',
       );
     }
+    const requests = requestsOf(order, entry.id);
+    const pending = requests.filter(
+      (request) => request.status === MaterialRequestStatus.PENDING,
+    ).length;
+    if (pending > 0) {
+      throw new BadRequestException(
+        `Còn ${pending} yêu cầu xuất NVL của khâu này chưa xử lý — xuất hoặc từ chối trước khi KCS nhận lại`,
+      );
+    }
+    const issued = issuedOf(requests);
     const returnedAt = new Date(dto.returnedAt);
     if (returnedAt < entry.handedAt) {
       throw new BadRequestException(
@@ -1418,38 +1456,63 @@ export class ProductionOrdersService {
     const silverRecovered = decimalOrNull(dto.silverRecoveredWeight);
     // Đá chỉ gắn ở khâu Vào đá; khâu khác gửi lên là sai luồng.
     const isStoneStage = entry.stage === ProductionStage.STONE_SETTING;
-    if (!isStoneStage && (dto.stoneCount != null || dto.stoneWeight != null)) {
+    if (
+      !isStoneStage &&
+      (dto.stoneCount != null ||
+        dto.stoneWeight != null ||
+        dto.returnedStoneCount != null)
+    ) {
       throw new BadRequestException(
         `Chỉ khâu ${STAGE_LABEL[ProductionStage.STONE_SETTING]} mới ghi đá gắn thêm`,
       );
     }
-    const stoneCount = isStoneStage ? (dto.stoneCount ?? null) : null;
-    const stoneWeight = isStoneStage ? decimalOrNull(dto.stoneWeight) : null;
-    // Gắn lên hàng thì nhiều nhất bằng số đá đã phát; phần dư là đá trả lại kho.
+    // Đá phát cho thợ = đá giao lúc nhận việc + đá xuất thêm theo yêu cầu.
+    const stonesHanded =
+      entry.handedStoneCount != null || issued.stones > 0
+        ? (entry.handedStoneCount ?? 0) + issued.stones
+        : null;
+    const stoneWeightHanded = stoneWeightHandedOf(entry, requests);
+    // Sau khâu Vào đá, đá và bạc đã thành một BTP — KCS chỉ cân lại cả cụm, không tách đá.
+    // Không gửi số đá gắn thì coi như gắn hết số đã phát để mốc cân vẫn là bạc giao + đá.
+    const returnedStoneCount = isStoneStage
+      ? (dto.returnedStoneCount ?? null)
+      : null;
+    const stoneCount = isStoneStage
+      ? (dto.stoneCount ??
+        (stonesHanded != null
+          ? Math.max(0, stonesHanded - (returnedStoneCount ?? 0))
+          : null))
+      : null;
+    const stoneWeight = isStoneStage
+      ? (decimalOrNull(dto.stoneWeight) ?? stoneWeightHanded)
+      : null;
+    // Gắn lên + trả lại nhiều nhất bằng số đá đã phát; phần thiếu là đá mất.
     if (
-      entry.handedStoneCount != null &&
-      stoneCount != null &&
-      stoneCount > entry.handedStoneCount
+      stonesHanded != null &&
+      (stoneCount ?? 0) + (returnedStoneCount ?? 0) > stonesHanded
     ) {
       throw new BadRequestException(
-        `Số viên đá gắn không được nhiều hơn số đá đã giao (${entry.handedStoneCount})`,
+        `Đá gắn cộng đá trả lại không được nhiều hơn số đá đã phát (${stonesHanded} viên)`,
       );
     }
     if (
-      entry.handedStoneWeight != null &&
+      stoneWeightHanded != null &&
       stoneWeight != null &&
-      stoneWeight.gt(entry.handedStoneWeight)
+      stoneWeight.gt(stoneWeightHanded)
     ) {
       throw new BadRequestException(
-        `Trọng lượng đá gắn không được nhiều hơn TL đá đã giao (${decStr(entry.handedStoneWeight)} g)`,
+        `Trọng lượng đá gắn không được nhiều hơn TL đá đã phát (${decStr(stoneWeightHanded)} g)`,
       );
     }
     // Hàng về không thể nặng hơn hàng giao — chặn ở đây để hao hụt không bao giờ âm.
-    // Khâu Vào đá cân cả cụm nên mốc là TL bạc giao cộng TL đá vừa gắn.
-    if (entry.handedSilverWeight != null) {
+    // Mốc = bạc vào khâu (giao + xuất thêm); khâu Vào đá cân cả cụm nên cộng TL đá vừa gắn.
+    const silverIn = silverInOf(entry, issued.metal);
+    if (silverIn != null) {
       const zero = new Prisma.Decimal(0);
-      const limit = entry.handedSilverWeight.add(stoneWeight ?? zero);
-      const label = isStoneStage ? 'TL đã giao cộng đá' : 'TL đã giao';
+      const limit = silverIn.add(stoneWeight ?? zero);
+      const label = isStoneStage
+        ? 'bạc vào khâu cộng đá'
+        : 'bạc vào khâu (giao + xuất thêm)';
       if (returnedSilver.gt(limit)) {
         throw new BadRequestException(
           `Trọng lượng nhận lại không được nhiều hơn ${label} (${decStr(limit)} g)`,
@@ -1481,6 +1544,7 @@ export class ProductionOrdersService {
               returnedSilverWeight: returnedSilver,
               stoneCount,
               stoneWeight,
+              returnedStoneCount,
               btpRecoveredWeight: btpRecovered,
               silverRecoveredWeight: silverRecovered,
               laborCost: decimalOrNull(dto.laborCost),
@@ -1488,6 +1552,26 @@ export class ProductionOrdersService {
               note: joinNotes(entry.note, dto.note),
             },
           },
+        },
+        activityLogs: {
+          create: activity(actor, ACTIVITY.STAGE_RETURN, {
+            orderCode: order.code,
+            subTicketNo: ticketNoOf(order, entry.subTicketId),
+            stage: entry.stage,
+            after: {
+              attempt: entry.attempt,
+              returnedAt,
+              returnedQty,
+              returnedSilverWeight: returnedSilver,
+              stoneCount,
+              stoneWeight,
+              returnedStoneCount,
+              btpRecoveredWeight: btpRecovered,
+              silverRecoveredWeight: silverRecovered,
+              laborCost: decimalOrNull(dto.laborCost),
+            },
+            note: dto.note,
+          }),
         },
       },
       include: detailInclude,
@@ -1575,6 +1659,14 @@ export class ProductionOrdersService {
             changedBy,
           },
         },
+        activityLogs: {
+          create: activity(actor, ACTIVITY.ORDER_FINISH, {
+            orderCode: order.code,
+            before: { status: order.status },
+            after: { status: S.FINISHING, qty: finishedQty, finishedAt },
+            note: dto.note,
+          }),
+        },
       },
       include: detailInclude,
     });
@@ -1614,6 +1706,17 @@ export class ProductionOrdersService {
             note: 'Gỡ hoàn thiện, rút khỏi kho thành phẩm',
             changedBy: actorName(actor),
           },
+        },
+        activityLogs: {
+          create: activity(actor, ACTIVITY.ORDER_UNDO_FINISH, {
+            orderCode: order.code,
+            before: {
+              status: order.status,
+              qty: order.receipt.qty,
+              receivedByName: order.receipt.receivedByName,
+            },
+            after: { status: back },
+          }),
         },
       },
       include: detailInclude,
@@ -1693,16 +1796,24 @@ export class ProductionOrdersService {
             changedBy: actorName(actor),
           },
         },
+        activityLogs: {
+          create: activity(actor, ACTIVITY.STAGE_UNDO_RETURN, {
+            orderCode: order.code,
+            subTicketNo: ticketNoOf(order, entry.subTicketId),
+            stage: entry.stage,
+            before: entrySnapshot(entry),
+          }),
+        },
       },
       include: detailInclude,
     });
     return toDetail(updated);
   }
 
-  async markPrinted(code: string) {
+  async markPrinted(code: string, actor: AuthUserPayload) {
     const order = await this.prisma.productionOrder.findUnique({
       where: { code: normalizeCode(code) },
-      select: { id: true, source: true, castingSentDate: true },
+      select: { id: true, code: true, source: true, castingSentDate: true },
     });
     if (!order) throw new NotFoundException('Không tìm thấy đơn sản xuất');
     // Đơn BTP lấy hàng đúc sẵn nên in được ngay.
@@ -1711,7 +1822,14 @@ export class ProductionOrdersService {
     }
     const updated = await this.prisma.productionOrder.update({
       where: { id: order.id },
-      data: { lastPrintedAt: new Date() },
+      data: {
+        lastPrintedAt: new Date(),
+        activityLogs: {
+          create: activity(actor, ACTIVITY.ORDER_PRINT, {
+            orderCode: order.code,
+          }),
+        },
+      },
       select: { lastPrintedAt: true },
     });
     return { lastPrintedAt: updated.lastPrintedAt?.toISOString() ?? null };
@@ -1760,92 +1878,15 @@ export class ProductionOrdersService {
 
     const askedUserId = dto.askedUserId;
     const parentCode = dto.parentCode?.trim();
-    const nvlLines = await this.resolveNvlLines(dto.nvlLines);
-    const [asked, parent, btpMaterial, nvlMaterial, sourceOrderCode] =
-      await Promise.all([
-        askedUserId ? this.resolveUser(askedUserId) : Promise.resolve(null),
-        parentCode
-          ? this.prisma.productionOrder.findUnique({
-              where: { code: normalizeCode(parentCode) },
-              select: { id: true, parentId: true },
-            })
-          : Promise.resolve(null),
-        dto.source === ProductionSource.BTP
-          ? this.resolveBtpMaterial(dto.btpMaterialId)
-          : Promise.resolve(null),
-        nvlLines[0]
-          ? Promise.resolve(nvlLines[0].material)
-          : this.resolveNvlMaterial(dto.nvlMaterialId),
-        dto.source === ProductionSource.NVL
-          ? this.resolveSourceFinishedProduct(
-              dto.finishedProductCode,
-              dto.finishedProductQty ?? 0,
-            )
-          : Promise.resolve(null),
-      ]);
-
-    if (!nvlLines.length && !(dto.stoneCount && dto.stoneCount >= 1)) {
-      throw new BadRequestException('Nhập số lượng NVL cần lên đơn');
-    }
-    if (
-      dto.source === ProductionSource.NVL &&
-      sourceOrderCode &&
-      !nvlLines.length
-    ) {
-      const bomLineCount = await this.prisma.productionOrderBomLine.count({
-        where: { order: { code: sourceOrderCode } },
-      });
-      if (bomLineCount > 1) {
-        throw new BadRequestException(
-          'Nhập số lượng NVL cần lên đơn cho từng mã trên thành phẩm',
-        );
-      }
-    }
-    if (
-      dto.source === ProductionSource.NVL &&
-      !(dto.finishedProductQty && dto.finishedProductQty >= 1)
-    ) {
-      throw new BadRequestException('Nhập số lượng thành phẩm cần lên đơn');
-    }
-    if (
-      dto.source === ProductionSource.BTP &&
-      !(dto.finishedProductQty && dto.finishedProductQty >= 1)
-    ) {
-      throw new BadRequestException('Nhập số lượng thành phẩm cần lên đơn');
-    }
-    if (
-      dto.source === ProductionSource.BTP &&
-      !(dto.btpQty && dto.btpQty >= 1)
-    ) {
-      throw new BadRequestException('Nhập số lượng BTP cần lên đơn');
-    }
-    if (dto.finishedProductQty && dto.finishedProductQty >= 1) {
-      const nvlNeed = nvlLines.length
-        ? Math.min(...nvlLines.map((line) => line.qty))
-        : dto.stoneCount ?? null;
-      const caps: Array<{ qty: number; label: string }> = [];
-      if (dto.source === ProductionSource.BTP && dto.btpQty) {
-        caps.push({ qty: dto.btpQty, label: 'BTP' });
-      }
-      if (nvlNeed && nvlNeed >= 1) {
-        caps.push({ qty: nvlNeed, label: 'NVL' });
-      }
-      if (caps.length) {
-        const minQty = Math.min(...caps.map((item) => item.qty));
-        if (dto.finishedProductQty !== minQty) {
-          const labels = caps
-            .filter((item) => item.qty === minQty)
-            .map((item) => item.label);
-          throw new BadRequestException(
-            dto.finishedProductQty > minQty
-              ? labels.length === 1
-                ? `Không đủ số lượng ${labels[0]}`
-                : `Không đủ số lượng ${labels.join(' và ')}`
-              : `Số lượng thành phẩm phải bằng ${minQty}`,
-          );
-        }
-      }
-    }
+    const [asked, parent] = await Promise.all([
+      askedUserId ? this.resolveUser(askedUserId) : Promise.resolve(null),
+      parentCode
+        ? this.prisma.productionOrder.findUnique({
+            where: { code: normalizeCode(parentCode) },
+            select: { id: true, parentId: true },
+          })
+        : Promise.resolve(null),
+    ]);
 
     let parentId: string | null = null;
     if (parentCode) {
@@ -1858,15 +1899,10 @@ export class ProductionOrdersService {
       parentId = parent.id;
     }
 
+    // Lên đơn chỉ ghi thông tin sản phẩm — không chọn mã kho, không xuất kho. NVL xuất ở
+    // từng bước giao khâu (xem ProductionMaterialRequestsService.issueAtHandover).
     return {
       source: dto.source,
-      btpMaterialId: btpMaterial?.id ?? null,
-      nvlMaterialId: nvlMaterial?.id ?? null,
-      sourceOrderCode,
-      btpMaterial,
-      nvlMaterial,
-      nvlLines,
-      btpQty: dto.btpQty ?? null,
       requestType: dto.requestType,
       receivedDate,
       dueDate,
@@ -1875,7 +1911,6 @@ export class ProductionOrdersService {
       description,
       qty: dto.qty,
       qtyUnit: optional(dto.qtyUnit),
-      finishedProductQty: dto.finishedProductQty ?? null,
       model3dCode: optional(dto.model3dCode),
       model3dUrl: optional(dto.model3dUrl),
       leadTime,
@@ -1884,23 +1919,18 @@ export class ProductionOrdersService {
       stoneTypes: unique(
         (dto.stoneTypes ?? []).map((item) => item.trim()).filter(Boolean),
       ),
-      stoneCount: nvlLines[0]?.qty ?? dto.stoneCount ?? null,
-      stoneWeight: decimalOrNull(nvlLines[0]?.stoneWeight ?? dto.stoneWeight),
+      stoneCount: dto.stoneCount ?? null,
+      stoneWeight: decimalOrNull(dto.stoneWeight),
       weight: decimalOrNull(dto.weight),
-      silverWeight: decimalOrNull(dto.silverWeight),
       size: optional(dto.size),
       sizeLabel: optional(dto.sizeLabel),
       mainMaterial: optional(dto.mainMaterial),
-      platingColor: optional(nvlLines[0]?.platingColor ?? dto.platingColor),
+      platingColor: optional(dto.platingColor),
       btpCategory: optional(dto.btpCategory),
-      btpName: optional(dto.btpName) ?? optional(btpMaterial?.name),
+      btpName: optional(dto.btpName),
       productKind: optional(dto.productKind),
-      laserEngraving: optional(
-        nvlLines[0]?.laserEngraving ?? dto.laserEngraving,
-      ),
-      otherRequirements: optional(
-        nvlLines[0]?.otherRequirements ?? dto.otherRequirements,
-      ),
+      laserEngraving: optional(dto.laserEngraving),
+      otherRequirements: optional(dto.otherRequirements),
       askedUserId: asked?.id ?? null,
       askedUserName: asked?.name ?? null,
       debtStatus: optional(dto.debtStatus),
@@ -1941,237 +1971,33 @@ export class ProductionOrdersService {
       });
   }
 
-  /** Tồn kiểm tra lúc xuất trong transaction — lấy đủ thông tin để xuất, không query lại. */
-  private async resolveBtpMaterial(materialId: string | null | undefined) {
-    if (!materialId) throw new BadRequestException('Chọn mã BTP cho Đơn BTP');
-    return this.resolveWarehouseMaterial(
-      materialId,
-      BTP_WAREHOUSE_CODE,
-      'Không tìm thấy mã BTP trong kho BTP',
-    );
-  }
-
-  private async resolveNvlMaterial(materialId: string | null | undefined) {
-    if (!materialId) throw new BadRequestException('Chọn mã NVL');
-    return this.resolveWarehouseMaterial(
-      materialId,
-      NVL_WAREHOUSE_CODE,
-      'Không tìm thấy mã NVL trong kho NVL chính',
-    );
-  }
-
-  private async resolveSourceFinishedProduct(
-    code: string | null | undefined,
-    qty: number,
-  ) {
-    if (!code?.trim())
-      throw new BadRequestException('Chọn mã thành phẩm cho Đơn mới');
-    if (qty < 1)
-      throw new BadRequestException('Nhập số lượng thành phẩm cần lên đơn');
-    const orderCode = normalizeCode(code);
-    const source = await this.prisma.productionOrder.findUnique({
-      where: { code: orderCode },
-      select: { code: true, receipt: { select: { id: true } } },
-    });
-    if (!source?.receipt) {
-      throw new BadRequestException(
-        `Không tìm thấy mã ${orderCode} trong kho thành phẩm`,
-      );
-    }
-    return source.code;
-  }
-
-  /** Ghi BOM NVL của đơn kèm số lượng / xi / khắc từng dòng. */
-  private async replaceBomLines(
-    tx: Prisma.TransactionClient,
-    orderId: string,
-    lines: ResolvedNvlLine[],
-  ) {
-    await tx.productionOrderBomLine.deleteMany({ where: { orderId } });
-    if (!lines.length) return;
-    await tx.productionOrderBomLine.createMany({
-      data: lines.map((line, index) => ({
-        id: randomUUID(),
-        orderId,
-        materialId: line.material.id,
-        sortOrder: index,
-        platingColor: line.platingColor,
-        qty: line.qty,
-        stoneWeight: decimalOrNull(line.stoneWeight),
-        laserEngraving: line.laserEngraving,
-        otherRequirements: line.otherRequirements,
-      })),
-    });
-  }
-
-  private async resolveNvlLines(
-    lines?: ProductionNvlLineDto[],
-  ): Promise<ResolvedNvlLine[]> {
-    if (!lines?.length) return [];
-    const ids = lines.map((line) => line.materialId);
-    if (new Set(ids).size !== ids.length) {
-      throw new BadRequestException('Mã NVL bị trùng trên đơn');
-    }
-    const materials = await this.resolveWarehouseMaterials(
-      ids,
-      NVL_WAREHOUSE_CODE,
-      'Không tìm thấy mã NVL trong kho NVL chính',
-    );
-    return lines.map((line) => ({
-      material: materials.get(line.materialId)!,
-      qty: line.qty,
-      platingColor: optional(line.platingColor),
-      stoneWeight: line.stoneWeight ?? null,
-      laserEngraving: optional(line.laserEngraving),
-      otherRequirements: optional(line.otherRequirements),
-    }));
-  }
-
-  /** Chép BOM NVL từ thành phẩm nguồn sang đơn mới. */
-  private async copyBomFromSource(
-    tx: Prisma.TransactionClient,
-    orderId: string,
-    sourceOrderCode: string | null | undefined,
-  ) {
-    if (!sourceOrderCode) return;
-    const source = await tx.productionOrder.findUnique({
-      where: { code: sourceOrderCode },
-      select: {
-        bomLines: {
-          select: { materialId: true, sortOrder: true },
-          orderBy: { sortOrder: 'asc' },
+  /**
+   * Hoàn kho phần đơn tự xuất lúc lên đơn (luồng cũ): phiếu xuất BTP / NVL ghi "Xuất cho đơn …"
+   * và phiếu xuất thành phẩm tự tạo. Phiếu xuất ở bước giao khâu / theo yêu cầu của thợ giữ
+   * nguyên. Dùng một lần cho đơn tạo trước khi bỏ tự xuất — xem prisma/revoke-order-auto-issues.ts.
+   */
+  async revokeCreationIssues(orderId: string, dryRun = false) {
+    return this.prisma.runTx(async (tx) => {
+      const outbounds = await tx.stockOutbound.findMany({
+        where: {
+          productionOrderId: orderId,
+          autoIssued: true,
+          materialRequest: null,
+          note: { startsWith: 'Xuất cho đơn ' },
         },
-      },
-    });
-    if (!source?.bomLines.length) return;
-    await tx.productionOrderBomLine.createMany({
-      data: source.bomLines.map((line) => ({
-        id: randomUUID(),
-        orderId,
-        materialId: line.materialId,
-        sortOrder: line.sortOrder,
-      })),
-    });
-  }
-
-  /** Xuất kho gắn đơn: BTP và/hoặc NVL; Đơn mới thêm xuất thành phẩm nguồn. */
-  private async issueAutoStockForOrder(
-    tx: Prisma.TransactionClient,
-    params: {
-      orderId: string;
-      orderCode: string;
-      issuedAt: Date;
-      issuedBy: string;
-      actorId: string;
-      source: ProductionSource;
-      btpMaterial: WarehouseMaterial | null;
-      btpQty: number;
-      nvlIssues: Array<{ material: WarehouseMaterial; qty: number }>;
-      sourceOrderCode: string | null;
-      finishedProductQty: number;
-    },
-  ) {
-    if (params.btpMaterial || params.nvlIssues.length) {
-      await tx.$executeRaw`SELECT set_config('lock_timeout', '2000', true)`;
-    }
-    if (params.btpMaterial) {
-      await this.inventory.issueStockForOrder(tx, {
-        orderId: params.orderId,
-        orderCode: params.orderCode,
-        material: params.btpMaterial,
-        qty: params.btpQty,
-        issuedAt: params.issuedAt,
-        issuedBy: params.issuedBy,
+        select: { id: true, name: true, qty: true, unitName: true },
       });
-    }
-    for (const line of params.nvlIssues) {
-      if (line.qty < 1) {
-        throw new BadRequestException(
-          `Nhập số lượng NVL cần lên đơn cho mã ${line.material.sku ?? line.material.name}`,
+      const shipments = await tx.shipment.count({
+        where: { createdByOrderId: orderId, autoIssued: true },
+      });
+      if (!dryRun) {
+        await this.inventory.revokeOutbounds(
+          tx,
+          outbounds.map((row) => row.id),
         );
+        await this.revokeFinishedGoodsForOrder(tx, orderId);
       }
-      await this.inventory.issueStockForOrder(tx, {
-        orderId: params.orderId,
-        orderCode: params.orderCode,
-        material: line.material,
-        qty: line.qty,
-        issuedAt: params.issuedAt,
-        issuedBy: params.issuedBy,
-      });
-    }
-    if (params.source === ProductionSource.NVL && params.sourceOrderCode) {
-      await this.issueFinishedGoodsForOrder(tx, {
-        sourceOrderCode: params.sourceOrderCode,
-        qty: params.finishedProductQty,
-        newOrderId: params.orderId,
-        newOrderCode: params.orderCode,
-        issuedAt: params.issuedAt,
-        issuedBy: params.issuedBy,
-        actorId: params.actorId,
-      });
-    }
-  }
-
-  /** Xuất thành phẩm đã chọn vào tab Xuất kho thành phẩm, gắn đơn mới. */
-  private async issueFinishedGoodsForOrder(
-    tx: Prisma.TransactionClient,
-    params: {
-      sourceOrderCode: string;
-      qty: number;
-      newOrderId: string;
-      newOrderCode: string;
-      issuedAt: Date;
-      issuedBy: string;
-      actorId: string;
-    },
-  ) {
-    if (params.qty < 1) return;
-    const source = await tx.productionOrder.findUnique({
-      where: { code: params.sourceOrderCode },
-      select: { id: true, qty: true, returnedQty: true, status: true },
-    });
-    if (!source) {
-      throw new BadRequestException(
-        `Không tìm thấy mã ${params.sourceOrderCode} trong kho thành phẩm`,
-      );
-    }
-    const last = await tx.shipment.findFirst({
-      orderBy: { seq: 'desc' },
-      select: { seq: true },
-    });
-    const seq = (last?.seq ?? 0) + 1;
-    const note = `Xuất cho đơn ${params.newOrderCode}`;
-    const returnedQty = source.returnedQty + params.qty;
-    await tx.shipment.create({
-      data: {
-        seq,
-        code: fgShipmentCode(seq),
-        shippedAt: params.issuedAt,
-        customerName: '—',
-        note,
-        createdByUserId: params.actorId,
-        createdByName: params.issuedBy,
-        autoIssued: true,
-        createdByOrderId: params.newOrderId,
-        lines: {
-          create: {
-            orderId: source.id,
-            qty: params.qty,
-            unitPrice: 0,
-            amount: 0,
-            unitCost: 0,
-            costAmount: 0,
-            note,
-          },
-        },
-      },
-    });
-    await tx.productionOrder.update({
-      where: { id: source.id },
-      data: {
-        returnedQty,
-        ...(returnedQty >= source.qty ? { status: S.DELIVERED } : {}),
-      },
+      return { outbounds, shipments };
     });
   }
 
@@ -2230,42 +2056,6 @@ export class ProductionOrdersService {
     }
   }
 
-  private async resolveWarehouseMaterial(
-    materialId: string,
-    warehouseCode: string,
-    missing: string,
-  ) {
-    const material = await this.prisma.material.findFirst({
-      where: {
-        id: materialId,
-        isActive: true,
-        warehouse: { code: warehouseCode },
-      },
-      select: warehouseMaterialSelect,
-    });
-    if (!material) throw new BadRequestException(missing);
-    return material;
-  }
-
-  private async resolveWarehouseMaterials(
-    materialIds: string[],
-    warehouseCode: string,
-    missing: string,
-  ) {
-    const rows = await this.prisma.material.findMany({
-      where: {
-        id: { in: materialIds },
-        isActive: true,
-        warehouse: { code: warehouseCode },
-      },
-      select: warehouseMaterialSelect,
-    });
-    if (rows.length !== materialIds.length) {
-      throw new BadRequestException(missing);
-    }
-    return new Map(rows.map((row) => [row.id, row]));
-  }
-
   private async resolveUser(userId: string) {
     const user = await this.prisma.user.findFirst({
       where: { id: userId, isActive: true },
@@ -2305,34 +2095,20 @@ function asCreatedDetail(
   row: Prisma.ProductionOrderGetPayload<{
     include: { images: true; statusLogs: true };
   }>,
-  btpMaterial: WarehouseMaterial | null,
-  nvlMaterial: WarehouseMaterial | null,
-  issuedCount = 0,
-  nvlLines: ResolvedNvlLine[] = [],
 ): OrderDetail {
   return {
     ...row,
-    btpMaterial: btpMaterial
-      ? { id: btpMaterial.id, sku: btpMaterial.sku, name: btpMaterial.name }
-      : null,
-    nvlMaterial: nvlMaterial
-      ? { id: nvlMaterial.id, sku: nvlMaterial.sku, name: nvlMaterial.name }
-      : null,
+    btpMaterial: null,
+    nvlMaterial: null,
     stages: [],
     subTickets: [],
+    materialRequests: [],
     parent: null,
     children: [],
     receipt: null,
     shipmentLines: [],
-    bomLines: nvlLines.map((line) => ({
-      materialId: line.material.id,
-      platingColor: line.platingColor,
-      qty: line.qty,
-      stoneWeight: decimalOrNull(line.stoneWeight),
-      laserEngraving: line.laserEngraving,
-      otherRequirements: line.otherRequirements,
-    })),
-    _count: { outbounds: issuedCount },
+    bomLines: [],
+    _count: { outbounds: 0 },
   };
 }
 
@@ -2340,31 +2116,13 @@ function lastStage(order: OrderDetail): StageEntry | undefined {
   return order.stages[order.stages.length - 1];
 }
 
-/** Số lượng / Tổng TL bạc của đơn không được nhỏ hơn phần đã chia cho phiếu con. */
-function assertCoversSubTickets(
-  order: OrderDetail,
-  qty: number,
-  silverWeight: Prisma.Decimal | null,
-) {
+/** Số lượng đơn không được nhỏ hơn phần đã chia cho phiếu con. */
+function assertCoversSubTickets(order: OrderDetail, qty: number) {
   if (order.subTickets.length === 0) return;
   const splitQty = order.subTickets.reduce((sum, t) => sum + t.qty, 0);
-  const splitSilver = order.subTickets.reduce(
-    (sum, t) => sum.add(t.silverWeight),
-    new Prisma.Decimal(0),
-  );
   if (qty < splitQty) {
     throw new BadRequestException(
       `Số lượng đơn không được nhỏ hơn tổng số lượng đã chia phiếu con (${splitQty})`,
-    );
-  }
-  if (!silverWeight) {
-    throw new BadRequestException(
-      'Đơn đã chia phiếu con, không bỏ trống Tổng TL bạc được',
-    );
-  }
-  if (silverWeight.lt(splitSilver)) {
-    throw new BadRequestException(
-      `Tổng TL bạc không được nhỏ hơn tổng gram đã chia phiếu con (${decStr(splitSilver)} g)`,
     );
   }
 }
@@ -2383,10 +2141,6 @@ function joinNotes(previous: string | null, next: string | undefined) {
 
 export function orderCode(seq: number) {
   return `A${String(seq).padStart(3, '0')}`;
-}
-
-function fgShipmentCode(seq: number) {
-  return `PX${String(seq).padStart(4, '0')}`;
 }
 
 function optional(value: string | null | undefined) {
@@ -2416,5 +2170,97 @@ function isUniqueViolation(error: unknown) {
   return (
     error instanceof Prisma.PrismaClientKnownRequestError &&
     error.code === 'P2002'
+  );
+}
+
+/** Các trường đơn đưa vào nhật ký khi tạo / sửa / xoá — bỏ ảnh và quan hệ. */
+const AUDIT_FIELDS = [
+  'source',
+  'btpMaterialId',
+  'nvlMaterialId',
+  'sourceOrderCode',
+  'requestType',
+  'receivedDate',
+  'dueDate',
+  'closedBy',
+  'description',
+  'qty',
+  'qtyUnit',
+  'finishedProductQty',
+  'model3dCode',
+  'model3dUrl',
+  'trackingCode',
+  'stoneColor',
+  'stoneTypes',
+  'stoneCount',
+  'stoneWeight',
+  'size',
+  'sizeLabel',
+  'laserEngraving',
+  'otherRequirements',
+  'mainMaterial',
+  'platingColor',
+  'btpCategory',
+  'productKind',
+  'parentId',
+  'debtStatus',
+] as const;
+
+function orderAuditFields(source: Partial<Record<string, unknown>>) {
+  const picked: Record<string, unknown> = {};
+  for (const key of AUDIT_FIELDS) {
+    if (!(key in source)) continue;
+    const value = source[key];
+    picked[key] = value instanceof Date ? ymd(value) : value;
+  }
+  return picked;
+}
+
+/** Chỉ giữ các trường đổi giá trị; không đổi gì thì null. */
+function diffAudit(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+) {
+  const changed = Object.keys(after).filter(
+    (key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]),
+  );
+  if (!changed.length) return null;
+  return {
+    before: Object.fromEntries(changed.map((key) => [key, before[key]])),
+    after: Object.fromEntries(changed.map((key) => [key, after[key]])),
+  };
+}
+
+function ymdOrNull(value: Date | null) {
+  return value ? ymd(value) : null;
+}
+
+function ticketNoOf(
+  order: { subTickets: { id: string; no: number }[] },
+  subTicketId: string | null,
+) {
+  return (
+    order.subTickets.find((ticket) => ticket.id === subTicketId)?.no ?? null
+  );
+}
+
+/**
+ * TL đá phát cho thợ ở khâu (g) = TL đá giao lúc nhận việc + TL đá xuất thêm (lần xuất nào
+ * có cân). Không có số nào thì null — không chặn TL đá gắn.
+ */
+function stoneWeightHandedOf(
+  entry: StageEntry,
+  requests: readonly MaterialRequest[],
+) {
+  const weighed = requests.filter(
+    (request) =>
+      request.status === MaterialRequestStatus.ISSUED &&
+      request.kind === MaterialRequestKind.STONE &&
+      request.issuedWeight != null,
+  );
+  if (entry.handedStoneWeight == null && weighed.length === 0) return null;
+  return weighed.reduce(
+    (sum, request) => sum.add(request.issuedWeight!),
+    entry.handedStoneWeight ?? new Prisma.Decimal(0),
   );
 }

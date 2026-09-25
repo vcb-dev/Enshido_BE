@@ -1,5 +1,13 @@
 import { Prisma } from '@prisma/client';
-import { recoveredOf, silverLossOf } from './stage-math';
+import {
+  issuedOf,
+  type IssuedRequest,
+  lossPercentOf,
+  recoveredOf,
+  silverInOf,
+  silverLossOf,
+  stoneLossOf,
+} from './stage-math';
 
 const dec = (value: string) => new Prisma.Decimal(value);
 
@@ -54,5 +62,74 @@ describe('recoveredOf — bạc + BTP thu hồi', () => {
         weights({ btpRecoveredWeight: dec('50'), silverRecoveredWeight: null }),
       ).toString(),
     ).toBe('50');
+  });
+});
+
+describe('NVL xuất thêm theo yêu cầu của thợ', () => {
+  const req = (over: Partial<IssuedRequest> = {}): IssuedRequest => ({
+    status: 'ISSUED',
+    kind: 'METAL',
+    issuedWeight: dec('50'),
+    issuedStoneCount: null,
+    ...over,
+  });
+
+  it('chỉ cộng yêu cầu đã xuất; bạc theo gram, đá theo viên', () => {
+    const issued = issuedOf([
+      req(),
+      req({ issuedWeight: dec('25.5') }),
+      req({ status: 'PENDING' }),
+      req({ kind: 'STONE', issuedWeight: dec('3'), issuedStoneCount: 40 }),
+      req({ status: 'REJECTED', kind: 'STONE', issuedStoneCount: 10 }),
+    ]);
+    expect(issued.metal.toString()).toBe('75.5');
+    expect(issued.stones).toBe(40);
+  });
+
+  it('bạc vào khâu = TL giao + bạc xuất thêm; hao hụt tính trên tổng đó', () => {
+    // giao 2.000 g, xin thêm 50 g, cân lại 2.030 g → hao 20 g trên 2.050 g.
+    const entry = weights({ returnedSilverWeight: dec('2030') });
+    const extra = dec('50');
+    expect(silverInOf(entry, extra)?.toString()).toBe('2050');
+    const loss = silverLossOf(entry, extra);
+    expect(loss?.toString()).toBe('20');
+    expect(lossPercentOf(loss, silverInOf(entry, extra))?.toString()).toBe(
+      '0.98',
+    );
+  });
+
+  it('chưa cân lúc giao nhưng có bạc xuất thêm thì mốc là phần xuất', () => {
+    const entry = weights({
+      handedSilverWeight: null,
+      returnedSilverWeight: dec('48'),
+    });
+    expect(silverLossOf(entry, dec('50'))?.toString()).toBe('2');
+  });
+
+  it('đá mất = phát lúc giao + xuất thêm − gắn − trả lại', () => {
+    const stone = stoneLossOf(
+      {
+        handedStoneCount: 100,
+        stoneCount: 130,
+        returnedStoneCount: 15,
+        returnedAt: new Date(),
+      },
+      50,
+    );
+    expect(stone).toEqual({ stonesIn: 150, loss: 5 });
+  });
+
+  it('KCS chưa nhận lại thì chưa có đá mất', () => {
+    expect(
+      stoneLossOf(
+        {
+          handedStoneCount: 10,
+          stoneCount: null,
+          returnedStoneCount: null,
+          returnedAt: null,
+        },
+        0,
+      ),
+    ).toEqual({ stonesIn: 10, loss: null });
   });
 });

@@ -17,19 +17,19 @@ enum RoleCode {
 }
 
 model User {
-  id           String     @id @default(uuid()) @db.Uuid
-  username     String     @unique
-  email        String?    @unique
-  passwordHash String     @map("password_hash")
-  fullName     String     @map("full_name")
-  roleCode     RoleCode   @map("role_code")
-  extraRoles      RoleCode[] @default([]) @map("extra_roles")
+  id             String     @id @default(uuid()) @db.Uuid
+  username       String     @unique
+  email          String?    @unique
+  passwordHash   String     @map("password_hash")
+  fullName       String     @map("full_name")
+  roleCode       RoleCode   @map("role_code")
+  extraRoles     RoleCode[] @default([]) @map("extra_roles")
   /// Các màn hình USER được xem. ADMIN bỏ qua cột này (luôn xem hết).
-  allowedScreens  String[]   @default([]) @map("allowed_screens")
-  department      String?
-  isActive        Boolean    @default(true) @map("is_active")
-  createdAt    DateTime   @default(now()) @map("created_at")
-  updatedAt    DateTime   @updatedAt @map("updated_at")
+  allowedScreens String[]   @default([]) @map("allowed_screens")
+  department     String?
+  isActive       Boolean    @default(true) @map("is_active")
+  createdAt      DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
 
   refreshTokens RefreshToken[]
 
@@ -70,16 +70,16 @@ model Warehouse {
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
-  parent    Warehouse?          @relation("WarehouseTree", fields: [parentId], references: [id])
-  children  Warehouse[]         @relation("WarehouseTree")
-  materials Material[]
-  balances  StockBalance[]
-  inbounds  StockInbound[]
-  outbounds StockOutbound[]
-  destOutbounds StockOutbound[] @relation("OutboundTransferDest")
-  sourceInbounds StockInbound[] @relation("InboundTransferSource")
-  btpItems  BtpWaitingItem[]
-  locations WarehouseLocation[]
+  parent         Warehouse?          @relation("WarehouseTree", fields: [parentId], references: [id])
+  children       Warehouse[]         @relation("WarehouseTree")
+  materials      Material[]
+  balances       StockBalance[]
+  inbounds       StockInbound[]
+  outbounds      StockOutbound[]
+  destOutbounds  StockOutbound[]     @relation("OutboundTransferDest")
+  sourceInbounds StockInbound[]      @relation("InboundTransferSource")
+  btpItems       BtpWaitingItem[]
+  locations      WarehouseLocation[]
 
   @@index([parentId, sortOrder])
   @@map("warehouses")
@@ -215,22 +215,23 @@ model Material {
   createdAt      DateTime      @default(now()) @map("created_at")
   updatedAt      DateTime      @updatedAt @map("updated_at")
 
-  warehouse    Warehouse       @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
-  unit         Unit            @relation(fields: [unitId], references: [id], onDelete: Restrict)
-  materialType MaterialType?   @relation(fields: [materialTypeId], references: [id], onDelete: SetNull)
-  otherClass   OtherClass?     @relation(fields: [otherClassId], references: [id], onDelete: SetNull)
-  bodyMetal    OtherClass?     @relation("MaterialBodyMetal", fields: [bodyMetalId], references: [id], onDelete: SetNull)
-  productKind  OtherClass?     @relation("MaterialProductKind", fields: [productKindId], references: [id], onDelete: SetNull)
-  platingColor OtherClass?     @relation("MaterialPlatingColor", fields: [platingColorId], references: [id], onDelete: SetNull)
-  shape        Shape?          @relation(fields: [shapeId], references: [id], onDelete: SetNull)
-  color        Color?          @relation(fields: [colorId], references: [id], onDelete: SetNull)
-  balance      StockBalance?
-  inbounds     StockInbound[]
-  outbounds    StockOutbound[]
-  images       MaterialImage[]
-  btpOrders    ProductionOrder[] @relation("OrderBtpMaterial")
-  nvlOrders    ProductionOrder[] @relation("OrderNvlMaterial")
-  bomLines     ProductionOrderBomLine[]
+  warehouse        Warehouse                   @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  unit             Unit                        @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  materialType     MaterialType?               @relation(fields: [materialTypeId], references: [id], onDelete: SetNull)
+  otherClass       OtherClass?                 @relation(fields: [otherClassId], references: [id], onDelete: SetNull)
+  bodyMetal        OtherClass?                 @relation("MaterialBodyMetal", fields: [bodyMetalId], references: [id], onDelete: SetNull)
+  productKind      OtherClass?                 @relation("MaterialProductKind", fields: [productKindId], references: [id], onDelete: SetNull)
+  platingColor     OtherClass?                 @relation("MaterialPlatingColor", fields: [platingColorId], references: [id], onDelete: SetNull)
+  shape            Shape?                      @relation(fields: [shapeId], references: [id], onDelete: SetNull)
+  color            Color?                      @relation(fields: [colorId], references: [id], onDelete: SetNull)
+  balance          StockBalance?
+  inbounds         StockInbound[]
+  outbounds        StockOutbound[]
+  images           MaterialImage[]
+  btpOrders        ProductionOrder[]           @relation("OrderBtpMaterial")
+  nvlOrders        ProductionOrder[]           @relation("OrderNvlMaterial")
+  bomLines         ProductionOrderBomLine[]
+  materialRequests ProductionMaterialRequest[]
 
   @@unique([warehouseId, sku])
   @@unique([sku], map: "materials_sku_key")
@@ -305,38 +306,38 @@ model Supplier {
 
 /// Một dòng trên tab Nhập kho đá.
 model StockInbound {
-  id             String   @id @default(uuid()) @db.Uuid
-  warehouseId    String   @map("warehouse_id") @db.Uuid
-  materialId     String?  @map("material_id") @db.Uuid
-  sortOrder      Int      @default(0) @map("sort_order")
-  receivedAt     DateTime @map("received_at")
-  name           String
-  sku            String?
-  unitId         String?  @map("unit_id") @db.Uuid
-  unitName       String   @map("unit_name")
-  qty            Decimal  @db.Decimal(18, 4)
-  stockUnitPrice Decimal  @default(0) @map("stock_unit_price") @db.Decimal(18, 2)
-  unitPrice      Decimal  @default(0) @map("unit_price") @db.Decimal(18, 2)
-  amount         Decimal  @default(0) @db.Decimal(18, 2)
-  note           String?
+  id                String   @id @default(uuid()) @db.Uuid
+  warehouseId       String   @map("warehouse_id") @db.Uuid
+  materialId        String?  @map("material_id") @db.Uuid
+  sortOrder         Int      @default(0) @map("sort_order")
+  receivedAt        DateTime @map("received_at")
+  name              String
+  sku               String?
+  unitId            String?  @map("unit_id") @db.Uuid
+  unitName          String   @map("unit_name")
+  qty               Decimal  @db.Decimal(18, 4)
+  stockUnitPrice    Decimal  @default(0) @map("stock_unit_price") @db.Decimal(18, 2)
+  unitPrice         Decimal  @default(0) @map("unit_price") @db.Decimal(18, 2)
+  amount            Decimal  @default(0) @db.Decimal(18, 2)
+  note              String?
   /// Người lập phiếu — cột đã có sẵn trên DB.
-  enteredBy      String?  @map("entered_by")
-  supplierSku    String?  @map("supplier_sku")
-  supplierId     String?  @map("supplier_id") @db.Uuid
-  supplierName   String?  @map("supplier_name")
+  enteredBy         String?  @map("entered_by")
+  supplierSku       String?  @map("supplier_sku")
+  supplierId        String?  @map("supplier_id") @db.Uuid
+  supplierName      String?  @map("supplier_name")
   /// Seed lịch sử = false (tồn kho đá đã gồm số nhập). Phiếu mới từ UI = true.
-  applyToStock   Boolean  @default(false) @map("apply_to_stock")
+  applyToStock      Boolean  @default(false) @map("apply_to_stock")
   /// Phiếu nhập do xuất chuyển kho tạo ra.
-  sourceWarehouseId String? @map("source_warehouse_id") @db.Uuid
-  sourceOutboundId  String? @unique @map("source_outbound_id") @db.Uuid
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
+  sourceWarehouseId String?  @map("source_warehouse_id") @db.Uuid
+  sourceOutboundId  String?  @unique @map("source_outbound_id") @db.Uuid
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
 
-  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  warehouse       Warehouse  @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
   sourceWarehouse Warehouse? @relation("InboundTransferSource", fields: [sourceWarehouseId], references: [id], onDelete: SetNull)
-  material  Material? @relation(fields: [materialId], references: [id], onDelete: SetNull)
-  unit      Unit?     @relation(fields: [unitId], references: [id], onDelete: SetNull)
-  supplier  Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  material        Material?  @relation(fields: [materialId], references: [id], onDelete: SetNull)
+  unit            Unit?      @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  supplier        Supplier?  @relation(fields: [supplierId], references: [id], onDelete: SetNull)
 
   @@unique([warehouseId, sortOrder])
   @@index([warehouseId, receivedAt])
@@ -378,11 +379,13 @@ model StockOutbound {
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
 
-  warehouse       Warehouse        @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
-  destWarehouse   Warehouse?       @relation("OutboundTransferDest", fields: [destWarehouseId], references: [id], onDelete: SetNull)
-  material        Material?        @relation(fields: [materialId], references: [id], onDelete: SetNull)
-  unit            Unit?            @relation(fields: [unitId], references: [id], onDelete: SetNull)
-  productionOrder ProductionOrder? @relation(fields: [productionOrderId], references: [id], onDelete: Restrict)
+  warehouse       Warehouse                  @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  destWarehouse   Warehouse?                 @relation("OutboundTransferDest", fields: [destWarehouseId], references: [id], onDelete: SetNull)
+  material        Material?                  @relation(fields: [materialId], references: [id], onDelete: SetNull)
+  unit            Unit?                      @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  productionOrder ProductionOrder?           @relation(fields: [productionOrderId], references: [id], onDelete: Restrict)
+  /// Phiếu xuất tạo lúc duyệt yêu cầu xuất NVL của thợ.
+  materialRequest ProductionMaterialRequest?
 
   @@unique([warehouseId, sortOrder])
   @@index([warehouseId, issuedAt])
@@ -521,8 +524,6 @@ model ProductionOrder {
   castingSentDate     DateTime?             @map("casting_sent_date") @db.Date
   castingReturnedDate DateTime?             @map("casting_returned_date") @db.Date
   debtStatus          String?               @map("debt_status")
-  /// Tổng trọng lượng bạc của đơn (g) — mốc chia gram bạc cho các phiếu con.
-  silverWeight        Decimal?              @map("silver_weight") @db.Decimal(18, 4)
   parentId            String?               @map("parent_id") @db.Uuid
   lastPrintedAt       DateTime?             @map("last_printed_at")
   /// Lần cuối nội dung in trên phiếu thay đổi. Tách khỏi updatedAt vì đánh dấu "đã in" cũng làm updatedAt đổi.
@@ -537,26 +538,28 @@ model ProductionOrder {
   pendingAt           DateTime?             @map("pending_at")
   pendingByName       String?               @map("pending_by_name")
   /// Thợ đã tự nhận khâu của phiếu mẹ, chờ người giao xác nhận số lượng và bạc.
-  claimedByUserId     String?                @map("claimed_by_user_id") @db.Uuid
-  claimedByName       String?                @map("claimed_by_name")
-  claimedAt           DateTime?              @map("claimed_at")
+  claimedByUserId     String?               @map("claimed_by_user_id") @db.Uuid
+  claimedByName       String?               @map("claimed_by_name")
+  claimedAt           DateTime?             @map("claimed_at")
   createdAt           DateTime              @default(now()) @map("created_at")
   updatedAt           DateTime              @updatedAt @map("updated_at")
 
-  parent        ProductionOrder?       @relation("ProductionOrderTree", fields: [parentId], references: [id], onDelete: SetNull)
-  btpMaterial   Material?              @relation("OrderBtpMaterial", fields: [btpMaterialId], references: [id], onDelete: SetNull)
-  nvlMaterial   Material?              @relation("OrderNvlMaterial", fields: [nvlMaterialId], references: [id], onDelete: SetNull)
-  children      ProductionOrder[]      @relation("ProductionOrderTree")
-  images        ProductionOrderImage[]
-  stages        ProductionStageEntry[]
-  subTickets    ProductionSubTicket[]
-  statusLogs    ProductionStatusLog[]
-  outbounds     StockOutbound[]
-  costs         ProductionOrderCost[]
-  receipt       FinishedGoodsReceipt?
-  shipmentLines ShipmentLine[]
-  autoShipments Shipment[]             @relation("OrderAutoShipment")
-  bomLines      ProductionOrderBomLine[]
+  parent           ProductionOrder?            @relation("ProductionOrderTree", fields: [parentId], references: [id], onDelete: SetNull)
+  btpMaterial      Material?                   @relation("OrderBtpMaterial", fields: [btpMaterialId], references: [id], onDelete: SetNull)
+  nvlMaterial      Material?                   @relation("OrderNvlMaterial", fields: [nvlMaterialId], references: [id], onDelete: SetNull)
+  children         ProductionOrder[]           @relation("ProductionOrderTree")
+  images           ProductionOrderImage[]
+  stages           ProductionStageEntry[]
+  subTickets       ProductionSubTicket[]
+  statusLogs       ProductionStatusLog[]
+  activityLogs     ProductionActivityLog[]
+  materialRequests ProductionMaterialRequest[]
+  outbounds        StockOutbound[]
+  costs            ProductionOrderCost[]
+  receipt          FinishedGoodsReceipt?
+  shipmentLines    ShipmentLine[]
+  autoShipments    Shipment[]                  @relation("OrderAutoShipment")
+  bomLines         ProductionOrderBomLine[]
 
   @@index([status, createdAt])
   @@index([status, seq])
@@ -575,10 +578,10 @@ model ProductionOrder {
 
 /// NVL cấu thành một thành phẩm trên Tồn (nhiều mã / thành phẩm).
 model ProductionOrderBomLine {
-  id         String @id @default(uuid()) @db.Uuid
-  orderId    String @map("order_id") @db.Uuid
-  materialId String @map("material_id") @db.Uuid
-  sortOrder  Int    @default(0) @map("sort_order")
+  id                String   @id @default(uuid()) @db.Uuid
+  orderId           String   @map("order_id") @db.Uuid
+  materialId        String   @map("material_id") @db.Uuid
+  sortOrder         Int      @default(0) @map("sort_order")
   /// Màu xi / số lượng / đá / khắc — nhập khi lên đơn, từng mã NVL một.
   platingColor      String?  @map("plating_color")
   qty               Int?
@@ -650,6 +653,8 @@ model ProductionStageEntry {
   /// Khâu Vào đá: TL đá gắn lên (g). KCS cân cả cụm bạc + đá nên hao hụt phải cộng số này
   /// vào TL bạc giao trước khi trừ TL cân lại.
   stoneWeight           Decimal?        @map("stone_weight") @db.Decimal(18, 4)
+  /// Khâu Vào đá: số viên đá thợ trả lại lúc KCS nhận lại. Đá mất = phát − gắn − trả lại.
+  returnedStoneCount    Int?            @map("returned_stone_count")
   btpRecoveredWeight    Decimal?        @map("btp_recovered_weight") @db.Decimal(18, 4)
   silverRecoveredWeight Decimal?        @map("silver_recovered_weight") @db.Decimal(18, 4)
   /// Tiền công khâu, nhập khi KCS nhận lại.
@@ -658,9 +663,9 @@ model ProductionStageEntry {
   createdAt             DateTime        @default(now()) @map("created_at")
   updatedAt             DateTime        @updatedAt @map("updated_at")
 
-  order     ProductionOrder      @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  subTicket ProductionSubTicket? @relation(fields: [subTicketId], references: [id], onDelete: Restrict)
-  topUps    ProductionSubTicketTopUp[]
+  order            ProductionOrder             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  subTicket        ProductionSubTicket?        @relation(fields: [subTicketId], references: [id], onDelete: Restrict)
+  materialRequests ProductionMaterialRequest[]
 
   // Không lặp khâu + lần trong cùng phiếu. Trên DB index này có thêm NULLS NOT DISTINCT
   // (xem prisma/migrations/0_init/migration.sql) — Prisma 6 chưa khai báo được phần đó.
@@ -671,43 +676,42 @@ model ProductionStageEntry {
   @@map("production_stage_entries")
 }
 
-/// Phiếu con chia từ đơn cho thợ: mỗi phiếu một phần số lượng + gram bạc, đi cùng các khâu
-/// của đơn. Mỗi khâu được mở cho thợ tự nhận, người giao xác nhận giao rồi KCS nhận lại
+/// Phiếu con chia từ đơn cho thợ: mỗi phiếu một phần số lượng, đi cùng các khâu của đơn.
+/// Bạc / đá vào phiếu qua yêu cầu xuất NVL (`ProductionMaterialRequest`). Mỗi khâu được mở cho thợ tự nhận, người giao xác nhận giao rồi KCS nhận lại
 /// như phiếu thường. Trạng thái (chờ nhận / đã nhận / đang làm) suy ra khi đọc, không lưu.
 model ProductionSubTicket {
-  id              String           @id @default(uuid()) @db.Uuid
-  orderId         String           @map("order_id") @db.Uuid
+  id              String            @id @default(uuid()) @db.Uuid
+  orderId         String            @map("order_id") @db.Uuid
   no              Int
   qty             Int
-  silverWeight    Decimal          @map("silver_weight") @db.Decimal(18, 4)
   note            String?
   /// Khâu đang mở cho thợ nhận; về null khi người giao xác nhận giao hoặc huỷ mở khâu.
-  pendingStage    ProductionStage? @map("pending_stage")
-  pendingAt       DateTime?        @map("pending_at")
-  pendingByName   String?          @map("pending_by_name")
+  pendingStage    ProductionStage?  @map("pending_stage")
+  pendingAt       DateTime?         @map("pending_at")
+  pendingByName   String?           @map("pending_by_name")
   /// Thợ đã bấm nhận khâu đang mở, chờ người giao xác nhận.
-  claimedByUserId String?          @map("claimed_by_user_id") @db.Uuid
-  claimedByName   String?          @map("claimed_by_name")
-  claimedAt       DateTime?        @map("claimed_at")
+  claimedByUserId String?           @map("claimed_by_user_id") @db.Uuid
+  claimedByName   String?           @map("claimed_by_name")
+  claimedAt       DateTime?         @map("claimed_at")
   /// Kết cục của riêng phiếu con: lỗi hoặc hoàn thiện. Còn null là phiếu vẫn đang chạy.
   outcome         SubTicketOutcome?
-  outcomeAt       DateTime?        @map("outcome_at")
-  outcomeByUserId String?          @map("outcome_by_user_id") @db.Uuid
-  outcomeByName   String?          @map("outcome_by_name")
+  outcomeAt       DateTime?         @map("outcome_at")
+  outcomeByUserId String?           @map("outcome_by_user_id") @db.Uuid
+  outcomeByName   String?           @map("outcome_by_name")
   /// Khâu phiếu đang ở lúc chốt kết cục — cột "Lỗi" trên phiếu ghi khâu nào lỗi.
-  outcomeStage    ProductionStage? @map("outcome_stage")
+  outcomeStage    ProductionStage?  @map("outcome_stage")
   /// Số lượng chốt: hoàn thiện thì đây là số vào kho thành phẩm.
-  outcomeQty      Int?             @map("outcome_qty")
-  outcomeNote     String?          @map("outcome_note")
-  lastPrintedAt   DateTime?        @map("last_printed_at")
-  createdByUserId String?          @map("created_by_user_id") @db.Uuid
-  createdByName   String           @map("created_by_name")
-  createdAt       DateTime         @default(now()) @map("created_at")
-  updatedAt       DateTime         @updatedAt @map("updated_at")
+  outcomeQty      Int?              @map("outcome_qty")
+  outcomeNote     String?           @map("outcome_note")
+  lastPrintedAt   DateTime?         @map("last_printed_at")
+  createdByUserId String?           @map("created_by_user_id") @db.Uuid
+  createdByName   String            @map("created_by_name")
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
 
-  order  ProductionOrder        @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  stages ProductionStageEntry[]
-  topUps ProductionSubTicketTopUp[]
+  order            ProductionOrder             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  stages           ProductionStageEntry[]
+  materialRequests ProductionMaterialRequest[]
 
   @@unique([orderId, no])
   @@index([pendingStage, claimedByUserId])
@@ -715,26 +719,69 @@ model ProductionSubTicket {
   @@map("production_sub_tickets")
 }
 
-/// Cấp thêm số lượng / bạc cho phiếu con khi thợ làm thiếu giữa chừng. Mỗi lần cấp là một
-/// lần giao vật tư thật giữa hai người nên ghi riêng từng dòng, không cộng gộp.
-model ProductionSubTicketTopUp {
-  id              String   @id @default(uuid()) @db.Uuid
-  subTicketId     String   @map("sub_ticket_id") @db.Uuid
-  /// Khâu đã nhận phần cấp thêm này. Null = cấp lúc phiếu đang rảnh, phần này vào khâu sau.
-  stageEntryId    String?  @map("stage_entry_id") @db.Uuid
-  qty             Int      @default(0)
-  silverWeight    Decimal  @default(0) @map("silver_weight") @db.Decimal(18, 4)
-  reason          String?
-  createdByUserId String?  @map("created_by_user_id") @db.Uuid
-  createdByName   String   @map("created_by_name")
-  createdAt       DateTime @default(now()) @map("created_at")
+/// Thợ xin xuất thêm NVL (bạc, đá…) trong lúc đang làm một khâu — xuất đến đâu làm đến đó.
+/// Thợ tạo yêu cầu, người khác (kho / người giao) cân rồi bấm Xuất: lúc đó mới tạo phiếu xuất
+/// gắn mã đơn và trừ tồn. Phần đã xuất cộng vào đầu vào của khâu khi tính hao hụt.
+model ProductionMaterialRequest {
+  id                String                @id @default(uuid()) @db.Uuid
+  orderId           String                @map("order_id") @db.Uuid
+  /// Phiếu con của thợ; null = phiếu mẹ (đơn chưa chia).
+  subTicketId       String?               @map("sub_ticket_id") @db.Uuid
+  /// Khâu đang làm lúc xin — phần xuất tính vào đầu vào khâu này.
+  stageEntryId      String                @map("stage_entry_id") @db.Uuid
+  materialId        String                @map("material_id") @db.Uuid
+  status            MaterialRequestStatus @default(PENDING)
+  /// Bạc / kim loại tính gram, đá tính viên, loại khác chỉ hiển thị.
+  kind              MaterialRequestKind
+  /// Số thợ xin, theo đơn vị của mã.
+  requestedQty      Decimal               @map("requested_qty") @db.Decimal(18, 4)
+  note              String?
+  requestedByUserId String?               @map("requested_by_user_id") @db.Uuid
+  requestedByName   String                @map("requested_by_name")
+  requestedAt       DateTime              @default(now()) @map("requested_at")
+  /// Số thực xuất khỏi kho, theo đơn vị của mã.
+  issuedQty         Decimal?              @map("issued_qty") @db.Decimal(18, 4)
+  /// TL cân lúc xuất (g). Bạc bắt buộc; đá không bắt buộc.
+  issuedWeight      Decimal?              @map("issued_weight") @db.Decimal(18, 4)
+  /// Đá: số viên đã xuất (đơn vị viên thì bằng `issuedQty`).
+  issuedStoneCount  Int?                  @map("issued_stone_count")
+  /// Xuất ngay lúc giao khâu (người lên đơn chọn NVL cho thợ), không qua bước thợ xin.
+  atHandover        Boolean               @default(false) @map("at_handover")
+  /// Phiếu xuất tự tạo lúc duyệt — gắn mã đơn, `autoIssued = true`.
+  outboundId        String?               @unique @map("outbound_id") @db.Uuid
+  /// Người duyệt xuất hoặc từ chối / người huỷ.
+  handledByUserId   String?               @map("handled_by_user_id") @db.Uuid
+  handledByName     String?               @map("handled_by_name")
+  handledAt         DateTime?             @map("handled_at")
+  rejectReason      String?               @map("reject_reason")
+  createdAt         DateTime              @default(now()) @map("created_at")
+  updatedAt         DateTime              @updatedAt @map("updated_at")
 
-  subTicket  ProductionSubTicket   @relation(fields: [subTicketId], references: [id], onDelete: Cascade)
-  stageEntry ProductionStageEntry? @relation(fields: [stageEntryId], references: [id], onDelete: SetNull)
+  order      ProductionOrder      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  subTicket  ProductionSubTicket? @relation(fields: [subTicketId], references: [id], onDelete: Cascade)
+  stageEntry ProductionStageEntry @relation(fields: [stageEntryId], references: [id], onDelete: Cascade)
+  material   Material             @relation(fields: [materialId], references: [id], onDelete: Restrict)
+  outbound   StockOutbound?       @relation(fields: [outboundId], references: [id], onDelete: SetNull)
 
+  @@index([orderId, createdAt])
   @@index([subTicketId])
   @@index([stageEntryId])
-  @@map("production_sub_ticket_top_ups")
+  @@index([status, requestedAt])
+  @@index([materialId])
+  @@map("production_material_requests")
+}
+
+enum MaterialRequestStatus {
+  PENDING
+  ISSUED
+  REJECTED
+  CANCELLED
+}
+
+enum MaterialRequestKind {
+  METAL
+  STONE
+  OTHER
 }
 
 /// Phiếu con kết thúc ở một trong hai nhánh, giống hai cột cuối của phiếu thợ.
@@ -756,6 +803,32 @@ model ProductionStatusLog {
 
   @@index([orderId, changedAt])
   @@map("production_status_logs")
+}
+
+/// Nhật ký thao tác trên đơn / phiếu con / khâu: ai làm gì, lúc nào, giá trị trước và sau.
+/// Ghi cùng transaction với thao tác. Xoá đơn thì `orderId` về null, vẫn giữ `orderCode`.
+model ProductionActivityLog {
+  id          String           @id @default(uuid()) @db.Uuid
+  orderId     String?          @map("order_id") @db.Uuid
+  orderCode   String           @map("order_code")
+  /// Số phiếu con (A012-1 → 1); null = thao tác trên cả đơn / phiếu mẹ.
+  subTicketNo Int?             @map("sub_ticket_no")
+  stage       ProductionStage?
+  /// Mã thao tác, vd STAGE_HANDOVER, STAGE_RETURN — nhãn tiếng Việt nằm ở FE.
+  action      String
+  actorUserId String?          @map("actor_user_id") @db.Uuid
+  actorName   String           @map("actor_name")
+  before      Json?
+  after       Json?
+  note        String?
+  createdAt   DateTime         @default(now()) @map("created_at")
+
+  order ProductionOrder? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([orderId, createdAt])
+  @@index([orderCode, createdAt])
+  @@index([actorUserId, createdAt])
+  @@map("production_activity_logs")
 }
 
 /// Chi phí khác của đơn nhập tay (đúc thuê, 3D, thuê ngoài…).
@@ -797,22 +870,22 @@ model FinishedGoodsReceipt {
 
 /// Phiếu xuất hàng thành phẩm (PX0001).
 model Shipment {
-  id              String    @id @default(uuid()) @db.Uuid
-  seq             Int       @unique
-  code            String    @unique
-  shippedAt       DateTime  @map("shipped_at") @db.Date
-  customerName    String    @map("customer_name")
-  paymentMethod   String?   @map("payment_method")
-  note            String?
-  createdByUserId String?   @map("created_by_user_id") @db.Uuid
-  createdByName   String    @map("created_by_name")
-  lastPrintedAt   DateTime? @map("last_printed_at")
-  dataChangedAt   DateTime  @default(now()) @map("data_changed_at")
-  createdAt       DateTime  @default(now()) @map("created_at")
-  updatedAt       DateTime  @updatedAt @map("updated_at")
+  id               String    @id @default(uuid()) @db.Uuid
+  seq              Int       @unique
+  code             String    @unique
+  shippedAt        DateTime  @map("shipped_at") @db.Date
+  customerName     String    @map("customer_name")
+  paymentMethod    String?   @map("payment_method")
+  note             String?
+  createdByUserId  String?   @map("created_by_user_id") @db.Uuid
+  createdByName    String    @map("created_by_name")
+  lastPrintedAt    DateTime? @map("last_printed_at")
+  dataChangedAt    DateTime  @default(now()) @map("data_changed_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
   /// Phiếu xuất tự tạo khi lên Đơn mới (lấy thành phẩm có sẵn).
-  autoIssued      Boolean   @default(false) @map("auto_issued")
-  createdByOrderId String?  @map("created_by_order_id") @db.Uuid
+  autoIssued       Boolean   @default(false) @map("auto_issued")
+  createdByOrderId String?   @map("created_by_order_id") @db.Uuid
 
   lines          ShipmentLine[]
   createdByOrder ProductionOrder? @relation("OrderAutoShipment", fields: [createdByOrderId], references: [id], onDelete: SetNull)

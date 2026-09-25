@@ -478,7 +478,10 @@ export class InventoryService {
       : isConsumable
         ? dto.otherClassId || null
         : await this.resolveOtherClassId(dto.otherClassName);
-    const metalKind = isBtp || otherClassId ? null : (dto.metalKind ?? defaultMetalKind(warehouse.code));
+    const metalKind =
+      isBtp || otherClassId
+        ? null
+        : (dto.metalKind ?? defaultMetalKind(warehouse.code));
     await this.assertStoneWeight({
       metalKind,
       stoneWeight: dto.stoneWeight,
@@ -640,7 +643,8 @@ export class InventoryService {
       await this.assertConsumableClass(dto.otherClassId);
     }
     await this.assertStoneWeight({
-      metalKind: dto.metalKind !== undefined ? dto.metalKind : material.metalKind,
+      metalKind:
+        dto.metalKind !== undefined ? dto.metalKind : material.metalKind,
       stoneWeight:
         dto.stoneWeight !== undefined
           ? dto.stoneWeight
@@ -734,7 +738,10 @@ export class InventoryService {
           stockUnitPrice,
         },
       });
-      await this.recomputeStockBalance(tx, warehouse.id, material.id);
+      // TL đá vừa sửa ở form là TL của tồn hiện tại — không chia tỉ lệ đè lên.
+      await this.recomputeStockBalance(tx, warehouse.id, material.id, {
+        keepStoneWeight: true,
+      });
     });
 
     const [updated, inboundMap, outboundMap, firstInboundMap, layers] =
@@ -1404,7 +1411,10 @@ export class InventoryService {
           await tx.stockInbound.update({
             where: { id: destIn.id },
             data: {
-              receivedAt: inboundReceivedAt(issuedAt.toISOString(), destIn.receivedAt),
+              receivedAt: inboundReceivedAt(
+                issuedAt.toISOString(),
+                destIn.receivedAt,
+              ),
               name,
               sku: materialSku,
               unitId: unit?.id ?? undefined,
@@ -2082,8 +2092,8 @@ export class InventoryService {
   }
 
   /**
-   * Lên đơn: xuất FIFO khỏi kho (BTP hoặc NVL), gắn mã đơn, đánh dấu tự tạo.
-   * Chạy trong transaction của đơn — thiếu tồn thì cả đơn không được tạo.
+   * Lên đơn / xuất NVL theo yêu cầu của thợ: xuất FIFO khỏi kho (BTP hoặc NVL), gắn mã đơn, đánh
+   * dấu tự tạo. Chạy trong transaction của đơn — thiếu tồn thì cả thao tác không thực hiện.
    */
   async issueStockForOrder(
     tx: Prisma.TransactionClient,
@@ -2097,9 +2107,10 @@ export class InventoryService {
         warehouseId: string;
         unit: { id: string; name: string };
       };
-      qty: number;
+      qty: number | Prisma.Decimal;
       issuedAt: Date;
       issuedBy: string;
+      note?: string;
     },
   ) {
     const material = params.material;
@@ -2108,14 +2119,14 @@ export class InventoryService {
       throw new BadRequestException('Số lượng xuất phải lớn hơn 0');
     }
     try {
-      await this.applyFifoOutbound(tx, {
+      return await this.applyFifoOutbound(tx, {
         warehouseId: material.warehouseId,
         material: { id: material.id, name: material.name, sku: material.sku },
         unit: material.unit,
         unitName: material.unit.name,
         issuedAt: params.issuedAt,
         qty,
-        note: `Xuất cho đơn ${params.orderCode}`,
+        note: params.note ?? `Xuất cho đơn ${params.orderCode}`,
         issuedBy: params.issuedBy,
         receivedBy: null,
         receivedByUserId: null,
@@ -2141,10 +2152,34 @@ export class InventoryService {
     await this.issueStockForOrder(tx, params);
   }
 
-  /** Hoàn lại kho phiếu xuất do đơn tự tạo (xoá đơn, đổi mã / số lượng). */
-  async revokeBtpForOrder(tx: Prisma.TransactionClient, orderId: string) {
+  /**
+   * Hoàn lại kho phiếu xuất do đơn tự tạo (xoá đơn, đổi mã / số lượng). `keepMaterialRequests`
+   * giữ lại phiếu xuất theo yêu cầu của thợ — vật tư đó đã giao thật cho thợ.
+   */
+  async revokeBtpForOrder(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+    options: { keepMaterialRequests?: boolean } = {},
+  ) {
     const rows = await tx.stockOutbound.findMany({
-      where: { productionOrderId: orderId, autoIssued: true },
+      where: {
+        productionOrderId: orderId,
+        autoIssued: true,
+        ...(options.keepMaterialRequests ? { materialRequest: null } : {}),
+      },
+      select: { id: true },
+    });
+    await this.revokeOutbounds(
+      tx,
+      rows.map((row) => row.id),
+    );
+  }
+
+  /** Xoá các phiếu xuất tự tạo đã chọn rồi tính lại tồn của từng mã bị ảnh hưởng. */
+  async revokeOutbounds(tx: Prisma.TransactionClient, ids: string[]) {
+    if (ids.length === 0) return;
+    const rows = await tx.stockOutbound.findMany({
+      where: { id: { in: ids }, autoIssued: true },
       select: { id: true, warehouseId: true, materialId: true },
     });
     if (rows.length === 0) return;
@@ -2386,12 +2421,25 @@ export class InventoryService {
   }
 
   /** Tồn kho SL/TT = đầu kỳ + nhập − xuất. One SQL so the tx does not multiplex. */
+  /**
+   * Tính lại NXT của một mã từ các phiếu nhập / xuất. TL đá (`materials.stone_weight`) là của
+   * cả dòng tồn nên đi theo số lượng: SL tồn đổi thì TL đá đổi cùng tỉ lệ (xuất 600/1000 viên
+   * thì TL đá còn 400/1000). Tồn cũ bằng 0 thì không suy được tỉ lệ — giữ nguyên, người quản
+   * kho tự sửa. `keepStoneWeight` dùng khi người dùng vừa tự nhập TL đá cho tồn hiện tại.
+   */
   private async recomputeStockBalance(
     tx: Prisma.TransactionClient,
     warehouseId: string,
     materialId: string | null,
+    options: { keepStoneWeight?: boolean } = {},
   ) {
     if (!materialId) return;
+    const before = options.keepStoneWeight
+      ? null
+      : await tx.material.findUnique({
+          where: { id: materialId },
+          select: { stoneWeight: true, balance: { select: { qty: true } } },
+        });
     await tx.$executeRaw`
       INSERT INTO ${dbTable('stock_balances')} (
         id, warehouse_id, material_id,
@@ -2439,6 +2487,23 @@ export class InventoryService {
         amount = EXCLUDED.amount,
         updated_at = NOW()
     `;
+    const oldQty = before?.balance?.qty;
+    if (before?.stoneWeight == null || oldQty == null || oldQty.lte(0)) return;
+    const after = await tx.stockBalance.findUnique({
+      where: { materialId },
+      select: { qty: true },
+    });
+    if (!after || after.qty.equals(oldQty)) return;
+    const stoneWeight = after.qty.lte(0)
+      ? new Prisma.Decimal(0)
+      : before.stoneWeight
+          .mul(after.qty)
+          .div(oldQty)
+          .toDecimalPlaces(4, Prisma.Decimal.ROUND_HALF_UP);
+    await tx.material.update({
+      where: { id: materialId },
+      data: { stoneWeight },
+    });
   }
 
   private async syncMaterialLines(
@@ -2965,7 +3030,7 @@ function assertNotAutoIssued(outbound: {
 }) {
   if (!outbound.autoIssued) return;
   throw new BadRequestException(
-    `Phiếu xuất do lên đơn ${outbound.productionOrder?.code} tự tạo — sửa mã / số lượng trên đơn`,
+    `Phiếu xuất do đơn ${outbound.productionOrder?.code} tự tạo (giao khâu / thợ xin) — không sửa tay được`,
   );
 }
 

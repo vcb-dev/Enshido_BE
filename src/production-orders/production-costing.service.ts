@@ -2,7 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { MetalKind, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { decStr } from '../util/money';
-import { recoveredOf, silverLossOf } from './stage-math';
+import { issuedOf, recoveredOf, silverLossOf } from './stage-math';
 import { STAGE_LABEL, subTicketCode } from './order-detail';
 
 type Db = Prisma.TransactionClient | PrismaService;
@@ -36,6 +36,14 @@ const COSTING_ORDER_SELECT = {
       btpRecoveredWeight: true,
       silverRecoveredWeight: true,
       laborCost: true,
+      materialRequests: {
+        select: {
+          status: true,
+          kind: true,
+          issuedWeight: true,
+          issuedStoneCount: true,
+        },
+      },
     },
   },
   costs: { orderBy: { createdAt: 'asc' as const } },
@@ -167,7 +175,10 @@ export class ProductionCostingService {
       zero,
     );
     const lossGrams = returned.reduce(
-      (sum, entry) => sum.add(silverLossOf(entry) ?? zero),
+      (sum, entry) =>
+        sum.add(
+          silverLossOf(entry, issuedOf(entry.materialRequests).metal) ?? zero,
+        ),
       zero,
     );
     if (recoveredGrams.gt(0) && !silverUnitPrice) {
