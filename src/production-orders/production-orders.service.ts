@@ -1044,19 +1044,12 @@ export class ProductionOrdersService {
           });
           return row;
         });
-        if (nvlMaterial || nvlLines.length) this.inventory.bustNvlStock();
         await this.touchSiblings([data.parentId], created.id);
         this.logger.log(
           `Đã lên đơn ${created.code} (${Date.now() - started}ms)`,
         );
         return toDetail(
-          asCreatedDetail(
-            created,
-            btpMaterial,
-            nvlMaterial,
-            nvlLines.length || Number(Boolean(nvlMaterial)),
-            nvlLines,
-          ),
+          asCreatedDetail(created, btpMaterial, nvlMaterial, 0, nvlLines),
         );
       } catch (error) {
         // Hai người lên đơn cùng lúc có thể lấy trùng số — thử lại với số kế tiếp.
@@ -2269,7 +2262,10 @@ export class ProductionOrdersService {
     });
   }
 
-  /** Xuất kho gắn đơn: NVL; Đơn NVL mới thêm xuất thành phẩm nguồn. Lên đơn BTP không xuất kho. */
+  /**
+   * Xuất kho gắn đơn lúc lên / sửa đơn: chỉ còn xuất thành phẩm nguồn cho Đơn NVL mới. Không
+   * xuất BTP, NVL hay đá — các thứ đó xuất ở bước giao khâu Nguội / Vào đá.
+   */
   private async issueAutoStockForOrder(
     tx: Prisma.TransactionClient,
     params: {
@@ -2286,24 +2282,8 @@ export class ProductionOrdersService {
       finishedProductQty: number;
     },
   ) {
-    if (params.nvlIssues.length) {
-      await tx.$executeRaw`SELECT set_config('lock_timeout', '2000', true)`;
-    }
-    for (const line of params.nvlIssues) {
-      if (line.qty < 1) {
-        throw new BadRequestException(
-          `Nhập số lượng NVL cần lên đơn cho mã ${line.material.sku ?? line.material.name}`,
-        );
-      }
-      await this.inventory.issueStockForOrder(tx, {
-        orderId: params.orderId,
-        orderCode: params.orderCode,
-        material: line.material,
-        qty: line.qty,
-        issuedAt: params.issuedAt,
-        issuedBy: params.issuedBy,
-      });
-    }
+    // Lên đơn không xuất NVL / đá (người dùng chốt 2026-09-25): đá chỉ xuất ở khâu Vào đá,
+    // phôi chỉ xuất ở khâu Nguội — xem ProductionMaterialRequestsService.issueAtHandover.
     if (params.source === ProductionSource.NVL && params.sourceOrderCode) {
       await this.issueFinishedGoodsForOrder(tx, {
         sourceOrderCode: params.sourceOrderCode,
