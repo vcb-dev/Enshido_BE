@@ -143,6 +143,7 @@ const outboundListSelect = {
   unitName: true,
   unitId: true,
   qty: true,
+  gramQty: true,
   stockUnitPrice: true,
   inboundUnitPrice: true,
   amount: true,
@@ -481,7 +482,9 @@ export class InventoryService {
     const metalKind = isBtp || otherClassId ? null : (dto.metalKind ?? defaultMetalKind(warehouse.code));
 
     const materialId = await this.prisma.runTx(async (tx) => {
-      const sku = await allocateMaterialSku(tx, warehouse.code);
+      const sku = isBtp
+        ? await this.productCodeOf(tx, dto.sku)
+        : await allocateMaterialSku(tx, warehouse.code);
       const material = await tx.material.create({
         data: {
           warehouseId: warehouse.id,
@@ -599,6 +602,10 @@ export class InventoryService {
                 !images.some((image) => image.publicId === publicId),
             );
 
+    if (code === 'btp-cho-vao-da' && dto.sku !== undefined) {
+      await this.productCodeOf(this.prisma, dto.sku, material.id);
+    }
+
     if (dto.name?.trim()) {
       const nameClash = await this.prisma.material.findFirst({
         where: {
@@ -642,6 +649,7 @@ export class InventoryService {
           ...(dto.locationCode !== undefined
             ? { locationCode: dto.locationCode?.trim() || null }
             : {}),
+          ...(dto.sku !== undefined ? { sku: dto.sku.trim() } : {}),
           ...(dto.name != null ? { name: dto.name.trim() } : {}),
           ...(dto.unitId ? { unitId: dto.unitId } : {}),
           ...(dto.shapeId !== undefined ? { shapeId: dto.shapeId } : {}),
@@ -683,10 +691,10 @@ export class InventoryService {
         },
       });
 
-      if (dto.name != null || dto.unitId) {
+      if (dto.name != null || dto.unitId || dto.sku !== undefined) {
         await this.syncMaterialLines(tx, material.id, {
           name: dto.name?.trim() || material.name,
-          sku: material.sku,
+          sku: dto.sku !== undefined ? dto.sku.trim() : material.sku,
           unitId: dto.unitId || material.unitId,
           unitName: unitRow?.name,
         });
@@ -1161,6 +1169,8 @@ export class InventoryService {
     if (!name) throw new BadRequestException('Tên hàng không được trống');
 
     const qty = new Prisma.Decimal(dto.qty);
+    const gramQty = optionalDecimal(dto.gramQty);
+    if (gramQty?.lte(0)) throw new BadRequestException('Số gram phải lớn hơn 0');
     const applyToStock = dto.applyToStock !== false;
     const dest = await this.resolveDestWarehouse(
       warehouse.code,
@@ -1209,6 +1219,7 @@ export class InventoryService {
         unitName,
         issuedAt,
         qty,
+        gramQty,
         note: dto.note?.trim() || null,
         issuedBy: actorDisplayName(actor),
         receivedBy: receiver.receivedBy,
@@ -1282,6 +1293,8 @@ export class InventoryService {
     if (!name) throw new BadRequestException('Tên hàng không được trống');
 
     const qty = new Prisma.Decimal(dto.qty);
+    const gramQty = optionalDecimal(dto.gramQty);
+    if (gramQty?.lte(0)) throw new BadRequestException('Số gram phải lớn hơn 0');
 
     const unit = dto.unitId
       ? await this.prisma.unit.findUnique({
@@ -1358,6 +1371,7 @@ export class InventoryService {
           unitId: unit?.id ?? null,
           unitName,
           qty,
+          gramQty,
           stockUnitPrice: 0,
           inboundUnitPrice: quote.unitPrice,
           amount: quote.amount,
@@ -1710,6 +1724,7 @@ export class InventoryService {
       unitName: string;
       unitId: string | null;
       qty: Prisma.Decimal;
+      gramQty?: Prisma.Decimal | null;
       stockUnitPrice: Prisma.Decimal;
       inboundUnitPrice: Prisma.Decimal;
       amount: Prisma.Decimal;
@@ -1736,6 +1751,7 @@ export class InventoryService {
       unit: row.unit?.name ?? row.unitName,
       unitId: row.unitId,
       qty: decStr(row.qty),
+      gramQty: row.gramQty ? decStr(row.gramQty) : null,
       stockUnitPrice: decStr(row.stockUnitPrice),
       inboundUnitPrice: decStr(row.inboundUnitPrice),
       amount: decStr(row.amount),
@@ -2208,6 +2224,28 @@ export class InventoryService {
       this.listCatalogChildren('mau-xi', 'Màu xi', 12, OtherClassKind.OTHER),
     ]);
     this.btpCatalogsReady = true;
+  }
+
+  /** Mã sản phẩm kho BTP do người dùng nhập — không cấp mã B00001 tự động. */
+  private async productCodeOf(
+    db: PrismaService | Prisma.TransactionClient,
+    raw: string | null | undefined,
+    exceptId?: string,
+  ): Promise<string> {
+    const code = raw?.trim() ?? '';
+    if (!code) throw new BadRequestException('Nhập mã sản phẩm');
+    if (code.length > 60) {
+      throw new BadRequestException('Mã sản phẩm tối đa 60 ký tự');
+    }
+    const clash = await db.material.findFirst({
+      where: {
+        sku: code,
+        ...(exceptId ? { NOT: { id: exceptId } } : {}),
+      },
+      select: { id: true },
+    });
+    if (clash) throw new ConflictException('Mã sản phẩm đã tồn tại');
+    return code;
   }
 
   private async assertConsumableClass(id?: string | null) {
@@ -2685,6 +2723,7 @@ export class InventoryService {
       unitName: string;
       issuedAt: Date;
       qty: Prisma.Decimal;
+      gramQty?: Prisma.Decimal | null;
       note: string | null;
       issuedBy: string | null;
       receivedBy: string | null;
@@ -2712,6 +2751,7 @@ export class InventoryService {
         unitId: params.unit.id,
         unitName: params.unitName,
         qty: params.qty,
+        gramQty: params.gramQty ?? null,
         stockUnitPrice: 0,
         inboundUnitPrice: quote.unitPrice,
         amount: quote.amount,

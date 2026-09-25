@@ -40,6 +40,11 @@ export class CreateOutboundDto {
   qty!: string;
 
   @IsOptional()
+  @Transform(({ value }) => (value === '' || value == null ? null : value))
+  @Matches(DECIMAL, { message: 'Số gram không hợp lệ' })
+  gramQty?: string | null;
+
+  @IsOptional()
   @Matches(DECIMAL, { message: 'Đơn giá tồn không hợp lệ' })
   stockUnitPrice?: string;
 

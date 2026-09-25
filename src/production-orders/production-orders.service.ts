@@ -1743,8 +1743,7 @@ export class ProductionOrdersService {
     const description = dto.description?.trim() ?? '';
     const closedBy = dto.closedBy.trim();
     if (!closedBy) throw new BadRequestException('Nhập người chốt đơn');
-    const trackingCode = dto.trackingCode?.trim();
-    if (!trackingCode) throw new BadRequestException('Nhập mã theo dõi đơn');
+    let trackingCode = dto.trackingCode?.trim() ?? '';
     const leadTime = optional(dto.leadTime);
     const receivedDate = dateOnly(dto.receivedDate);
     if (!dto.dueDate) throw new BadRequestException('Nhập ngày cần trả');
@@ -1770,81 +1769,52 @@ export class ProductionOrdersService {
               select: { id: true, parentId: true },
             })
           : Promise.resolve(null),
-        dto.source === ProductionSource.BTP
+        dto.btpMaterialId
           ? this.resolveBtpMaterial(dto.btpMaterialId)
           : Promise.resolve(null),
         nvlLines[0]
           ? Promise.resolve(nvlLines[0].material)
-          : this.resolveNvlMaterial(dto.nvlMaterialId),
+          : dto.nvlMaterialId
+            ? this.resolveNvlMaterial(dto.nvlMaterialId)
+            : Promise.resolve(null),
         dto.source === ProductionSource.NVL
-          ? this.resolveSourceFinishedProduct(
+          ? Promise.resolve(null)
+          : this.resolveSourceFinishedProduct(
               dto.finishedProductCode,
               dto.finishedProductQty ?? 0,
-            )
-          : Promise.resolve(null),
+            ),
       ]);
 
-    if (!nvlLines.length && !(dto.stoneCount && dto.stoneCount >= 1)) {
+    if (dto.source === ProductionSource.NVL) {
+      if (!btpMaterial) throw new BadRequestException('Chọn mã sản phẩm');
+      if (!dto.model3dCode?.trim()) {
+        throw new BadRequestException('Nhập mã sản xuất');
+      }
+      if (!(dto.finishedProductQty && dto.finishedProductQty >= 1)) {
+        throw new BadRequestException('Nhập số lượng thành phẩm cần lên đơn');
+      }
+      trackingCode = btpMaterial.sku?.trim() || trackingCode;
+      if (!trackingCode) throw new BadRequestException('Mã sản phẩm không hợp lệ');
+    } else if (dto.source === ProductionSource.BTP) {
+      if (!btpMaterial) throw new BadRequestException('Chọn mã sản phẩm');
+      trackingCode = btpMaterial.sku?.trim() || trackingCode;
+      if (!trackingCode) throw new BadRequestException('Mã sản phẩm không hợp lệ');
+    } else if (!nvlLines.length && !(dto.stoneCount && dto.stoneCount >= 1)) {
       throw new BadRequestException('Nhập số lượng NVL cần lên đơn');
     }
-    if (
-      dto.source === ProductionSource.NVL &&
-      sourceOrderCode &&
-      !nvlLines.length
-    ) {
-      const bomLineCount = await this.prisma.productionOrderBomLine.count({
-        where: { order: { code: sourceOrderCode } },
-      });
-      if (bomLineCount > 1) {
-        throw new BadRequestException(
-          'Nhập số lượng NVL cần lên đơn cho từng mã trên thành phẩm',
-        );
-      }
-    }
-    if (
-      dto.source === ProductionSource.NVL &&
-      !(dto.finishedProductQty && dto.finishedProductQty >= 1)
-    ) {
-      throw new BadRequestException('Nhập số lượng thành phẩm cần lên đơn');
-    }
+
     if (
       dto.source === ProductionSource.BTP &&
       !(dto.finishedProductQty && dto.finishedProductQty >= 1)
     ) {
       throw new BadRequestException('Nhập số lượng thành phẩm cần lên đơn');
     }
-    if (
-      dto.source === ProductionSource.BTP &&
-      !(dto.btpQty && dto.btpQty >= 1)
-    ) {
-      throw new BadRequestException('Nhập số lượng BTP cần lên đơn');
-    }
-    if (dto.finishedProductQty && dto.finishedProductQty >= 1) {
-      const nvlNeed = nvlLines.length
-        ? Math.min(...nvlLines.map((line) => line.qty))
-        : dto.stoneCount ?? null;
-      const caps: Array<{ qty: number; label: string }> = [];
-      if (dto.source === ProductionSource.BTP && dto.btpQty) {
-        caps.push({ qty: dto.btpQty, label: 'BTP' });
-      }
-      if (nvlNeed && nvlNeed >= 1) {
-        caps.push({ qty: nvlNeed, label: 'NVL' });
-      }
-      if (caps.length) {
-        const minQty = Math.min(...caps.map((item) => item.qty));
-        if (dto.finishedProductQty !== minQty) {
-          const labels = caps
-            .filter((item) => item.qty === minQty)
-            .map((item) => item.label);
-          throw new BadRequestException(
-            dto.finishedProductQty > minQty
-              ? labels.length === 1
-                ? `Không đủ số lượng ${labels[0]}`
-                : `Không đủ số lượng ${labels.join(' và ')}`
-              : `Số lượng thành phẩm phải bằng ${minQty}`,
-          );
-        }
-      }
+    const btpQty =
+      dto.source === ProductionSource.BTP
+        ? (dto.btpQty ?? dto.finishedProductQty ?? null)
+        : (dto.btpQty ?? null);
+    if (dto.source === ProductionSource.BTP && !(btpQty && btpQty >= 1)) {
+      throw new BadRequestException('Nhập số lượng thành phẩm cần lên đơn');
     }
 
     let parentId: string | null = null;
@@ -1866,7 +1836,7 @@ export class ProductionOrdersService {
       btpMaterial,
       nvlMaterial,
       nvlLines,
-      btpQty: dto.btpQty ?? null,
+      btpQty,
       requestType: dto.requestType,
       receivedDate,
       dueDate,
@@ -2074,7 +2044,7 @@ export class ProductionOrdersService {
     if (params.btpMaterial || params.nvlIssues.length) {
       await tx.$executeRaw`SELECT set_config('lock_timeout', '2000', true)`;
     }
-    if (params.btpMaterial) {
+    if (params.btpMaterial && params.source === ProductionSource.BTP) {
       await this.inventory.issueStockForOrder(tx, {
         orderId: params.orderId,
         orderCode: params.orderCode,

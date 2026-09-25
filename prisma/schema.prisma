@@ -231,6 +231,7 @@ model Material {
   btpOrders    ProductionOrder[] @relation("OrderBtpMaterial")
   nvlOrders    ProductionOrder[] @relation("OrderNvlMaterial")
   bomLines     ProductionOrderBomLine[]
+  castingOrderLines CastingOrderLine[]
 
   @@unique([warehouseId, sku])
   @@unique([sku], map: "materials_sku_key")
@@ -358,6 +359,8 @@ model StockOutbound {
   unitId            String?  @map("unit_id") @db.Uuid
   unitName          String   @map("unit_name")
   qty               Decimal  @db.Decimal(18, 4)
+  /// Số gram xuất — nhập tay ở Xuất kho NVL chính.
+  gramQty           Decimal? @map("gram_qty") @db.Decimal(18, 4)
   stockUnitPrice    Decimal  @default(0) @map("stock_unit_price") @db.Decimal(18, 2)
   inboundUnitPrice  Decimal  @default(0) @map("inbound_unit_price") @db.Decimal(18, 2)
   amount            Decimal  @default(0) @db.Decimal(18, 2)
@@ -869,4 +872,42 @@ model RefreshToken {
   @@index([userId])
   @@index([expiresAt], map: "refresh_tokens_expires_at_idx")
   @@map("refresh_tokens")
+}
+
+/// Lệnh đúc: mã đúc, số cối và các dòng NVL (số gram theo từng mã).
+model CastingOrder {
+  id        String   @id @default(uuid()) @db.Uuid
+  code      String   @unique
+  moldCount Int      @map("mold_count")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  lines CastingOrderLine[]
+
+  @@index([createdAt])
+  @@map("casting_orders")
+}
+
+/// Một NVL trên lệnh đúc. Thông tin chụp lúc lưu, không đổi theo Tồn sau này.
+model CastingOrderLine {
+  id             String @id @default(uuid()) @db.Uuid
+  castingOrderId String @map("casting_order_id") @db.Uuid
+  sortOrder      Int    @default(0) @map("sort_order")
+  materialId     String @map("material_id") @db.Uuid
+  materialSku    String? @map("material_sku")
+  materialName   String @map("material_name")
+  locationCode   String? @map("location_code")
+  category       String?
+  materialType   String? @map("material_type")
+  shape          String?
+  color          String?
+  unit           String
+  gramQty        Decimal @map("gram_qty") @db.Decimal(18, 4)
+
+  castingOrder CastingOrder @relation(fields: [castingOrderId], references: [id], onDelete: Cascade)
+  material     Material     @relation(fields: [materialId], references: [id], onDelete: Restrict)
+
+  @@index([castingOrderId, sortOrder])
+  @@index([materialId])
+  @@map("casting_order_lines")
 }

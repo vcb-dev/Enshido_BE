@@ -22,6 +22,7 @@ import { UploadsModule } from './uploads/uploads.module';
 import { ProductionOrdersModule } from './production-orders/production-orders.module';
 import { FinishedGoodsModule } from './finished-goods/finished-goods.module';
 import { EditLogsModule } from './edit-logs/edit-logs.module';
+import { CastingOrdersModule } from './casting-orders/casting-orders.module';
 
 @Module({
   imports: [
@@ -48,6 +49,7 @@ import { EditLogsModule } from './edit-logs/edit-logs.module';
     FinishedGoodsModule,
     CatalogsModule,
     EditLogsModule,
+    CastingOrdersModule,
   ],
   controllers: [AppController],
   providers: [
