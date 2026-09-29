@@ -1869,7 +1869,7 @@ export class ProductionOrdersService {
   /** Ảnh mới phải nằm trong thư mục Cloudinary của hệ thống; ảnh đã có trên đơn thì giữ nguyên. */
   private newImages(images: OrderImageDto[], existing: Set<string>) {
     const seen = new Set<string>();
-    const counters = { DETAIL: 0, PRODUCT: 0 };
+    const counters = { DETAIL: 0, PRODUCT: 0, CASTING_TREE: 0 };
     return images
       .filter((image) => {
         if (seen.has(image.publicId)) return false;

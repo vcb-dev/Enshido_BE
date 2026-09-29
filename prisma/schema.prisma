@@ -454,6 +454,7 @@ enum ProductionSource {
 enum ProductionImageKind {
   DETAIL
   PRODUCT
+  CASTING_TREE
 }
 
 /// Khâu giao thợ trên phiếu. Đúc nằm ở đầu phiếu; Lỗi / Hoàn thiện là kết cục cuối phiếu, không phải khâu.
@@ -875,6 +876,80 @@ model RefreshToken {
 }
 
 /// Lệnh đúc: mã đúc, số cối và các dòng NVL (số gram theo từng mã).
+/// Trạng thái đơn tạo (phiếu lên đơn trước / song song lệnh sản xuất).
+enum IntakeOrderStatus {
+  PENDING_APPROVAL
+  /// Đã duyệt — chờ lên lệnh sản xuất (có/không khuôn quyết định bước 3D).
+  APPROVED
+  /// Đã có link file 3D — chờ lên lệnh sản xuất.
+  READY_FOR_PRODUCTION
+  /// (D) Thợ đã chụp/cân sau in sáp — chờ cây thông.
+  WAX_PRINTED
+  /// Đã cây thông + nhập số liệu — chờ thủ kho xác nhận.
+  PENDING_WAREHOUSE_CONFIRMATION
+  /// (E) Thủ kho đã xác nhận — chờ lên lệnh sản xuất (đã có sáp).
+  WAX_CONFIRMED
+  /// Đã lên phiếu đúc — chờ khâu đúc.
+  WAIT_CASTING
+  REJECTED
+  NEW
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+/// Phiếu lên đơn — thông tin đặt hàng cơ bản (ảnh, SL, hạn trả, mã sản phẩm…).
+model IntakeOrder {
+  id           String                @id @default(uuid()) @db.Uuid
+  seq          Int                   @unique
+  code         String                @unique
+  /// Mã lệnh sản xuất (random) — hiển thị cột Mã SX; `code` là mã đơn hàng DH….
+  sxCode       String                @unique @map("sx_code")
+  status       IntakeOrderStatus       @default(PENDING_APPROVAL)
+  requestType  ProductionRequestType @map("request_type")
+  productName  String                @default("") @map("product_name")
+  qty          Int                   @default(1)
+  /// Mã sản phẩm (SKU / mã hàng).
+  trackingCode String?               @map("tracking_code")
+  placedBy     String                @map("placed_by")
+  description  String
+  /// Ngày tạo trên phiếu (có thể khác `createdAt` hệ thống).
+  createdDate  DateTime              @map("created_date") @db.Date
+  dueDate      DateTime?             @map("due_date") @db.Date
+  /// Chỉ set khi duyệt: true = đã có khuôn; false = cần vẽ 3D in resin.
+  hasMold      Boolean?              @map("has_mold")
+  model3dUrl   String?               @map("model3d_url")
+  productWeightGram Decimal?         @map("product_weight_gram") @db.Decimal(18, 4)
+  castingTreeWeightGram Decimal?     @map("casting_tree_weight_gram") @db.Decimal(18, 4)
+  createdAt    DateTime              @default(now()) @map("created_at")
+  updatedAt    DateTime              @updatedAt @map("updated_at")
+
+  images IntakeOrderImage[]
+  castingSlips CastingSlip[]
+
+  @@index([status, createdDate])
+  @@index([trackingCode])
+  @@index([placedBy])
+  @@index([requestType])
+  @@map("intake_orders")
+}
+
+model IntakeOrderImage {
+  id        String              @id @default(uuid()) @db.Uuid
+  orderId   String              @map("order_id") @db.Uuid
+  kind      ProductionImageKind
+  url       String
+  publicId  String              @map("public_id")
+  width     Int?
+  height    Int?
+  sortOrder Int                 @default(0) @map("sort_order")
+
+  order IntakeOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, kind, sortOrder])
+  @@map("intake_order_images")
+}
+
 model CastingOrder {
   id        String   @id @default(uuid()) @db.Uuid
   code      String   @unique
@@ -886,6 +961,43 @@ model CastingOrder {
 
   @@index([createdAt])
   @@map("casting_orders")
+}
+
+/// Phiếu đúc lên từ đơn tạo (Lệnh sản xuất).
+model CastingSlip {
+  id                  String   @id @default(uuid()) @db.Uuid
+  code                String   @unique
+  slipDate            DateTime @map("slip_date") @db.Date
+  intakeOrderId       String   @map("intake_order_id") @db.Uuid
+  waxWeightGram       Decimal  @map("wax_weight_gram") @db.Decimal(18, 4)
+  batchOrderCodes     String   @map("batch_order_codes")
+  issueS999Gram       Decimal? @map("issue_s999_gram") @db.Decimal(18, 4)
+  issueMasterAlloyGram Decimal? @map("issue_master_alloy_gram") @db.Decimal(18, 4)
+  issueS925Gram       Decimal? @map("issue_s925_gram") @db.Decimal(18, 4)
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  intake IntakeOrder         @relation(fields: [intakeOrderId], references: [id], onDelete: Restrict)
+  images CastingSlipImage[]
+
+  @@index([slipDate])
+  @@index([intakeOrderId])
+  @@map("casting_slips")
+}
+
+model CastingSlipImage {
+  id        String @id @default(uuid()) @db.Uuid
+  slipId    String @map("slip_id") @db.Uuid
+  url       String
+  publicId  String @map("public_id")
+  width     Int?
+  height    Int?
+  sortOrder Int    @default(0) @map("sort_order")
+
+  slip CastingSlip @relation(fields: [slipId], references: [id], onDelete: Cascade)
+
+  @@index([slipId, sortOrder])
+  @@map("casting_slip_images")
 }
 
 /// Một NVL trên lệnh đúc. Thông tin chụp lúc lưu, không đổi theo Tồn sau này.

@@ -23,6 +23,8 @@ import { ProductionOrdersModule } from './production-orders/production-orders.mo
 import { FinishedGoodsModule } from './finished-goods/finished-goods.module';
 import { EditLogsModule } from './edit-logs/edit-logs.module';
 import { CastingOrdersModule } from './casting-orders/casting-orders.module';
+import { CastingSlipsModule } from './casting-slips/casting-slips.module';
+import { IntakeOrdersModule } from './intake-orders/intake-orders.module';
 
 @Module({
   imports: [
@@ -50,6 +52,8 @@ import { CastingOrdersModule } from './casting-orders/casting-orders.module';
     CatalogsModule,
     EditLogsModule,
     CastingOrdersModule,
+    CastingSlipsModule,
+    IntakeOrdersModule,
   ],
   controllers: [AppController],
   providers: [

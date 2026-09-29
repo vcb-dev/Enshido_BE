@@ -1,0 +1,1 @@
+ALTER TABLE "intake_orders" ADD COLUMN IF NOT EXISTS "has_mold" BOOLEAN;
