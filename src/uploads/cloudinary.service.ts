@@ -37,7 +37,7 @@ export class CloudinaryService {
   /** Chỉ nhận ảnh nằm trong thư mục của hệ thống, tránh gắn ảnh lạ vào đơn. */
   ownsPublicId(publicId: string) {
     const folder =
-      this.config.get<string>('CLOUDINARY_FOLDER')?.trim() || 'enshido/orders';
+      this.config.get<string>('CLOUDINARY_FOLDER')?.trim() || 'enshido';
     return publicId.startsWith(`${folder}/`);
   }
 
@@ -85,11 +85,14 @@ export class CloudinaryService {
     if (ids.length === 0) return [];
     const where = { publicId: { in: ids } };
     const select = { publicId: true } as const;
-    const [materials, orders] = await Promise.all([
+    const [materials, orders, intake] = await Promise.all([
       this.prisma.materialImage.findMany({ where, select }),
       this.prisma.productionOrderImage.findMany({ where, select }),
+      this.prisma.intakeOrderImage.findMany({ where, select }),
     ]);
-    const used = new Set([...materials, ...orders].map((row) => row.publicId));
+    const used = new Set(
+      [...materials, ...orders, ...intake].map((row) => row.publicId),
+    );
     return ids.filter((id) => !used.has(id));
   }
 
@@ -99,7 +102,7 @@ export class CloudinaryService {
     const apiSecret = this.config.get<string>('CLOUDINARY_API_SECRET')?.trim();
     if (!cloudName || !apiKey || !apiSecret) return null;
     const folder =
-      this.config.get<string>('CLOUDINARY_FOLDER')?.trim() || 'enshido/orders';
+      this.config.get<string>('CLOUDINARY_FOLDER')?.trim() || 'enshido';
     return { cloudName, apiKey, apiSecret, folder };
   }
 
