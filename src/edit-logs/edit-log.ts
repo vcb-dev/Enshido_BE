@@ -19,7 +19,8 @@ export type EditEntityType =
   | 'casting_order'
   | 'intake_order'
   /** Chỉnh sửa form Tạo đơn (có lý do) — tách khỏi bước Lệnh sản xuất. */
-  | 'intake_order_form';
+  | 'intake_order_form'
+  | 'casting_cut';
 
 export function requireEditReason(reason: string | undefined) {
   const value = reason?.trim();

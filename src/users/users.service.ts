@@ -1,10 +1,11 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
-import { RoleCode } from '@prisma/client';
+import { ProductionStage, RoleCode } from '@prisma/client';
 import type { AuthUserPayload } from '../auth/types';
 import { recordEditLog } from '../edit-logs/edit-log';
 import { actorName } from '../production-orders/order-detail';
@@ -25,6 +26,7 @@ const userSelect = {
   extraRoles: true,
   allowedScreens: true,
   department: true,
+  workerStages: true,
   isActive: true,
   createdAt: true,
 } as const;
@@ -83,6 +85,12 @@ export class UsersService {
           ? sanitizeScreens(dto.allowedScreens ?? [])
           : sanitizeScreens(dto.allowedScreens ?? DEFAULT_STAFF_SCREENS);
 
+    const workerStages = workerStagesFor(
+      dto.roleCode,
+      dto.extraRoles ?? [],
+      dto.workerStages ?? [],
+    );
+
     const created = await this.prisma.user.create({
       data: {
         username,
@@ -93,6 +101,7 @@ export class UsersService {
         extraRoles: dto.extraRoles ?? [],
         allowedScreens,
         department: dto.department?.trim() || null,
+        workerStages,
         isActive: true,
       },
       select: userSelect,
@@ -115,6 +124,7 @@ export class UsersService {
       email?: string | null;
       isActive?: boolean;
       passwordHash?: string;
+      workerStages?: ProductionStage[];
     } = {};
 
     if (dto.fullName !== undefined) data.fullName = dto.fullName.trim();
@@ -135,6 +145,17 @@ export class UsersService {
     }
     if (dto.password)
       data.passwordHash = await bcrypt.hash(dto.password, BCRYPT_COST);
+    if (
+      dto.workerStages !== undefined ||
+      dto.roleCode !== undefined ||
+      dto.extraRoles !== undefined
+    ) {
+      data.workerStages = workerStagesFor(
+        data.roleCode ?? user.roleCode,
+        data.extraRoles ?? user.extraRoles,
+        dto.workerStages ?? user.workerStages,
+      );
+    }
 
     const updated = await this.prisma.user.update({
       where: { id },
@@ -154,4 +175,22 @@ export class UsersService {
     this.auth.bustSession(id);
     return updated;
   }
+}
+
+const STAGE_ORDER = Object.values(ProductionStage);
+
+/** Tài khoản thợ phải có ít nhất một khâu; không còn là thợ thì bỏ khâu. */
+function workerStagesFor(
+  roleCode: RoleCode,
+  extraRoles: RoleCode[],
+  stages: ProductionStage[],
+) {
+  const isWorker =
+    roleCode === RoleCode.WORKER || extraRoles.includes(RoleCode.WORKER);
+  if (!isWorker) return [];
+  const unique = STAGE_ORDER.filter((stage) => stages.includes(stage));
+  if (unique.length === 0) {
+    throw new BadRequestException('Chọn ít nhất một khâu thợ được nhận');
+  }
+  return unique;
 }

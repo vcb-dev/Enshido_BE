@@ -1,17 +1,23 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseUUIDPipe,
   Post,
   Query,
 } from '@nestjs/common';
-import { BlockWorker, CurrentUser } from '../auth/decorators';
+import { BlockWorker, CurrentUser, RequirePermissions } from '../auth/decorators';
+import { Permission } from '../auth/permissions';
 import type { AuthUserPayload } from '../auth/types';
 import { CastingSlipsService } from './casting-slips.service';
 import {
-  CreateIntakeCastingSlipDto,
+  CastingLossQuery,
+  CastingSlipCandidatesQuery,
+  CastingSlipResultDto,
+  CreateCastingSlipDto,
+  IssueCastingSlipDto,
   ListCastingSlipsQuery,
 } from './dto/casting-slip.dto';
 
@@ -25,19 +31,99 @@ export class CastingSlipsController {
     return this.slips.list(query);
   }
 
+  /** Đơn đã có sáp chờ gom vào phiếu đúc. Đặt trước `:id` để không bị bắt nhầm route. */
+  /** Hao hụt đúc theo thợ đúc (phiếu đã xác nhận Đúc xong). */
+  @Get('loss-by-worker')
+  @BlockWorker()
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
+  lossByWorker(@Query() query: CastingLossQuery) {
+    return this.slips.lossByWorker(query);
+  }
+
+  @Get('candidates')
+  @BlockWorker()
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
+  candidates(@Query() query: CastingSlipCandidatesQuery) {
+    return this.slips.candidates(query);
+  }
+
+  /** Mở phiếu từ QR in trên phiếu giấy. */
+  @Get('by-code/:code')
+  @BlockWorker()
+  byCode(@Param('code') code: string) {
+    return this.slips.getByCode(code);
+  }
+
   @Get(':id')
   @BlockWorker()
   get(@Param('id', ParseUUIDPipe) id: string) {
     return this.slips.getById(id);
   }
 
-  @Post('from-intake/:intakeOrderId')
+  /** Bước 7: thủ kho lên một phiếu cho một lần đúc nhiều đơn. */
+  @Post()
   @BlockWorker()
-  createFromIntake(
-    @Param('intakeOrderId', ParseUUIDPipe) intakeOrderId: string,
-    @Body() dto: CreateIntakeCastingSlipDto,
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
+  create(
+    @Body() dto: CreateCastingSlipDto,
     @CurrentUser() user: AuthUserPayload,
   ) {
-    return this.slips.createFromIntake(intakeOrderId, dto, user);
+    return this.slips.create(dto, user);
+  }
+
+  /** Bước 7b: chụp ảnh phiếu + vật tư đã cấp, Lưu → đơn Chờ đúc. */
+  @Post(':id/issue')
+  @BlockWorker()
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
+  issue(@Param('id', ParseUUIDPipe) id: string, @Body() dto: IssueCastingSlipDto) {
+    return this.slips.issue(id, dto);
+  }
+
+  @Delete(':id')
+  @BlockWorker()
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
+  remove(@Param('id', ParseUUIDPipe) id: string) {
+    return this.slips.remove(id);
+  }
+
+  @Post(':id/printed')
+  @BlockWorker()
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
+  markPrinted(@Param('id', ParseUUIDPipe) id: string) {
+    return this.slips.markPrinted(id);
+  }
+
+  /** Bước 8: thợ đúc quét phiếu và nguyên liệu → Đang đúc (G). */
+  @Post(':id/start')
+  @BlockWorker()
+  @RequirePermissions(Permission.PRODUCTION_CAST)
+  start(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.slips.start(id, user);
+  }
+
+  /** Bước 9: thợ đúc nhập kết quả sau đúc, chờ thủ kho xác nhận. */
+  @Post(':id/result')
+  @BlockWorker()
+  @RequirePermissions(Permission.PRODUCTION_CAST)
+  submitResult(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CastingSlipResultDto,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.slips.submitResult(id, dto, user);
+  }
+
+  /** Bước 9: thủ kho kiểm và xác nhận → Đúc xong (H). */
+  @Post(':id/confirm')
+  @BlockWorker()
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
+  confirm(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.slips.confirm(id, user);
   }
 }

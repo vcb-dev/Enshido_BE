@@ -73,6 +73,7 @@ export class ProductionOrdersController {
 
   /** Kho / người giao cân rồi xuất theo yêu cầu — tạo phiếu xuất gắn mã đơn. */
   @Post('material-requests/:id/issue')
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
   @BlockWorker()
   issueMaterialRequest(
     @Param('id', ParseUUIDPipe) id: string,
@@ -83,6 +84,7 @@ export class ProductionOrdersController {
   }
 
   @Post('material-requests/:id/reject')
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
   @BlockWorker()
   rejectMaterialRequest(
     @Param('id', ParseUUIDPipe) id: string,
@@ -270,6 +272,7 @@ export class ProductionOrdersController {
   }
 
   @Post(':code/finish')
+  @RequirePermissions(Permission.PRODUCTION_QC)
   @BlockWorker()
   finish(
     @Param('code') code: string,
@@ -289,6 +292,7 @@ export class ProductionOrdersController {
   }
 
   @Patch(':code/stages/:stageId')
+  @BlockWorker()
   updateHandover(
     @Param('code') code: string,
     @Param('stageId', ParseUUIDPipe) stageId: string,
@@ -299,6 +303,8 @@ export class ProductionOrdersController {
   }
 
   @Post(':code/stages/:stageId/return')
+  @BlockWorker()
+  @RequirePermissions(Permission.PRODUCTION_QC)
   returnStage(
     @Param('code') code: string,
     @Param('stageId', ParseUUIDPipe) stageId: string,
@@ -508,6 +514,8 @@ export class ProductionOrdersController {
 
   /** Chốt phiếu con ở nhánh Lỗi — lý do bắt buộc. */
   @Post(':code/sub-tickets/:no/defect')
+  @BlockWorker()
+  @RequirePermissions(Permission.PRODUCTION_QC)
   defectSubTicket(
     @Param('code') code: string,
     @Param('no', ParseIntPipe) no: number,
@@ -525,6 +533,8 @@ export class ProductionOrdersController {
 
   /** Chốt phiếu con ở nhánh Hoàn thiện — số lượng phiếu vào kho thành phẩm. */
   @Post(':code/sub-tickets/:no/finish')
+  @BlockWorker()
+  @RequirePermissions(Permission.PRODUCTION_QC)
   finishSubTicket(
     @Param('code') code: string,
     @Param('no', ParseIntPipe) no: number,

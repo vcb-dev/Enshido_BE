@@ -6,6 +6,7 @@ import {
   permissionsForUser,
   roleLabelFor,
   sanitizeScreens,
+  userCan,
   userHasRole,
 } from './permissions';
 
@@ -94,5 +95,77 @@ describe('roleLabelFor', () => {
     expect(roleLabelFor(RoleCode.USER, [RoleCode.ADMIN])).toBe(
       'Nhân viên + Admin',
     );
+  });
+});
+
+describe('userCan — quyền theo việc', () => {
+  const staff = (screens: string[]) => ({
+    roleCode: RoleCode.USER,
+    extraRoles: [] as RoleCode[],
+    allowedScreens: screens,
+  });
+
+  it('nhân viên chưa tick quyền việc nào thì không làm được việc nào', () => {
+    const user = staff([KHO]);
+    for (const permission of [
+      Permission.INTAKE_CREATE,
+      Permission.INTAKE_APPROVE,
+      Permission.PRODUCTION_MODEL3D,
+      Permission.PRODUCTION_WAX,
+      Permission.PRODUCTION_CAST,
+      Permission.WAREHOUSE_KEEPER,
+      Permission.PRODUCTION_QC,
+    ]) {
+      expect(userCan(user, permission)).toBe(false);
+    }
+  });
+
+  it('chỉ có đúng quyền được tick, không kéo theo quyền khác', () => {
+    const user = staff([Permission.PRODUCTION_CAST]);
+    expect(userCan(user, Permission.PRODUCTION_CAST)).toBe(true);
+    expect(userCan(user, Permission.WAREHOUSE_KEEPER)).toBe(false);
+    expect(userCan(user, Permission.PRODUCTION_QC)).toBe(false);
+  });
+
+  it('nhiều quyền: chỉ cần một trong số đó', () => {
+    const keeper = staff([Permission.WAREHOUSE_KEEPER]);
+    const qc = staff([Permission.PRODUCTION_QC]);
+    const nobody = staff([]);
+    const cut = [Permission.WAREHOUSE_KEEPER, Permission.PRODUCTION_QC] as const;
+    expect(userCan(keeper, ...cut)).toBe(true);
+    expect(userCan(qc, ...cut)).toBe(true);
+    expect(userCan(nobody, ...cut)).toBe(false);
+  });
+
+  it('admin có mọi quyền việc, kể cả khi ADMIN chỉ ở extraRoles', () => {
+    expect(userCan({ roleCode: RoleCode.ADMIN }, Permission.PRODUCTION_QC)).toBe(true);
+    expect(
+      userCan(
+        { roleCode: RoleCode.USER, extraRoles: [RoleCode.ADMIN] },
+        Permission.WAREHOUSE_KEEPER,
+      ),
+    ).toBe(true);
+  });
+
+  it('Quản lý xưởng kiêm quản lý SX + thủ kho + KCS, không kèm việc của thợ', () => {
+    const manager = staff([Permission.PRODUCTION_MANAGER]);
+    for (const permission of [
+      Permission.INTAKE_CREATE,
+      Permission.INTAKE_APPROVE,
+      Permission.WAREHOUSE_KEEPER,
+      Permission.PRODUCTION_QC,
+    ]) {
+      expect(userCan(manager, permission)).toBe(true);
+    }
+    expect(userCan(manager, Permission.PRODUCTION_MODEL3D)).toBe(false);
+    expect(userCan(manager, Permission.PRODUCTION_WAX)).toBe(false);
+    expect(userCan(manager, Permission.PRODUCTION_CAST)).toBe(false);
+  });
+
+  it('role Thợ không tự có quyền việc nào ngoài nhận phiếu con', () => {
+    const worker = { roleCode: RoleCode.WORKER, extraRoles: [] as RoleCode[] };
+    expect(userCan(worker, Permission.PRODUCTION_WORKER)).toBe(true);
+    expect(userCan(worker, Permission.PRODUCTION_QC)).toBe(false);
+    expect(userCan(worker, Permission.WAREHOUSE_KEEPER)).toBe(false);
   });
 });

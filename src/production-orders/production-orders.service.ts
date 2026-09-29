@@ -65,6 +65,7 @@ import {
   subTicketSummary,
   toDetail,
   ymd,
+  assertHandedSilverWithin,
 } from './order-detail';
 
 const S = ProductionStatus;
@@ -1514,6 +1515,12 @@ export class ProductionOrdersService {
       ...handedStoneOf(entry.stage, dto, order, entry.id),
       note: dto.note?.trim() || null,
     };
+    assertHandedSilverWithin(
+      order,
+      entry.subTicketId ?? null,
+      next.handedSilverWeight,
+      entry.id,
+    );
 
     const updated = await this.prisma.productionOrder.update({
       where: { id: order.id },
@@ -1612,8 +1619,14 @@ export class ProductionOrdersService {
           ? Math.max(0, stonesHanded - (returnedStoneCount ?? 0))
           : null))
       : null;
+    // Không gửi TL đá gắn thì chia theo số viên: phát 250 viên nặng X g, gắn 2 viên → X × 2/250.
+    // Lấy nguyên TL đá đã phát là sai khi thợ trả lại đá — mốc cân bị đội lên, che mất hao hụt bạc.
+    const proratedStoneWeight =
+      stoneWeightHanded != null && stonesHanded != null && stonesHanded > 0 && stoneCount != null
+        ? stoneWeightHanded.mul(stoneCount).div(stonesHanded).toDecimalPlaces(4)
+        : stoneWeightHanded;
     const stoneWeight = isStoneStage
-      ? (decimalOrNull(dto.stoneWeight) ?? stoneWeightHanded)
+      ? (decimalOrNull(dto.stoneWeight) ?? proratedStoneWeight)
       : null;
     // Gắn lên + trả lại nhiều nhất bằng số đá đã phát; phần thiếu là đá mất.
     if (
@@ -1942,11 +1955,21 @@ export class ProductionOrdersService {
   async markPrinted(code: string, actor: AuthUserPayload) {
     const order = await this.prisma.productionOrder.findUnique({
       where: { code: normalizeCode(code) },
-      select: { id: true, code: true, source: true, castingSentDate: true },
+      select: {
+        id: true,
+        code: true,
+        source: true,
+        castingSentDate: true,
+        cutAt: true,
+      },
     });
     if (!order) throw new NotFoundException('Không tìm thấy đơn sản xuất');
     // Đơn BTP lấy hàng đúc sẵn nên in được ngay.
-    if (order.source === ProductionSource.NVL && !order.castingSentDate) {
+    if (
+      order.source === ProductionSource.NVL &&
+      !order.castingSentDate &&
+      !order.cutAt
+    ) {
       throw new BadRequestException('Chỉ in phiếu thợ khi đơn đã báo Đúc');
     }
     const updated = await this.prisma.productionOrder.update({
@@ -2530,6 +2553,7 @@ function asCreatedDetail(
     children: [],
     receipt: null,
     shipmentLines: [],
+    castingCutLines: [],
     bomLines: nvlLines.map((line) => ({
       materialId: line.material.id,
       material: { sku: line.material.sku, name: line.material.name },

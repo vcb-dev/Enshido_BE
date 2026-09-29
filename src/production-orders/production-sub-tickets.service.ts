@@ -12,7 +12,7 @@ import {
   RoleCode,
   SubTicketOutcome,
 } from '@prisma/client';
-import { userHasRole } from '../auth/permissions';
+import { Permission, userCan, userHasRole } from '../auth/permissions';
 import type { AuthUserPayload } from '../auth/types';
 import { dbTable } from '../prisma/database-url';
 import { PrismaService } from '../prisma/prisma.service';
@@ -53,6 +53,7 @@ import {
   subTicketState,
   ticketPosition,
   toDetail,
+  assertHandedSilverWithin,
 } from './order-detail';
 import {
   ACTIVITY,
@@ -231,7 +232,7 @@ export class ProductionSubTicketsService {
       assertOrderActive(order);
       assertCastingReady(
         order,
-        'Ghi ngày báo Đúc và ngày Đúc về trước khi mở khâu cho thợ',
+        'Cắt cây chia phôi cho đơn trước khi mở khâu cho thợ',
       );
       if (order.subTickets.length > 0) {
         throw new BadRequestException(
@@ -318,6 +319,7 @@ export class ProductionSubTicketsService {
           `Phiếu ${order.code} đang ${STATE_LABEL[state]}, chưa nhận được`,
         );
       }
+      await assertCanTakeStage(tx, actor, order.pendingStage);
       const { count } = await tx.productionOrder.updateMany({
         where: {
           id: order.id,
@@ -349,7 +351,7 @@ export class ProductionSubTicketsService {
       }
       if (order.claimedByUserId !== actor.id && !canManage(order, actor)) {
         throw new ForbiddenException(
-          'Chỉ thợ đã nhận, người lên đơn hoặc admin được gỡ lượt nhận',
+          'Chỉ thợ đã nhận, người lên đơn, thủ kho hoặc admin được gỡ lượt nhận',
         );
       }
       await tx.productionOrder.update({
@@ -384,7 +386,7 @@ export class ProductionSubTicketsService {
       assertHandoverManager(order, actor);
       assertCastingReady(
         order,
-        'Ghi ngày báo Đúc và ngày Đúc về trước khi giao khâu cho thợ',
+        'Cắt cây chia phôi cho đơn trước khi giao khâu cho thợ',
       );
       const entries = orderEntries(order);
       const { state } = orderTicketState(order, entries);
@@ -425,6 +427,9 @@ export class ProductionSubTicketsService {
       const craftsmanName = actorName(craftsman);
       const changedBy = actorName(actor);
       const nextStatus = STAGE_STATUS[stage];
+      const handedSilver = handedSilverOf(dto, entries);
+      // TL giao không vượt hàng đang có (KCS nhận lại khâu trước / phôi cắt cây).
+      assertHandedSilverWithin(order, null, handedSilver);
       const created = await tx.productionStageEntry.create({
         data: {
           orderId: order.id,
@@ -434,7 +439,7 @@ export class ProductionSubTicketsService {
           handedByName: changedBy,
           handedAt,
           handedQty,
-          handedSilverWeight: handedSilverOf(dto, entries),
+          handedSilverWeight: handedSilver,
           ...handedStoneOf(stage, dto, order),
           craftsmanUserId: craftsman.id,
           craftsmanName,
@@ -555,7 +560,7 @@ export class ProductionSubTicketsService {
       assertOrderActive(order);
       assertCastingReady(
         order,
-        'Ghi ngày báo Đúc và ngày Đúc về trước khi chia phiếu con',
+        'Cắt cây chia phôi cho đơn trước khi chia phiếu con',
       );
       if (order.subTickets.length > 0) {
         throw new BadRequestException('Đơn đã được chia phiếu con');
@@ -619,7 +624,7 @@ export class ProductionSubTicketsService {
       assertOrderActive(order);
       assertCastingReady(
         order,
-        'Ghi ngày báo Đúc và ngày Đúc về trước khi chia phiếu con',
+        'Cắt cây chia phôi cho đơn trước khi chia phiếu con',
       );
       if (order.subTickets.length === 0) {
         throw new BadRequestException(
@@ -770,7 +775,7 @@ export class ProductionSubTicketsService {
       assertOrderActive(order);
       assertCastingReady(
         order,
-        'Ghi ngày báo Đúc và ngày Đúc về trước khi mở khâu cho thợ',
+        'Cắt cây chia phôi cho đơn trước khi mở khâu cho thợ',
       );
       if (order.subTickets.length < 2) {
         throw new BadRequestException(
@@ -882,6 +887,7 @@ export class ProductionSubTicketsService {
           `Phiếu ${ticketCode(order, ticket)} đang ${STATE_LABEL[state]}, chưa nhận được`,
         );
       }
+      await assertCanTakeStage(tx, actor, ticket.pendingStage);
       // Đơn đã khoá trong transaction; điều kiện chỉ để chắc không đè lượt nhận khác.
       const { count } = await tx.productionSubTicket.updateMany({
         where: {
@@ -918,7 +924,7 @@ export class ProductionSubTicketsService {
       }
       if (ticket.claimedByUserId !== actor.id && !canManage(order, actor)) {
         throw new ForbiddenException(
-          'Chỉ thợ đã nhận, người lên đơn hoặc admin được gỡ lượt nhận',
+          'Chỉ thợ đã nhận, người lên đơn, thủ kho hoặc admin được gỡ lượt nhận',
         );
       }
       await tx.productionSubTicket.update({
@@ -954,7 +960,7 @@ export class ProductionSubTicketsService {
       assertHandoverManager(order, actor);
       assertCastingReady(
         order,
-        'Ghi ngày báo Đúc và ngày Đúc về trước khi giao khâu cho thợ',
+        'Cắt cây chia phôi cho đơn trước khi giao khâu cho thợ',
       );
       const ticket = requireSubTicket(order, no);
       const entries = entriesOf(order, ticket.id);
@@ -1018,6 +1024,9 @@ export class ProductionSubTicketsService {
         where: { id: ticket.id },
         data: CLEAR_PENDING,
       });
+      const handedSilver = handedSilverOf(dto, entries);
+      // TL giao không vượt hàng đang có (KCS nhận lại khâu trước / phôi cắt cây).
+      assertHandedSilverWithin(order, ticket.id, handedSilver);
       const created = await tx.productionStageEntry.create({
         data: {
           orderId: order.id,
@@ -1028,7 +1037,7 @@ export class ProductionSubTicketsService {
           handedByName: changedBy,
           handedAt,
           handedQty,
-          handedSilverWeight: handedSilverOf(dto, entries),
+          handedSilverWeight: handedSilver,
           ...handedStoneOf(stage, dto, order),
           craftsmanUserId: craftsman.id,
           craftsmanName,
@@ -1387,12 +1396,22 @@ export class ProductionSubTicketsService {
         id: true,
         no: true,
         order: {
-          select: { id: true, code: true, source: true, castingSentDate: true },
+          select: {
+            id: true,
+            code: true,
+            source: true,
+            castingSentDate: true,
+            cutAt: true,
+          },
         },
       },
     });
     if (!ticket) throw new NotFoundException('Không tìm thấy phiếu con');
-    if (ticket.order.source === 'NVL' && !ticket.order.castingSentDate) {
+    if (
+      ticket.order.source === 'NVL' &&
+      !ticket.order.castingSentDate &&
+      !ticket.order.cutAt
+    ) {
       throw new BadRequestException('Chỉ in phiếu thợ khi đơn đã báo Đúc');
     }
     const updated = await this.prisma.productionSubTicket.update({
@@ -1414,6 +1433,9 @@ export class ProductionSubTicketsService {
 
   /** Màn "Phiếu của tôi": phiếu đang mở chờ nhận, phiếu mình đang giữ, phiếu vừa nộp. */
   async myTickets(actor: AuthUserPayload) {
+    // Phiếu đang mở chỉ hiện cho thợ làm đúng khâu đó; admin thấy hết.
+    const stages = await stagesOf(this.prisma, actor);
+    const openStage = stages ? { in: stages } : { not: null };
     // Phiếu mẹ chạy đúng bốn nhánh như phiếu con, mỗi nhánh một câu truy vấn riêng. Gộp
     // chung một câu rồi lọc trong bộ nhớ thì `take` sẽ dùng chung: phiếu người khác đang mở
     // đủ nhiều là đẩy mất việc của chính thợ ra khỏi danh sách.
@@ -1429,7 +1451,7 @@ export class ProductionSubTicketsService {
     ] = await Promise.all([
       this.prisma.productionSubTicket.findMany({
         where: {
-          pendingStage: { not: null },
+          pendingStage: openStage,
           claimedByUserId: null,
           order: { status: { not: S.DELIVERED } },
         },
@@ -1470,7 +1492,7 @@ export class ProductionSubTicketsService {
       this.prisma.productionOrder.findMany({
         where: {
           subTickets: { none: {} },
-          pendingStage: { not: null },
+          pendingStage: openStage,
           claimedByUserId: null,
           status: { not: S.DELIVERED },
         },
@@ -1512,6 +1534,8 @@ export class ProductionSubTicketsService {
     ]);
 
     return {
+      /** Khâu tài khoản này được nhận; admin nhận mọi khâu. */
+      stages: stages ?? Object.values(ProductionStage),
       available: [
         ...parentAvailable.map((order) => parentPendingItem(order)),
         ...available.map((row) => pendingItem(row)),
@@ -1586,12 +1610,41 @@ function isAdmin(actor: AuthUserPayload) {
   return userHasRole(actor.roleCode, actor.extraRoles ?? [], RoleCode.ADMIN);
 }
 
+/** Khâu tài khoản được nhận, đọc từ DB để admin đổi khâu là có hiệu lực ngay. `null` = admin, nhận mọi khâu. */
+async function stagesOf(
+  db: PrismaService | Prisma.TransactionClient,
+  actor: AuthUserPayload,
+): Promise<ProductionStage[] | null> {
+  if (isAdmin(actor)) return null;
+  const user = await db.user.findUnique({
+    where: { id: actor.id },
+    select: { workerStages: true },
+  });
+  return user?.workerStages ?? [];
+}
+
+async function assertCanTakeStage(
+  tx: Prisma.TransactionClient,
+  actor: AuthUserPayload,
+  stage: ProductionStage | null,
+) {
+  if (!stage) return;
+  const stages = await stagesOf(tx, actor);
+  if (stages && !stages.includes(stage)) {
+    throw new ForbiddenException(
+      `Bạn chưa được giao khâu ${STAGE_LABEL[stage]} — nhờ admin thêm khâu ở màn Nhân sự`,
+    );
+  }
+}
+
 function canManage(
   order: Pick<OrderDetail, 'createdByUserId'>,
   actor: AuthUserPayload,
 ) {
   return (
     userHasRole(actor.roleCode, actor.extraRoles ?? [], RoleCode.ADMIN) ||
+    // Bước 11: thủ kho chia phiếu và giao khâu cho thợ.
+    userCan(actor, Permission.WAREHOUSE_KEEPER) ||
     (order.createdByUserId != null && order.createdByUserId === actor.id)
   );
 }
@@ -1602,7 +1655,7 @@ function assertManager(
 ) {
   if (!canManage(order, actor)) {
     throw new ForbiddenException(
-      'Chỉ người lên đơn hoặc admin được chia phiếu con',
+      'Chỉ người lên đơn, thủ kho hoặc admin được chia phiếu con',
     );
   }
 }
@@ -1614,7 +1667,7 @@ function assertHandoverManager(
 ) {
   if (!canManage(order, actor)) {
     throw new ForbiddenException(
-      'Chỉ người lên đơn hoặc admin được chọn NVL và xác nhận giao khâu',
+      'Chỉ người lên đơn, thủ kho hoặc admin được chọn NVL và xác nhận giao khâu',
     );
   }
 }

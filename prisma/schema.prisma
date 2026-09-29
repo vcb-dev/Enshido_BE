@@ -27,6 +27,8 @@ model User {
   /// Các màn hình USER được xem. ADMIN bỏ qua cột này (luôn xem hết).
   allowedScreens String[]   @default([]) @map("allowed_screens")
   department     String?
+  /// Khâu thợ được tự nhận trên phiếu (Nguội, Vào đá…). Thợ chỉ thấy và nhận phiếu đang mở khâu của mình.
+  workerStages   ProductionStage[] @default([]) @map("worker_stages")
   isActive       Boolean    @default(true) @map("is_active")
   createdAt      DateTime   @default(now()) @map("created_at")
   updatedAt      DateTime   @updatedAt @map("updated_at")
@@ -233,6 +235,8 @@ model Material {
   bomLines          ProductionOrderBomLine[]
   materialRequests  ProductionMaterialRequest[]
   castingOrderLines CastingOrderLine[]
+  castingCutLines   CastingCutLine[]
+  castingCutRests   CastingCut[]
 
   @@unique([warehouseId, sku])
   @@unique([sku], map: "materials_sku_key")
@@ -331,6 +335,12 @@ model StockInbound {
   /// Phiếu nhập do xuất chuyển kho tạo ra.
   sourceWarehouseId String?  @map("source_warehouse_id") @db.Uuid
   sourceOutboundId  String?  @unique @map("source_outbound_id") @db.Uuid
+  /// Số gram nhập — phôi BTP / bạc thu hồi khi cắt cây thông.
+  gramQty           Decimal? @map("gram_qty") @db.Decimal(18, 4)
+  /// Đơn sản xuất sinh ra dòng nhập này (phôi của đơn sau khi cắt cây).
+  productionOrderId String?  @map("production_order_id") @db.Uuid
+  /// Phiếu nhập do hệ thống tự tạo (cắt cây thông) — chỉ sửa / xoá qua phiếu cắt.
+  autoIssued        Boolean  @default(false) @map("auto_issued")
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
 
@@ -339,12 +349,16 @@ model StockInbound {
   material        Material?  @relation(fields: [materialId], references: [id], onDelete: SetNull)
   unit            Unit?      @relation(fields: [unitId], references: [id], onDelete: SetNull)
   supplier        Supplier?  @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  productionOrder ProductionOrder? @relation(fields: [productionOrderId], references: [id], onDelete: Restrict)
+  castingCutLine  CastingCutLine?
+  castingCutRest  CastingCut?
 
   @@unique([warehouseId, sortOrder])
   @@index([warehouseId, receivedAt])
   @@index([warehouseId, sortOrder])
   @@index([warehouseId, materialId, applyToStock], map: "stock_inbounds_wh_mat_apply_idx")
   @@index([materialId], map: "stock_inbounds_material_id_idx")
+  @@index([productionOrderId])
   @@map("stock_inbounds")
 }
 
@@ -527,6 +541,8 @@ model ProductionOrder {
   /// Ngày báo Đúc — có ngày này đơn mới được in phiếu thợ.
   castingSentDate     DateTime?             @map("casting_sent_date") @db.Date
   castingReturnedDate DateTime?             @map("casting_returned_date") @db.Date
+  /// Lúc thủ kho cắt cây thông, chia phôi cho đơn (bước 10) — có mốc này đơn NVL mới vào Nguội.
+  cutAt               DateTime?             @map("cut_at")
   debtStatus          String?               @map("debt_status")
   parentId            String?               @map("parent_id") @db.Uuid
   lastPrintedAt       DateTime?             @map("last_printed_at")
@@ -564,6 +580,11 @@ model ProductionOrder {
   shipmentLines    ShipmentLine[]
   autoShipments    Shipment[]                  @relation("OrderAutoShipment")
   bomLines         ProductionOrderBomLine[]
+  inbounds         StockInbound[]
+  castingCutLines  CastingCutLine[]
+  /// Đơn tạo (DH…) mà phiếu sản xuất này sinh ra khi cắt cây thông.
+  intakeOrderId    String?                     @unique @map("intake_order_id") @db.Uuid
+  intakeOrder      IntakeOrder?                @relation(fields: [intakeOrderId], references: [id], onDelete: SetNull)
 
   @@index([status, createdAt])
   @@index([status, seq])
@@ -962,8 +983,14 @@ enum IntakeOrderStatus {
   PENDING_WAREHOUSE_CONFIRMATION
   /// (E) Thủ kho đã xác nhận — chờ lên lệnh sản xuất (đã có sáp).
   WAX_CONFIRMED
-  /// Đã lên phiếu đúc — chờ khâu đúc.
+  /// (F) Đã lên phiếu đúc — chờ khâu đúc.
   WAIT_CASTING
+  /// (G) Thợ đúc đã quét phiếu, bắt đầu đúc.
+  CASTING
+  /// (H) Mọi phiếu đúc của đơn đã được thủ kho xác nhận — chờ cắt cây thông.
+  CAST_DONE
+  /// (I) Đã cắt cây thông, chia phôi — chuyển sang phiếu sản xuất để Nguội.
+  WAIT_COOLING
   REJECTED
   NEW
   IN_PROGRESS
@@ -994,11 +1021,17 @@ model IntakeOrder {
   model3dUrl   String?               @map("model3d_url")
   productWeightGram Decimal?         @map("product_weight_gram") @db.Decimal(18, 4)
   castingTreeWeightGram Decimal?     @map("casting_tree_weight_gram") @db.Decimal(18, 4)
+  /// Bước 5–6: TL thủ kho cân kiểm lúc xác nhận sáp (bắt buộc ở đơn bơm sáp). Phiếu đúc lấy số này nếu có.
+  waxCheckedWeightGram Decimal?      @map("wax_checked_weight_gram") @db.Decimal(18, 4)
+  waxCheckedByName  String?          @map("wax_checked_by_name")
   createdAt    DateTime              @default(now()) @map("created_at")
   updatedAt    DateTime              @updatedAt @map("updated_at")
 
   images IntakeOrderImage[]
-  castingSlips CastingSlip[]
+  /// Dòng của đơn trên phiếu đúc — mỗi đơn đi đúc một lần, trên đúng một phiếu.
+  castingSlipLine CastingSlipOrder?
+  /// Phiếu sản xuất (A001…) sinh ra khi cắt cây thông — nơi đơn đi tiếp các khâu Nguội…
+  productionOrder ProductionOrder?
 
   @@index([status, createdDate])
   @@index([trackingCode])
@@ -1031,36 +1064,92 @@ model CastingOrder {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   lines CastingOrderLine[]
+  cuts  CastingCut[]
 
   @@index([createdAt])
   @@map("casting_orders")
 }
 
-/// Phiếu đúc lên từ đơn tạo (Lệnh sản xuất).
+/// Trạng thái một phiếu đúc (một cối): F → G → chờ thủ kho xác nhận → H.
+enum CastingSlipStatus {
+  /// Bước 7: đã lên + in phiếu, thủ kho đang cấp vật tư — chưa chụp ảnh, đơn vẫn ở E.
+  PENDING_ISSUE
+  WAIT_CASTING
+  CASTING
+  PENDING_CONFIRMATION
+  DONE
+}
+
+/// Ảnh phiếu đúc: ISSUE = lúc cấp vật tư (bước 7), RESULT = ảnh cân cây thông sau đúc (bước 9).
+enum CastingSlipImageKind {
+  ISSUE
+  RESULT
+}
+
+/// Phiếu đúc (bước 7): một lần đúc gồm nhiều đơn đã có sáp (E). Thủ kho lọc đơn, in phiếu,
+/// cấp vật tư; thợ đúc quét QR trên phiếu để nhận (bước 8).
 model CastingSlip {
   id                  String   @id @default(uuid()) @db.Uuid
   code                String   @unique
   slipDate            DateTime @map("slip_date") @db.Date
-  intakeOrderId       String   @map("intake_order_id") @db.Uuid
+  /// Tổng TL sáp (cây thông) giao = cộng TL sáp các đơn trên phiếu, lấy từ bước E.
   waxWeightGram       Decimal  @map("wax_weight_gram") @db.Decimal(18, 4)
+  /// Mã các đơn trong lô (DH001, DH002…) — sinh tự động từ `orders`, giữ để tìm kiếm / in.
   batchOrderCodes     String   @map("batch_order_codes")
   issueS999Gram       Decimal? @map("issue_s999_gram") @db.Decimal(18, 4)
   issueMasterAlloyGram Decimal? @map("issue_master_alloy_gram") @db.Decimal(18, 4)
   issueS925Gram       Decimal? @map("issue_s925_gram") @db.Decimal(18, 4)
+  status               CastingSlipStatus @default(WAIT_CASTING)
+  /// Bước 8: thợ đúc quét phiếu, bấm bắt đầu đúc.
+  startedAt            DateTime?         @map("started_at")
+  startedByName        String?           @map("started_by_name")
+  /// Thợ đúc nhận phiếu — hao hụt đúc tính theo người này.
+  startedByUserId      String?           @map("started_by_user_id") @db.Uuid
+  /// Bước 9: TL cây thông sau đúc, bạc và thạch cao đã dùng (g).
+  castTreeWeightGram   Decimal?          @map("cast_tree_weight_gram") @db.Decimal(18, 4)
+  silverUsedGram       Decimal?          @map("silver_used_gram") @db.Decimal(18, 4)
+  plasterUsedGram      Decimal?          @map("plaster_used_gram") @db.Decimal(18, 4)
+  submittedAt          DateTime?         @map("submitted_at")
+  submittedByName      String?           @map("submitted_by_name")
+  submittedByUserId    String?           @map("submitted_by_user_id") @db.Uuid
+  /// Bước 9: thủ kho kiểm và xác nhận → Đúc xong.
+  confirmedAt          DateTime?         @map("confirmed_at")
+  confirmedByName      String?           @map("confirmed_by_name")
+  createdByName        String?           @map("created_by_name")
+  lastPrintedAt        DateTime?         @map("last_printed_at")
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @updatedAt @map("updated_at")
 
-  intake IntakeOrder         @relation(fields: [intakeOrderId], references: [id], onDelete: Restrict)
+  orders CastingSlipOrder[]
   images CastingSlipImage[]
+  /// Phiếu cắt cây thông của lần đúc này (bước 10).
+  cut    CastingCut?
 
   @@index([slipDate])
-  @@index([intakeOrderId])
+  @@index([status])
+  @@index([startedByUserId])
   @@map("casting_slips")
+}
+
+/// Một đơn trong lô đúc. TL sáp chụp lúc lên phiếu, không đổi theo đơn sau này.
+model CastingSlipOrder {
+  id            String  @id @default(uuid()) @db.Uuid
+  slipId        String  @map("slip_id") @db.Uuid
+  intakeOrderId String  @unique @map("intake_order_id") @db.Uuid
+  sortOrder     Int     @default(0) @map("sort_order")
+  waxWeightGram Decimal @map("wax_weight_gram") @db.Decimal(18, 4)
+
+  slip   CastingSlip @relation(fields: [slipId], references: [id], onDelete: Cascade)
+  intake IntakeOrder @relation(fields: [intakeOrderId], references: [id], onDelete: Restrict)
+
+  @@index([slipId, sortOrder])
+  @@map("casting_slip_orders")
 }
 
 model CastingSlipImage {
   id        String @id @default(uuid()) @db.Uuid
   slipId    String @map("slip_id") @db.Uuid
+  kind      CastingSlipImageKind @default(ISSUE)
   url       String
   publicId  String @map("public_id")
   width     Int?
@@ -1095,4 +1184,87 @@ model CastingOrderLine {
   @@index([castingOrderId, sortOrder])
   @@index([materialId])
   @@map("casting_order_lines")
+}
+
+/// Phiếu cắt cây thông (bước 10): thủ kho cắt cây sau đúc, chia phôi theo đơn.
+/// Lưu phiếu là nhập phôi vào kho BTP (từng đơn) và phần còn lại của cây vào kho NVL chính.
+model CastingCut {
+  id             String    @id @default(uuid()) @db.Uuid
+  /// Số thứ tự sinh mã phiếu (CC0001, CC0002…).
+  seq            Int       @unique
+  code           String    @unique
+  /// Lệnh đúc của cây — không bắt buộc khi lệnh đúc chưa nhập trên hệ thống.
+  castingOrderId String?   @map("casting_order_id") @db.Uuid
+  /// Phiếu đúc (bước 7–9) của cây thông đem cắt — một cây chỉ cắt một lần.
+  castingSlipId  String?   @unique @map("casting_slip_id") @db.Uuid
+  cutAt          DateTime  @map("cut_at")
+  /// TL cả cây thông sau đúc (g), cân trước khi cắt.
+  treeWeight     Decimal   @map("tree_weight") @db.Decimal(18, 4)
+  /// TL phần còn lại của cây sau khi chia phôi (g) — nhập kho NVL chính.
+  restWeight     Decimal   @default(0) @map("rest_weight") @db.Decimal(18, 4)
+  restMaterialId String?   @map("rest_material_id") @db.Uuid
+  restInboundId  String?   @unique @map("rest_inbound_id") @db.Uuid
+  note           String?
+  cutByUserId    String?   @map("cut_by_user_id") @db.Uuid
+  cutByName      String    @map("cut_by_name")
+  lastPrintedAt  DateTime? @map("last_printed_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  castingOrder CastingOrder?     @relation(fields: [castingOrderId], references: [id], onDelete: SetNull)
+  castingSlip  CastingSlip?      @relation(fields: [castingSlipId], references: [id], onDelete: Restrict)
+  restMaterial Material?         @relation(fields: [restMaterialId], references: [id], onDelete: Restrict)
+  restInbound  StockInbound?     @relation(fields: [restInboundId], references: [id], onDelete: SetNull)
+  lines        CastingCutLine[]
+  images       CastingCutImage[]
+
+  @@index([cutAt])
+  @@index([castingOrderId])
+  @@map("casting_cuts")
+}
+
+/// Phôi của một đơn trên phiếu cắt — nhập kho BTP.
+model CastingCutLine {
+  id            String           @id @default(uuid()) @db.Uuid
+  cutId         String           @map("cut_id") @db.Uuid
+  orderId       String           @map("order_id") @db.Uuid
+  sortOrder     Int              @default(0) @map("sort_order")
+  qty           Int
+  /// TL phôi của đơn (g).
+  weight        Decimal          @db.Decimal(18, 4)
+  btpMaterialId String           @map("btp_material_id") @db.Uuid
+  btpInboundId  String?          @unique @map("btp_inbound_id") @db.Uuid
+  /// Trạng thái đơn trước khi cắt — xoá phiếu cắt thì trả đơn về đây.
+  prevStatus    ProductionStatus @map("prev_status")
+  createdAt     DateTime         @default(now()) @map("created_at")
+
+  cut         CastingCut        @relation(fields: [cutId], references: [id], onDelete: Cascade)
+  order       ProductionOrder   @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  btpMaterial Material          @relation(fields: [btpMaterialId], references: [id], onDelete: Restrict)
+  btpInbound  StockInbound?     @relation(fields: [btpInboundId], references: [id], onDelete: SetNull)
+  images      CastingCutImage[]
+
+  @@unique([cutId, orderId])
+  @@index([orderId])
+  @@index([cutId, sortOrder])
+  @@map("casting_cut_lines")
+}
+
+/// Ảnh cân trên phiếu cắt: `lineId` null là ảnh phần còn lại của cây.
+model CastingCutImage {
+  id        String   @id @default(uuid()) @db.Uuid
+  cutId     String   @map("cut_id") @db.Uuid
+  lineId    String?  @map("line_id") @db.Uuid
+  url       String
+  publicId  String   @map("public_id")
+  width     Int?
+  height    Int?
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  cut  CastingCut      @relation(fields: [cutId], references: [id], onDelete: Cascade)
+  line CastingCutLine? @relation(fields: [lineId], references: [id], onDelete: Cascade)
+
+  @@index([cutId, lineId, sortOrder])
+  @@map("casting_cut_images")
 }

@@ -4,9 +4,10 @@ import {
   ArrayMinSize,
   IsArray,
   IsDateString,
+  IsIn,
   IsInt,
-  IsNotEmpty,
   IsNumber,
+  IsUUID,
   IsOptional,
   IsString,
   IsUrl,
@@ -32,8 +33,20 @@ export class CastingSlipImageDto {
   height?: number | null;
 }
 
-/** Một cối = một phiếu đúc (gram giao + ảnh). */
-export class CreateIntakeCastingSlipFlaskDto {
+/**
+ * Bước 7: thủ kho lọc các đơn đã có sáp (E), gom vào một lần đúc, cấp bạc + hội theo định mức
+ * và chụp ảnh phiếu + vật tư.
+ */
+export class CreateCastingSlipDto {
+  @IsDateString()
+  slipDate!: string;
+
+  @IsArray()
+  @ArrayMinSize(1, { message: 'Chọn ít nhất một đơn đi đúc' })
+  @ArrayMaxSize(100)
+  @IsUUID('4', { each: true })
+  intakeOrderIds!: string[];
+
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
@@ -52,32 +65,65 @@ export class CreateIntakeCastingSlipFlaskDto {
   @Min(0)
   issueS925Gram?: number;
 
+}
+
+/** Bước 7 (sau khi in phiếu và cấp vật tư): chụp ảnh phiếu đúc + vật tư kèm theo rồi Lưu. */
+export class IssueCastingSlipDto {
   @IsArray()
+  @ArrayMinSize(1, { message: 'Chụp ảnh phiếu đúc và vật tư kèm theo' })
   @ArrayMaxSize(20)
   @ValidateNested({ each: true })
   @Type(() => CastingSlipImageDto)
   images!: CastingSlipImageDto[];
 }
 
-export class CreateIntakeCastingSlipDto {
+export class CastingLossQuery {
+  @IsOptional()
   @IsDateString()
-  slipDate!: string;
+  from?: string;
 
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsOptional()
+  @IsDateString()
+  to?: string;
+}
+
+export class CastingSlipCandidatesQuery {
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  @MaxLength(500)
-  batchOrderCodes!: string;
+  @MaxLength(200)
+  search?: string;
+}
+
+/** Bước 9: thợ đúc nhập kết quả sau đúc — ảnh cân cây thông + bạc, thạch cao đã dùng. */
+export class CastingSlipResultDto {
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0.0001)
+  castTreeWeightGram!: number;
+
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  silverUsedGram!: number;
+
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  plasterUsedGram!: number;
 
   @IsArray()
   @ArrayMinSize(1)
   @ArrayMaxSize(20)
   @ValidateNested({ each: true })
-  @Type(() => CreateIntakeCastingSlipFlaskDto)
-  flasks!: CreateIntakeCastingSlipFlaskDto[];
+  @Type(() => CastingSlipImageDto)
+  images!: CastingSlipImageDto[];
 }
 
 export class ListCastingSlipsQuery {
+  @IsOptional()
+  @IsIn(['PENDING_ISSUE', 'WAIT_CASTING', 'CASTING', 'PENDING_CONFIRMATION', 'DONE'])
+  status?: 'PENDING_ISSUE' | 'WAIT_CASTING' | 'CASTING' | 'PENDING_CONFIRMATION' | 'DONE';
+
   @IsOptional()
   @IsString()
   @MaxLength(200)

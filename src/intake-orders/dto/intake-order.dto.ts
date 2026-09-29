@@ -10,6 +10,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  IsUUID,
   IsUrl,
   MaxLength,
   Min,
@@ -131,6 +132,70 @@ export class IntakeProductSpecsDto {
   @ValidateNested({ each: true })
   @Type(() => IntakeOrderImageDto)
   images!: IntakeOrderImageDto[];
+}
+
+export class IntakeWaxPrintItemDto {
+  @IsUUID()
+  id!: string;
+
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0.0001)
+  productWeightGram!: number;
+}
+
+/** Bước 4: một lượt in sáp nhiều đơn — ảnh cả khay + cân nặng từng đơn. */
+export class IntakeWaxPrintBatchDto {
+  @IsArray()
+  @ArrayMinSize(1, { message: 'Chọn ít nhất một đơn đã in' })
+  @ArrayMaxSize(100)
+  @ValidateNested({ each: true })
+  @Type(() => IntakeWaxPrintItemDto)
+  items!: IntakeWaxPrintItemDto[];
+
+  @IsArray()
+  @ArrayMinSize(1, { message: 'Chụp ảnh cả khay sáp in' })
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => IntakeOrderImageDto)
+  images!: IntakeOrderImageDto[];
+}
+
+/** Một đơn trong lượt in sáp: TL mẫu sáp của riêng đơn đó (tách từ khay). */
+export class WaxPrintItemDto {
+  @IsUUID()
+  id!: string;
+
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0.0001)
+  productWeightGram!: number;
+}
+
+/** Bước 4: thợ 3D in nhiều đơn một lần, chụp ảnh cả khay, rồi tách cân nặng từng đơn. */
+export class WaxPrintBatchDto {
+  @IsArray()
+  @ArrayMinSize(1, { message: 'Chọn ít nhất một đơn đã in sáp' })
+  @ArrayMaxSize(100)
+  @ValidateNested({ each: true })
+  @Type(() => WaxPrintItemDto)
+  items!: WaxPrintItemDto[];
+
+  @IsArray()
+  @ArrayMinSize(1, { message: 'Chụp ảnh khay sáp' })
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => IntakeOrderImageDto)
+  images!: IntakeOrderImageDto[];
+}
+
+/** Bước 5–6: thủ kho xác nhận sáp, kèm số cân kiểm. */
+export class ConfirmWarehouseDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0.0001)
+  checkedWeightGram?: number;
 }
 
 export class IntakeCastingTreeSpecsDto {
