@@ -36,6 +36,8 @@ async function seedUsers() {
         'screen.warehouse.nvl-tieu-hao',
         'screen.warehouse.thanh-pham',
         'screen.locations',
+        // Quản lý xưởng: kiêm quản lý SX + thủ kho + KCS.
+        'production.manager',
       ],
     },
     {

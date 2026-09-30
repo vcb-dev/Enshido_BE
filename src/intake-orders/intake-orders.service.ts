@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -11,14 +12,18 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CloudinaryService } from '../uploads/cloudinary.service';
 import {
   ApproveIntakeOrderDto,
+  ConfirmWarehouseDto,
+  WaxPrintBatchDto,
   RejectIntakeOrderDto,
   IntakeModel3dDto,
   IntakeCastingTreeSpecsDto,
   IntakeProductSpecsDto,
   IntakeOrderImageDto,
+  IntakeWaxPrintBatchDto,
   ListIntakeOrdersQuery,
   UpsertIntakeOrderDto,
 } from './dto/intake-order.dto';
+import { Permission, userCan } from '../auth/permissions';
 import { canConfirmIntakeWarehouse } from './intake-warehouse-access';
 
 const CREATE_RETRIES = 5;
@@ -87,6 +92,7 @@ export class IntakeOrdersService {
         take: pageSize,
         include: {
           images: { orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }] },
+          castingSlipLine: { select: { slip: { select: { code: true, status: true } } } },
         },
       }),
     ]);
@@ -136,12 +142,11 @@ export class IntakeOrdersService {
       include: { images: true },
     });
     if (!order) throw new NotFoundException('Không tìm thấy đơn');
-    if (
-      dto.status === IntakeOrderStatus.APPROVED &&
-      order.status !== IntakeOrderStatus.APPROVED
-    ) {
+    // Trạng thái chỉ đổi qua đúng thao tác của từng bước (duyệt, gắn 3D, cân sáp, thủ kho
+    // xác nhận, phiếu đúc, cắt cây). Sửa đơn chỉ sửa thông tin, không nhảy bước được.
+    if (dto.status !== undefined && dto.status !== order.status) {
       throw new BadRequestException(
-        'Dùng nút Duyệt trên Lệnh sản xuất để chuyển sang Đã duyệt',
+        'Không đổi trạng thái ở form sửa đơn — dùng nút thao tác của bước tương ứng',
       );
     }
 
@@ -159,7 +164,6 @@ export class IntakeOrdersService {
         data: {
           ...data,
           createdDate: order.createdDate,
-          ...(dto.status !== undefined ? { status: dto.status } : {}),
           images: { deleteMany: {}, create: images },
         },
       });
@@ -273,11 +277,22 @@ export class IntakeOrdersService {
     if (!order) throw new NotFoundException('Không tìm thấy đơn');
     if (order.status !== IntakeOrderStatus.READY_FOR_PRODUCTION) {
       throw new BadRequestException(
-        'Chỉ cập nhật số liệu khi đơn ở bước Chờ SX · Đã có 3D',
+        'Chỉ cập nhật số liệu khi đơn ở bước Chờ SX · Đã có 3D / khuôn (C)',
       );
     }
 
     const moldPath = order.hasMold === true;
+    // Không khuôn = in sáp resin (thợ 3D, bước 4); có khuôn = bơm sáp (thợ sáp, bước 6).
+    const needed = moldPath
+      ? Permission.PRODUCTION_WAX
+      : Permission.PRODUCTION_MODEL3D;
+    if (!userCan(actor, needed)) {
+      throw new ForbiddenException(
+        moldPath
+          ? 'Chỉ thợ sáp được cập nhật số liệu bơm sáp'
+          : 'Chỉ thợ 3D được cập nhật số liệu in sáp',
+      );
+    }
     const nextStatus = moldPath
       ? IntakeOrderStatus.PENDING_WAREHOUSE_CONFIRMATION
       : IntakeOrderStatus.WAX_PRINTED;
@@ -315,7 +330,132 @@ export class IntakeOrdersService {
     return toRow(updated);
   }
 
-  async confirmWarehouseSpecs(id: string, actor: AuthUserPayload) {
+  /**
+   * Bước 4: thợ 3D in sáp nhiều đơn một lần, chụp ảnh cả khay rồi điền cân nặng từng đơn.
+   * Chỉ đơn không khuôn ở C; ảnh khay gắn vào mọi đơn trong lượt in.
+   */
+  async submitWaxPrintBatch(dto: IntakeWaxPrintBatchDto) {
+    const ids = dto.items.map((item) => item.id);
+    if (new Set(ids).size !== ids.length) {
+      throw new BadRequestException('Một đơn chỉ nhập một lần trong lượt in');
+    }
+    const orders = await this.prisma.intakeOrder.findMany({
+      where: { id: { in: ids } },
+      include: { images: true },
+    });
+    const byId = new Map(orders.map((order) => [order.id, order]));
+    for (const id of ids) {
+      const order = byId.get(id);
+      if (!order) throw new NotFoundException('Không tìm thấy đơn');
+      if (order.status !== IntakeOrderStatus.READY_FOR_PRODUCTION || order.hasMold !== false) {
+        throw new BadRequestException(
+          `Đơn ${order.code} không ở bước chờ in sáp resin (C, không khuôn)`,
+        );
+      }
+    }
+    const tray = this.newImages(dto.images, new Set());
+    await this.prisma.runTx(async (tx) => {
+      for (const item of dto.items) {
+        const order = byId.get(item.id)!;
+        const moved = await tx.intakeOrder.updateMany({
+          where: { id: order.id, status: IntakeOrderStatus.READY_FOR_PRODUCTION },
+          data: {
+            status: IntakeOrderStatus.WAX_PRINTED,
+            productWeightGram: item.productWeightGram,
+          },
+        });
+        if (moved.count !== 1) {
+          throw new ConflictException(`Đơn ${order.code} vừa được cập nhật — tải lại danh sách`);
+        }
+        const start = order.images.filter((image) => image.kind === ProductionImageKind.PRODUCT).length;
+        await tx.intakeOrderImage.createMany({
+          data: tray.map((image, index) => ({
+            ...image,
+            kind: ProductionImageKind.PRODUCT,
+            sortOrder: start + index,
+            orderId: order.id,
+          })),
+        });
+      }
+    });
+    return { count: dto.items.length };
+  }
+
+  /**
+   * Bước 4: thợ 3D in sáp nhiều đơn một lần, chụp ảnh cả khay rồi tách cân nặng từng đơn.
+   * Ảnh khay gắn chung cho mọi đơn trong lượt; các đơn sang Đã in sáp (D).
+   */
+  async waxPrintBatch(dto: WaxPrintBatchDto) {
+    const ids = dto.items.map((item) => item.id);
+    if (new Set(ids).size !== ids.length) {
+      throw new BadRequestException('Một đơn chỉ nhập một lần trong lượt in');
+    }
+    const orders = await this.prisma.intakeOrder.findMany({
+      where: { id: { in: ids } },
+      include: { images: true },
+    });
+    const byId = new Map(orders.map((order) => [order.id, order]));
+    for (const id of ids) {
+      const order = byId.get(id);
+      if (!order) throw new NotFoundException('Không tìm thấy đơn');
+      if (order.status !== IntakeOrderStatus.READY_FOR_PRODUCTION) {
+        throw new BadRequestException(
+          `Đơn ${order.code} không ở bước Chờ SX · Đã có 3D / khuôn (C)`,
+        );
+      }
+      if (order.hasMold === true) {
+        throw new BadRequestException(
+          `Đơn ${order.code} đã có khuôn — đi bước Bơm sáp, không in sáp resin`,
+        );
+      }
+    }
+
+    await this.prisma.runTx(async (tx) => {
+      for (const item of dto.items) {
+        const order = byId.get(item.id)!;
+        const existing = new Set(order.images.map((image) => image.publicId));
+        const added = this.newImages(dto.images, existing);
+        const base = order.images.length;
+        // Chặn hai người cùng nhập một đơn: chỉ đơn còn ở C mới chuyển được.
+        const moved = await tx.intakeOrder.updateMany({
+          where: { id: order.id, status: IntakeOrderStatus.READY_FOR_PRODUCTION },
+          data: {
+            status: IntakeOrderStatus.WAX_PRINTED,
+            productWeightGram: item.productWeightGram,
+          },
+        });
+        if (moved.count !== 1) {
+          throw new BadRequestException(
+            `Đơn ${order.code} vừa được cập nhật — tải lại danh sách`,
+          );
+        }
+        if (added.length) {
+          await tx.intakeOrderImage.createMany({
+            data: added.map((image, index) => ({
+              ...image,
+              orderId: order.id,
+              sortOrder: base + index,
+            })),
+          });
+        }
+      }
+    });
+
+    const rows = await this.prisma.intakeOrder.findMany({
+      where: { id: { in: ids } },
+      include: {
+        images: { orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }] },
+      },
+    });
+    return { items: rows.map(toRow) };
+  }
+
+  /** Bước 5–6: thủ kho kiểm sáp, ghi số cân kiểm (bắt buộc ở đơn bơm sáp) rồi xác nhận → E. */
+  async confirmWarehouseSpecs(
+    id: string,
+    dto: ConfirmWarehouseDto,
+    actor: AuthUserPayload,
+  ) {
     if (!canConfirmIntakeWarehouse(actor)) {
       throw new ForbiddenException('Chỉ thủ kho được xác nhận số liệu sản phẩm');
     }
@@ -326,11 +466,24 @@ export class IntakeOrdersService {
         'Chỉ xác nhận được đơn đang chờ thủ kho xác nhận',
       );
     }
+    if (order.hasMold === true && dto.checkedWeightGram == null) {
+      throw new BadRequestException(
+        'Đơn bơm sáp: thủ kho cân kiểm và nhập trọng lượng trước khi xác nhận',
+      );
+    }
 
     const updated = await this.prisma.runTx(async (tx) => {
       await tx.intakeOrder.update({
         where: { id },
-        data: { status: IntakeOrderStatus.WAX_CONFIRMED },
+        data: {
+          status: IntakeOrderStatus.WAX_CONFIRMED,
+          ...(dto.checkedWeightGram != null
+            ? {
+                waxCheckedWeightGram: dto.checkedWeightGram,
+                waxCheckedByName: actor.fullName?.trim() || actor.username,
+              }
+            : {}),
+        },
       });
       return tx.intakeOrder.findUniqueOrThrow({
         where: { id },
@@ -464,7 +617,9 @@ export class IntakeOrdersService {
 
 type IntakeRow = Prisma.IntakeOrderGetPayload<{
   include: { images: true };
-}>;
+}> & {
+  castingSlipLine?: { slip: { code: string; status: string } } | null;
+};
 
 function toRow(row: IntakeRow) {
   return {
@@ -488,6 +643,15 @@ function toRow(row: IntakeRow) {
       row.castingTreeWeightGram != null
         ? row.castingTreeWeightGram.toString()
         : null,
+    waxCheckedWeightGram:
+      row.waxCheckedWeightGram != null
+        ? row.waxCheckedWeightGram.toString()
+        : null,
+    waxCheckedByName: row.waxCheckedByName,
+    /** Phiếu đúc đang giữ đơn (kể cả phiếu chưa cấp vật tư). */
+    castingSlip: row.castingSlipLine
+      ? { code: row.castingSlipLine.slip.code, status: row.castingSlipLine.slip.status }
+      : null,
     createdAt: row.createdAt.toISOString(),
     images: row.images.map((image) => ({
       kind: image.kind,

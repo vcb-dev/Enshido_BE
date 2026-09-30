@@ -109,6 +109,16 @@ export const detailInclude = {
     },
     orderBy: { shipment: { seq: 'asc' } },
   },
+  castingCutLines: {
+    orderBy: { createdAt: 'desc' },
+    take: 1,
+    select: {
+      qty: true,
+      weight: true,
+      btpMaterialId: true,
+      cut: { select: { code: true, cutAt: true } },
+    },
+  },
   _count: { select: { outbounds: true } },
 } satisfies Prisma.ProductionOrderInclude;
 
@@ -479,9 +489,122 @@ export function orderTicketAvailable(
   };
 }
 
+/**
+ * TL hàng tối đa được giao vào một khâu (khâu kế tiếp, hoặc khâu `editingEntryId` đang sửa):
+ * không vượt số hàng đang có trong tay KCS.
+ * - Có khâu trước trên cùng phiếu: = TL KCS nhận lại khâu đó.
+ * - Khâu đầu của phiếu: lấy từ nguồn chung — TL phiếu mẹ nhận lại lần cuối (đã chia phiếu sau
+ *   khi làm trên phiếu mẹ), không thì TL phôi cắt cây — trừ phần các phiếu con khác đã nhận.
+ * `null` = không có mốc (đơn cũ chưa có số liệu) → không chặn.
+ */
+export function handoverSilverLimit(
+  order: Pick<OrderDetail, 'stages' | 'castingCutLines'>,
+  ticketId: string | null,
+  editingEntryId?: string,
+): Prisma.Decimal | null {
+  const scope = order.stages.filter(
+    (entry) => (entry.subTicketId ?? null) === ticketId,
+  );
+  const at = editingEntryId
+    ? scope.findIndex((entry) => entry.id === editingEntryId)
+    : -1;
+  const before = at >= 0 ? scope.slice(0, at) : scope;
+  const prev = before[before.length - 1];
+  if (prev) return prev.returnedSilverWeight;
+
+  const blank = order.castingCutLines[0]?.weight ?? null;
+  const parentEntries = order.stages.filter((entry) => !entry.subTicketId);
+  const lastParent = ticketId ? parentEntries[parentEntries.length - 1] : undefined;
+  const pool = lastParent ? lastParent.returnedSilverWeight : blank;
+  if (pool == null) return null;
+  if (!ticketId) return pool;
+
+  // Khâu đầu của từng phiếu con khác đã lấy từ cùng nguồn.
+  const firstOf = new Map<string, Prisma.Decimal | null>();
+  for (const entry of order.stages) {
+    if (entry.subTicketId && !firstOf.has(entry.subTicketId)) {
+      firstOf.set(entry.subTicketId, entry.handedSilverWeight);
+    }
+  }
+  let used = new Prisma.Decimal(0);
+  for (const [id, handed] of firstOf) {
+    if (id !== ticketId && handed) used = used.add(handed);
+  }
+  const left = pool.sub(used);
+  return left.isNegative() ? new Prisma.Decimal(0) : left;
+}
+
+/** Chỉ cần dòng phôi cắt cây và các yêu cầu đã xuất — trang danh sách select gọn được. */
+type BlankSource = {
+  castingCutLines: readonly {
+    qty: number;
+    weight: Prisma.Decimal;
+    btpMaterialId: string | null;
+  }[];
+  materialRequests: readonly {
+    status: MaterialRequestStatus;
+    materialId: string;
+    issuedQty: Prisma.Decimal | null;
+    issuedWeight: Prisma.Decimal | null;
+  }[];
+};
+
+/**
+ * Phôi của đơn còn trên kho BTP: phôi cắt cây trừ phần đã xuất cho thợ (mọi phiếu, mọi khâu).
+ * Mã phôi gom theo mã sản phẩm nên dùng chung giữa các đơn — không có mốc này thì một đơn
+ * xuất lấn sang phôi của đơn khác.
+ */
+export function blankLeftOf(order: BlankSource) {
+  const blank = order.castingCutLines[0];
+  if (!blank?.btpMaterialId) return { btpMaterialId: null, leftQty: null, leftWeight: null };
+  let qty = new Prisma.Decimal(0);
+  let weight = new Prisma.Decimal(0);
+  for (const request of order.materialRequests) {
+    if (
+      request.status === MaterialRequestStatus.ISSUED &&
+      request.materialId === blank.btpMaterialId
+    ) {
+      qty = qty.add(request.issuedQty ?? 0);
+      weight = weight.add(request.issuedWeight ?? 0);
+    }
+  }
+  return {
+    btpMaterialId: blank.btpMaterialId,
+    leftQty: decStr(new Prisma.Decimal(blank.qty).sub(qty)),
+    leftWeight: decStr(blank.weight.sub(weight)),
+  };
+}
+
+/** Mốc xuất cho một mã: chỉ có khi mã đó là phôi cắt cây của đơn. */
+export function blankLimitFor(order: BlankSource, materialId: string) {
+  const left = blankLeftOf(order);
+  if (left.btpMaterialId !== materialId) return null;
+  return { qty: left.leftQty, weight: left.leftWeight };
+}
+
+/** Chặn TL giao vượt hàng đang có — dùng chung cho xác nhận giao và sửa thông tin giao. */
+export function assertHandedSilverWithin(
+  order: Pick<OrderDetail, 'stages' | 'castingCutLines'>,
+  ticketId: string | null,
+  handed: Prisma.Decimal | null,
+  editingEntryId?: string,
+) {
+  if (handed == null) return;
+  const limit = handoverSilverLimit(order, ticketId, editingEntryId);
+  if (limit != null && handed.gt(limit)) {
+    throw new BadRequestException(
+      `TL giao (${decStr(handed)} g) vượt số hàng đang có (${decStr(limit)} g)`,
+    );
+  }
+}
+
 /** Khâu cấp đơn (không thuộc phiếu con) đang chờ KCS nhận lại. */
 export function openOrderEntry(order: Pick<OrderDetail, 'stages'>) {
   return order.stages.find((entry) => !entry.subTicketId && !entry.returnedAt);
+}
+
+function decOrNull(value: Prisma.Decimal | null) {
+  return value != null ? decStr(value) : null;
 }
 
 export function toDetail(order: OrderDetail) {
@@ -551,6 +674,17 @@ export function toDetail(order: OrderDetail) {
     castingReturnedDate: order.castingReturnedDate
       ? ymd(order.castingReturnedDate)
       : null,
+    cutAt: order.cutAt ? order.cutAt.toISOString() : null,
+    // Phôi đơn nhận ở phiếu cắt cây gần nhất — mốc bạc giao khâu Nguội.
+    cut: order.castingCutLines[0]
+      ? {
+          code: order.castingCutLines[0].cut.code,
+          cutAt: order.castingCutLines[0].cut.cutAt.toISOString(),
+          qty: order.castingCutLines[0].qty,
+          weight: decStr(order.castingCutLines[0].weight),
+          ...blankLeftOf(order),
+        }
+      : null,
     debtStatus: order.debtStatus,
     parentCode: order.parent?.code ?? null,
     split,
@@ -592,15 +726,20 @@ export function toDetail(order: OrderDetail) {
       width: image.width,
       height: image.height,
     })),
-    stages: order.stages.map((entry) =>
-      toStage(
-        entry,
-        entry.subTicketId ? (ticketNo.get(entry.subTicketId) ?? null) : null,
-        requestsOf(order, entry.id),
-      ),
-    ),
-    materialRequests: order.materialRequests.map((request) =>
-      toMaterialRequest(
+    stages: order.stages.map((entry) => {
+      const limit = handoverSilverLimit(order, entry.subTicketId ?? null, entry.id);
+      return {
+        ...toStage(
+          entry,
+          entry.subTicketId ? (ticketNo.get(entry.subTicketId) ?? null) : null,
+          requestsOf(order, entry.id),
+        ),
+        /** Mốc TL giao tối đa khi sửa thông tin giao của khâu này. */
+        handedSilverLimit: limit != null ? decStr(limit) : null,
+      };
+    }),
+    materialRequests: order.materialRequests.map((request) => ({
+      ...toMaterialRequest(
         request,
         order.code,
         request.subTicketId
@@ -609,7 +748,8 @@ export function toDetail(order: OrderDetail) {
         order.stages.find((entry) => entry.id === request.stageEntryId)
           ?.stage ?? null,
       ),
-    ),
+      blankLeft: blankLimitFor(order, request.materialId),
+    })),
     workTicket:
       order.subTickets.length === 0
         ? {
@@ -628,6 +768,7 @@ export function toDetail(order: OrderDetail) {
               parentAvailable.silver != null
                 ? decStr(parentAvailable.silver)
                 : null,
+            handoverSilverLimit: decOrNull(handoverSilverLimit(order, null)),
             materials: ticketMaterials(parentEntries, order.materialRequests),
           }
         : null,
@@ -683,6 +824,8 @@ function toSubTicket(order: OrderDetail, ticket: SubTicket) {
     outcomeNote: ticket.outcomeNote,
     availableQty: available.qty,
     availableSilver: available.silver != null ? decStr(available.silver) : null,
+    /** Mốc TL giao tối đa cho khâu kế tiếp của phiếu. */
+    handoverSilverLimit: decOrNull(handoverSilverLimit(order, ticket.id)),
     lastPrintedAt: ticket.lastPrintedAt?.toISOString() ?? null,
     createdByName: ticket.createdByName,
     createdAt: ticket.createdAt.toISOString(),
@@ -937,16 +1080,20 @@ export function requireSubTicket(order: OrderDetail, no: number) {
   return ticket;
 }
 
-/** Đơn NVL phải có đủ ngày báo Đúc / Đúc về mới giao thợ; đơn BTP lấy hàng đúc sẵn. */
+/**
+ * Đơn NVL vào Nguội khi thủ kho đã cắt cây chia phôi (bước 10). Đơn cũ trước khi có phiếu
+ * cắt vẫn đi theo ngày báo Đúc / Đúc về. Đơn BTP lấy hàng đúc sẵn.
+ */
 export function assertCastingReady(
   order: Pick<
     OrderDetail,
-    'source' | 'castingSentDate' | 'castingReturnedDate'
+    'source' | 'castingSentDate' | 'castingReturnedDate' | 'cutAt'
   >,
   message: string,
 ) {
   if (
     order.source === 'NVL' &&
+    !order.cutAt &&
     (!order.castingSentDate || !order.castingReturnedDate)
   ) {
     throw new BadRequestException(message);

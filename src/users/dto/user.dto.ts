@@ -9,7 +9,7 @@ import {
   IsArray,
   IsIn,
 } from 'class-validator';
-import { RoleCode } from '@prisma/client';
+import { ProductionStage, RoleCode } from '@prisma/client';
 import { ALL_PERMISSIONS } from '../../auth/permissions';
 
 export class CreateUserDto {
@@ -48,6 +48,12 @@ export class CreateUserDto {
   @IsOptional()
   @IsString()
   department?: string;
+
+  /** Khâu thợ được nhận trên phiếu. */
+  @IsOptional()
+  @IsArray()
+  @IsEnum(ProductionStage, { each: true })
+  workerStages?: ProductionStage[];
 }
 
 export class UpdateUserDto {
@@ -77,6 +83,12 @@ export class UpdateUserDto {
   @IsOptional()
   @IsString()
   department?: string;
+
+  /** Khâu thợ được nhận trên phiếu. */
+  @IsOptional()
+  @IsArray()
+  @IsEnum(ProductionStage, { each: true })
+  workerStages?: ProductionStage[];
 
   @IsOptional()
   @IsBoolean()

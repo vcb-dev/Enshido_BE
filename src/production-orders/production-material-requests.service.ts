@@ -37,6 +37,7 @@ import {
   subTicketCode,
   toDetail,
   toMaterialRequest,
+  blankLimitFor,
 } from './order-detail';
 
 const BTP_WAREHOUSE_CODE = 'btp-cho-vao-da';
@@ -136,7 +137,26 @@ function isAdmin(actor: AuthUserPayload) {
 
 const listInclude = {
   ...materialRequestMaterial(),
-  order: { select: { code: true, description: true } },
+  order: {
+    select: {
+      code: true,
+      description: true,
+      castingCutLines: {
+        orderBy: { createdAt: 'desc' },
+        take: 1,
+        select: { qty: true, weight: true, btpMaterialId: true },
+      },
+      materialRequests: {
+        where: { status: MaterialRequestStatus.ISSUED },
+        select: {
+          status: true,
+          materialId: true,
+          issuedQty: true,
+          issuedWeight: true,
+        },
+      },
+    },
+  },
   subTicket: { select: { no: true } },
   stageEntry: { select: { stage: true, craftsmanName: true } },
 } satisfies Prisma.ProductionMaterialRequestInclude;
@@ -412,6 +432,33 @@ export class ProductionMaterialRequestsService {
       );
     }
     assertStageWarehouse(entry.stage, material.warehouse.code);
+    // Phôi cắt cây của đơn: tổng xuất (chiếc + gram) không vượt phôi nhận ở phiếu cắt.
+    const blank = order.castingCutLines[0];
+    if (blank?.btpMaterialId === line.materialId) {
+      // Đọc trong transaction để tính cả các dòng vừa xuất trong cùng lần giao.
+      const used = await tx.productionMaterialRequest.aggregate({
+        where: {
+          orderId: order.id,
+          materialId: line.materialId,
+          status: MaterialRequestStatus.ISSUED,
+        },
+        _sum: { issuedQty: true, issuedWeight: true },
+      });
+      const usedQty = used._sum.issuedQty ?? new Prisma.Decimal(0);
+      const usedWeight = used._sum.issuedWeight ?? new Prisma.Decimal(0);
+      const leftQty = new Prisma.Decimal(blank.qty).sub(usedQty);
+      const leftWeight = blank.weight.sub(usedWeight);
+      if (line.qty.gt(leftQty)) {
+        throw new BadRequestException(
+          `Phôi của đơn ${order.code} chỉ còn ${decStr(leftQty)} chiếc — không xuất ${decStr(line.qty)}`,
+        );
+      }
+      if (line.weight && line.weight.gt(leftWeight)) {
+        throw new BadRequestException(
+          `Phôi của đơn ${order.code} chỉ còn ${decStr(leftWeight)} g — không xuất ${decStr(line.weight)} g`,
+        );
+      }
+    }
     let stoneCount: number | null = null;
     if (line.kind === MaterialRequestKind.STONE) {
       if (line.stoneCount != null) {
@@ -506,6 +553,7 @@ export class ProductionMaterialRequestsService {
       craftsmanName: row.stageEntry.craftsmanName,
       suggestedKind: suggestKind(row.material),
       stockQty: row.material.balance ? decStr(row.material.balance.qty) : '0',
+      blankLeft: blankLimitFor(row.order, row.materialId),
     }));
   }
 
