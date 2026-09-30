@@ -3,7 +3,6 @@ import {
   entriesOf,
   handedStoneOf,
   lastStageDone,
-  looseTopUps,
   orderEntries,
   orderListStatuses,
   orderTicketAvailable,
@@ -15,6 +14,7 @@ import {
   subTicketState,
   subTicketSummary,
   ticketPosition,
+  type OrderDetail,
   type StageEntry,
   type SubTicket,
 } from './order-detail';
@@ -43,7 +43,6 @@ function ticket(over: Partial<SubTicket> = {}): SubTicket {
     id: 't1',
     no: 1,
     qty: 6,
-    silverWeight: dec('600'),
     pendingStage: null,
     claimedByUserId: null,
     outcome: null,
@@ -234,17 +233,18 @@ describe('phiếu mẹ không chia — dùng cùng state machine với phiếu c
         (item) => item.id,
       ),
     ).toEqual(['parent-entry']);
-    expect(
-      orderTicketAvailable({ qty: 6, silverWeight: dec('600') }, [parentEntry]),
-    ).toEqual({ qty: 5, silver: dec('590') });
+    expect(orderTicketAvailable({ qty: 6 }, [parentEntry])).toEqual({
+      qty: 5,
+      silver: dec('590'),
+    });
   });
 });
 
 describe('subTicketAvailable — số lượng / bạc còn lại để giao khâu sau', () => {
-  it('chưa làm khâu nào thì là phần đã chia', () => {
+  it('chưa làm khâu nào: số lượng là phần đã chia, bạc chưa có — người giao cân lúc giao', () => {
     expect(subTicketAvailable(ticket(), [])).toEqual({
       qty: 6,
-      silver: dec('600'),
+      silver: null,
     });
   });
 
@@ -268,75 +268,6 @@ describe('subTicketAvailable — số lượng / bạc còn lại để giao kh�
   });
 });
 
-describe('cấp thêm cho phiếu con', () => {
-  const loose = (qty: number, silver: string) => ({
-    stageEntryId: null,
-    qty,
-    silverWeight: dec(silver),
-  });
-  const applied = (qty: number, silver: string) => ({
-    stageEntryId: 'e1',
-    qty,
-    silverWeight: dec(silver),
-  });
-
-  it('chỉ cộng phần chưa vào khâu nào', () => {
-    expect(looseTopUps([loose(1, '100'), applied(2, '200')])).toEqual({
-      qty: 1,
-      silver: dec('100'),
-    });
-  });
-
-  it('cấp thêm khi chưa làm khâu nào: đã nằm trong phần đã chia, KHÔNG cộng lần nữa', () => {
-    // ticket.qty được service cộng lên ngay khi cấp thêm, nên cộng tiếp là đếm trùng.
-    const t = ticket({ qty: 7, silverWeight: dec('700') });
-    expect(subTicketAvailable(t, [], [loose(1, '100')])).toEqual({
-      qty: 7,
-      silver: dec('700'),
-    });
-  });
-
-  it('cấp thêm giữa lúc thợ đang làm: đã cộng vào số giao của khâu', () => {
-    // Bắt buộc phải vậy, nếu không hao hụt = giao − nhận lại sẽ ra số âm.
-    const open = entry({ handedQty: 7, handedSilverWeight: dec('700') });
-    expect(
-      subTicketAvailable(
-        ticket({ qty: 7, silverWeight: dec('700') }),
-        [open],
-        [applied(1, '100')],
-      ),
-    ).toEqual({ qty: 7, silver: dec('700') });
-  });
-
-  it('cấp thêm sau khi KCS nhận lại: cộng vào số đang có để giao khâu sau', () => {
-    const closed = entry({
-      returnedAt: new Date(),
-      returnedQty: 7,
-      returnedSilverWeight: dec('690'),
-    });
-    // Hao hụt 10 g ở khâu trước vẫn mất, phần cấp thêm 50 g cộng lên trên đó.
-    expect(
-      subTicketAvailable(
-        ticket({ qty: 7, silverWeight: dec('750') }),
-        [closed],
-        [applied(1, '100'), loose(0, '50')],
-      ),
-    ).toEqual({ qty: 7, silver: dec('740') });
-  });
-
-  it('không có lần cấp thêm nào thì kết quả như cũ', () => {
-    const closed = entry({
-      returnedAt: new Date(),
-      returnedQty: 5,
-      returnedSilverWeight: dec('596'),
-    });
-    expect(subTicketAvailable(ticket(), [closed], [])).toEqual({
-      qty: 5,
-      silver: dec('596'),
-    });
-  });
-});
-
 describe('entriesOf', () => {
   it('chỉ lấy khâu của đúng phiếu con, bỏ khâu cấp đơn', () => {
     const stages = [
@@ -353,6 +284,7 @@ describe('handedStoneOf — đá phát cho thợ', () => {
   const order = (stages: StageEntry[] = []) => ({
     stoneCount: 600,
     stoneWeight: dec('480'),
+    bomLines: [],
     stages,
   });
   const stoneEntry = (id: string, count: number, weight: string) =>
@@ -444,9 +376,36 @@ describe('handedStoneOf — đá phát cho thợ', () => {
       handedStoneOf(
         'STONE_SETTING',
         { handedStoneCount: 999 },
-        { stoneCount: null, stoneWeight: null, stages: [] },
+        {
+          stoneCount: null,
+          stoneWeight: null,
+          bomLines: [],
+          stages: [],
+        },
       ).handedStoneCount,
     ).toBe(999);
+  });
+
+  it('đơn nhiều mã NVL: quỹ đá là tổng các dòng', () => {
+    const multi = {
+      stoneCount: 4,
+      stoneWeight: dec('2'),
+      bomLines: [
+        { qty: 4, stoneWeight: dec('2') },
+        { qty: 6, stoneWeight: dec('3') },
+      ] as unknown as OrderDetail['bomLines'],
+      stages: [],
+    };
+    expect(
+      handedStoneOf(
+        'STONE_SETTING',
+        { handedStoneCount: 10, handedStoneWeight: '5' },
+        multi,
+      ).handedStoneCount,
+    ).toBe(10);
+    expect(() =>
+      handedStoneOf('STONE_SETTING', { handedStoneCount: 11 }, multi),
+    ).toThrow(/chỉ còn 10 viên/);
   });
 });
 
@@ -569,7 +528,6 @@ describe('subTicketSummary — cột Phiếu con ở danh sách đơn', () => {
       code: 'A001-1',
       no: 1,
       qty: 6,
-      silverWeight: '600',
       note: null,
       createdAt: '2026-09-21T02:00:00.000Z',
       state: 'WAITING',

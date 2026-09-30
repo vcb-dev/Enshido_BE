@@ -35,10 +35,14 @@ import {
   SplitSubTicketsDto,
   SubTicketDto,
   SubTicketOutcomeDto,
-  SubTicketTopUpDto,
   UpsertProductionOrderDto,
+  IssueMaterialRequestDto,
+  MaterialRequestDto,
+  MaterialRequestListQuery,
+  RejectMaterialRequestDto,
 } from './dto/production-order.dto';
 import { ProductionCostingService } from './production-costing.service';
+import { ProductionMaterialRequestsService } from './production-material-requests.service';
 import { ProductionOrdersService } from './production-orders.service';
 import { ProductionSubTicketsService } from './production-sub-tickets.service';
 
@@ -48,7 +52,66 @@ export class ProductionOrdersController {
     private readonly orders: ProductionOrdersService,
     private readonly costing: ProductionCostingService,
     private readonly subTickets: ProductionSubTicketsService,
+    private readonly materials: ProductionMaterialRequestsService,
   ) {}
+
+  /** Hàng chờ xuất NVL của kho — yêu cầu thợ xin trong lúc làm khâu. */
+  @Get('material-requests')
+  @BlockWorker()
+  listMaterialRequests(@Query() query: MaterialRequestListQuery) {
+    return this.materials.list(query.status);
+  }
+
+  /** Thợ huỷ yêu cầu xuất NVL chưa được xuất. */
+  @Delete('material-requests/:id')
+  cancelMaterialRequest(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.materials.cancel(id, user);
+  }
+
+  /** Kho / người giao cân rồi xuất theo yêu cầu — tạo phiếu xuất gắn mã đơn. */
+  @Post('material-requests/:id/issue')
+  @BlockWorker()
+  issueMaterialRequest(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: IssueMaterialRequestDto,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.materials.issue(id, dto, user);
+  }
+
+  @Post('material-requests/:id/reject')
+  @BlockWorker()
+  rejectMaterialRequest(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: RejectMaterialRequestDto,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.materials.reject(id, dto, user);
+  }
+
+  /** Thợ xin xuất NVL cho khâu đang làm trên phiếu mẹ (đơn chưa chia). */
+  @Post(':code/work/material-requests')
+  requestOrderMaterial(
+    @Param('code') code: string,
+    @Body() dto: MaterialRequestDto,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.materials.create(code, null, dto, user);
+  }
+
+  /** Thợ xin xuất NVL cho khâu đang làm trên phiếu con. */
+  @Post(':code/sub-tickets/:no/material-requests')
+  requestSubTicketMaterial(
+    @Param('code') code: string,
+    @Param('no', ParseIntPipe) no: number,
+    @Body() dto: MaterialRequestDto,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.materials.create(code, no, dto, user);
+  }
 
   @Get()
   @BlockWorker()
@@ -138,14 +201,21 @@ export class ProductionOrdersController {
   removeCost(
     @Param('code') code: string,
     @Param('costId', ParseUUIDPipe) costId: string,
+    @CurrentUser() user: AuthUserPayload,
   ) {
-    return this.orders.removeCost(code, costId);
+    return this.orders.removeCost(code, costId, user);
   }
 
   /** Thông tin đơn chỉ-đọc cho thợ quét QR trên phiếu giấy đã in. */
   @Get(':code/reference')
   reference(@Param('code') code: string) {
     return this.orders.reference(code);
+  }
+
+  @Get(':code/activity')
+  @BlockWorker()
+  activityLog(@Param('code') code: string) {
+    return this.orders.activityLog(code);
   }
 
   @Get(':code')
@@ -175,8 +245,8 @@ export class ProductionOrdersController {
 
   @Delete(':code')
   @Roles(RoleCode.ADMIN)
-  remove(@Param('code') code: string) {
-    return this.orders.remove(code);
+  remove(@Param('code') code: string, @CurrentUser() user: AuthUserPayload) {
+    return this.orders.remove(code, user);
   }
 
   @Patch(':code/status')
@@ -223,8 +293,9 @@ export class ProductionOrdersController {
     @Param('code') code: string,
     @Param('stageId', ParseUUIDPipe) stageId: string,
     @Body() dto: HandoverStageDto,
+    @CurrentUser() user: AuthUserPayload,
   ) {
-    return this.orders.updateHandover(code, stageId, dto);
+    return this.orders.updateHandover(code, stageId, dto, user);
   }
 
   @Post(':code/stages/:stageId/return')
@@ -248,8 +319,11 @@ export class ProductionOrdersController {
   }
 
   @Post(':code/printed')
-  markPrinted(@Param('code') code: string) {
-    return this.orders.markPrinted(code);
+  markPrinted(
+    @Param('code') code: string,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.orders.markPrinted(code, user);
   }
 
   @Post(':code/sub-tickets')
@@ -274,8 +348,11 @@ export class ProductionOrdersController {
 
   @Delete(':code/work/pending')
   @BlockWorker()
-  cancelOrderPending(@Param('code') code: string) {
-    return this.subTickets.cancelOrderPending(code);
+  cancelOrderPending(
+    @Param('code') code: string,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.subTickets.cancelOrderPending(code, user);
   }
 
   @Post(':code/work/claim')
@@ -376,8 +453,9 @@ export class ProductionOrdersController {
   cancelSubTicketPending(
     @Param('code') code: string,
     @Param('no', ParseIntPipe) no: number,
+    @CurrentUser() user: AuthUserPayload,
   ) {
-    return this.subTickets.cancelPending(code, no);
+    return this.subTickets.cancelPending(code, no, user);
   }
 
   @Post(':code/sub-tickets/:no/claim')
@@ -397,18 +475,6 @@ export class ProductionOrdersController {
     @CurrentUser() user: AuthUserPayload,
   ) {
     return this.subTickets.unclaim(code, no, user);
-  }
-
-  /** Cấp thêm SL / bạc cho phiếu con khi thợ làm giữa chừng phát hiện thiếu. */
-  @Post(':code/sub-tickets/:no/top-up')
-  @BlockWorker()
-  topUpSubTicket(
-    @Param('code') code: string,
-    @Param('no', ParseIntPipe) no: number,
-    @Body() dto: SubTicketTopUpDto,
-    @CurrentUser() user: AuthUserPayload,
-  ) {
-    return this.subTickets.topUp(code, no, dto, user);
   }
 
   /** Thợ báo đã làm xong khâu đang giữ, nộp hàng cho KCS. */
@@ -488,7 +554,8 @@ export class ProductionOrdersController {
   markSubTicketPrinted(
     @Param('code') code: string,
     @Param('no', ParseIntPipe) no: number,
+    @CurrentUser() user: AuthUserPayload,
   ) {
-    return this.subTickets.markPrinted(code, no);
+    return this.subTickets.markPrinted(code, no, user);
   }
 }
