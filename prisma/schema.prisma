@@ -235,8 +235,6 @@ model Material {
   bomLines          ProductionOrderBomLine[]
   materialRequests  ProductionMaterialRequest[]
   castingOrderLines CastingOrderLine[]
-  castingCutLines   CastingCutLine[]
-  castingCutRests   CastingCut[]
 
   @@unique([warehouseId, sku])
   @@unique([sku], map: "materials_sku_key")
@@ -350,8 +348,6 @@ model StockInbound {
   unit            Unit?            @relation(fields: [unitId], references: [id], onDelete: SetNull)
   supplier        Supplier?        @relation(fields: [supplierId], references: [id], onDelete: SetNull)
   productionOrder ProductionOrder? @relation(fields: [productionOrderId], references: [id], onDelete: Restrict)
-  castingCutLine  CastingCutLine?
-  castingCutRest  CastingCut?
 
   @@unique([warehouseId, sortOrder])
   @@index([warehouseId, receivedAt])
@@ -599,7 +595,6 @@ model ProductionOrder {
   autoShipments    Shipment[]                  @relation("OrderAutoShipment")
   bomLines         ProductionOrderBomLine[]
   inbounds         StockInbound[]
-  castingCutLines  CastingCutLine[]
   /// Đơn tạo (DH…) mà lệnh sản xuất này sinh ra khi xác nhận đúc.
   intakeOrderId    String?                     @unique @map("intake_order_id") @db.Uuid
   intakeOrder      IntakeOrder?                @relation(fields: [intakeOrderId], references: [id], onDelete: SetNull)
@@ -1151,7 +1146,6 @@ model CastingOrder {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   lines CastingOrderLine[]
-  cuts  CastingCut[]
 
   @@index([createdAt])
   @@map("casting_orders")
@@ -1215,7 +1209,6 @@ model CastingSlip {
   orders CastingSlipOrder[]
   images CastingSlipImage[]
   /// Phiếu cắt cây thông của lần đúc này (bước 10).
-  cut    CastingCut?
 
   @@index([slipDate])
   @@index([status])
@@ -1276,87 +1269,4 @@ model CastingOrderLine {
   @@index([castingOrderId, sortOrder])
   @@index([materialId])
   @@map("casting_order_lines")
-}
-
-/// Phiếu cắt cây thông (bước 10): thủ kho cắt cây sau đúc, chia phôi theo đơn.
-/// Lưu phiếu là nhập phôi vào kho BTP (từng đơn) và phần còn lại của cây vào kho NVL chính.
-model CastingCut {
-  id             String    @id @default(uuid()) @db.Uuid
-  /// Số thứ tự sinh mã phiếu (CC0001, CC0002…).
-  seq            Int       @unique
-  code           String    @unique
-  /// Lệnh đúc của cây — không bắt buộc khi lệnh đúc chưa nhập trên hệ thống.
-  castingOrderId String?   @map("casting_order_id") @db.Uuid
-  /// Phiếu đúc (bước 7–9) của cây thông đem cắt — một cây chỉ cắt một lần.
-  castingSlipId  String?   @unique @map("casting_slip_id") @db.Uuid
-  cutAt          DateTime  @map("cut_at")
-  /// TL cả cây thông sau đúc (g), cân trước khi cắt.
-  treeWeight     Decimal   @map("tree_weight") @db.Decimal(18, 4)
-  /// TL phần còn lại của cây sau khi chia phôi (g) — nhập kho NVL chính.
-  restWeight     Decimal   @default(0) @map("rest_weight") @db.Decimal(18, 4)
-  restMaterialId String?   @map("rest_material_id") @db.Uuid
-  restInboundId  String?   @unique @map("rest_inbound_id") @db.Uuid
-  note           String?
-  cutByUserId    String?   @map("cut_by_user_id") @db.Uuid
-  cutByName      String    @map("cut_by_name")
-  lastPrintedAt  DateTime? @map("last_printed_at")
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
-
-  castingOrder CastingOrder?     @relation(fields: [castingOrderId], references: [id], onDelete: SetNull)
-  castingSlip  CastingSlip?      @relation(fields: [castingSlipId], references: [id], onDelete: Restrict)
-  restMaterial Material?         @relation(fields: [restMaterialId], references: [id], onDelete: Restrict)
-  restInbound  StockInbound?     @relation(fields: [restInboundId], references: [id], onDelete: SetNull)
-  lines        CastingCutLine[]
-  images       CastingCutImage[]
-
-  @@index([cutAt])
-  @@index([castingOrderId])
-  @@map("casting_cuts")
-}
-
-/// Phôi của một đơn trên phiếu cắt — nhập kho BTP.
-model CastingCutLine {
-  id            String           @id @default(uuid()) @db.Uuid
-  cutId         String           @map("cut_id") @db.Uuid
-  orderId       String           @map("order_id") @db.Uuid
-  sortOrder     Int              @default(0) @map("sort_order")
-  qty           Int
-  /// TL phôi của đơn (g).
-  weight        Decimal          @db.Decimal(18, 4)
-  btpMaterialId String           @map("btp_material_id") @db.Uuid
-  btpInboundId  String?          @unique @map("btp_inbound_id") @db.Uuid
-  /// Trạng thái đơn trước khi cắt — xoá phiếu cắt thì trả đơn về đây.
-  prevStatus    ProductionStatus @map("prev_status")
-  createdAt     DateTime         @default(now()) @map("created_at")
-
-  cut         CastingCut        @relation(fields: [cutId], references: [id], onDelete: Cascade)
-  order       ProductionOrder   @relation(fields: [orderId], references: [id], onDelete: Restrict)
-  btpMaterial Material          @relation(fields: [btpMaterialId], references: [id], onDelete: Restrict)
-  btpInbound  StockInbound?     @relation(fields: [btpInboundId], references: [id], onDelete: SetNull)
-  images      CastingCutImage[]
-
-  @@unique([cutId, orderId])
-  @@index([orderId])
-  @@index([cutId, sortOrder])
-  @@map("casting_cut_lines")
-}
-
-/// Ảnh cân trên phiếu cắt: `lineId` null là ảnh phần còn lại của cây.
-model CastingCutImage {
-  id        String   @id @default(uuid()) @db.Uuid
-  cutId     String   @map("cut_id") @db.Uuid
-  lineId    String?  @map("line_id") @db.Uuid
-  url       String
-  publicId  String   @map("public_id")
-  width     Int?
-  height    Int?
-  sortOrder Int      @default(0) @map("sort_order")
-  createdAt DateTime @default(now()) @map("created_at")
-
-  cut  CastingCut      @relation(fields: [cutId], references: [id], onDelete: Cascade)
-  line CastingCutLine? @relation(fields: [lineId], references: [id], onDelete: Cascade)
-
-  @@index([cutId, lineId, sortOrder])
-  @@map("casting_cut_images")
 }

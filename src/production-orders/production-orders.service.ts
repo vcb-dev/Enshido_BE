@@ -2665,7 +2665,6 @@ function asCreatedDetail(
     children: [],
     receipt: null,
     shipmentLines: [],
-    castingCutLines: [],
     bomLines: nvlLines.map((line) => ({
       materialId: line.material.id,
       material: { sku: line.material.sku, name: line.material.name },

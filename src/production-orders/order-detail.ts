@@ -136,16 +136,6 @@ export const detailInclude = {
     },
     orderBy: { shipment: { seq: 'asc' } },
   },
-  castingCutLines: {
-    orderBy: { createdAt: 'desc' },
-    take: 1,
-    select: {
-      qty: true,
-      weight: true,
-      btpMaterialId: true,
-      cut: { select: { code: true, cutAt: true } },
-    },
-  },
   _count: { select: { outbounds: true } },
 } satisfies Prisma.ProductionOrderInclude;
 
@@ -686,11 +676,11 @@ export function orderTicketAvailable(
  * không vượt số hàng đang có trong tay KCS.
  * - Có khâu trước trên cùng phiếu: = TL KCS nhận lại khâu đó.
  * - Khâu đầu của phiếu: lấy từ nguồn chung — TL phiếu mẹ nhận lại lần cuối (đã chia phiếu sau
- *   khi làm trên phiếu mẹ), không thì TL phôi cắt cây — trừ phần các phiếu con khác đã nhận.
+ *   khi làm trên phiếu mẹ), không thì TL phôi sau đúc — trừ phần các phiếu con khác đã nhận.
  * `null` = không có mốc (đơn cũ chưa có số liệu) → không chặn.
  */
 export function handoverSilverLimit(
-  order: Pick<OrderDetail, 'stages' | 'castingCutLines' | 'blankWeight'>,
+  order: Pick<OrderDetail, 'stages' | 'blankWeight'>,
   ticketId: string | null,
   editingEntryId?: string,
 ): Prisma.Decimal | null {
@@ -704,7 +694,7 @@ export function handoverSilverLimit(
   const prev = before[before.length - 1];
   if (prev) return prev.returnedSilverWeight;
 
-  const blank = order.blankWeight ?? order.castingCutLines[0]?.weight ?? null;
+  const blank = order.blankWeight;
   const parentEntries = order.stages.filter((entry) => !entry.subTicketId);
   const lastParent = ticketId ? parentEntries[parentEntries.length - 1] : undefined;
   const pool = lastParent ? lastParent.returnedSilverWeight : blank;
@@ -726,16 +716,11 @@ export function handoverSilverLimit(
   return left.isNegative() ? new Prisma.Decimal(0) : left;
 }
 
-/** Chỉ cần dòng phôi cắt cây và các yêu cầu đã xuất — trang danh sách select gọn được. */
+/** Chỉ cần phôi sau đúc và các yêu cầu đã xuất — trang danh sách select gọn được. */
 type BlankSource = {
   blankQty: number | null;
   blankWeight: Prisma.Decimal | null;
   blankMaterialId: string | null;
-  castingCutLines: readonly {
-    qty: number;
-    weight: Prisma.Decimal;
-    btpMaterialId: string | null;
-  }[];
   materialRequests: readonly {
     status: MaterialRequestStatus;
     materialId: string;
@@ -745,14 +730,14 @@ type BlankSource = {
 };
 
 /**
- * Phôi của đơn còn trên kho BTP: phôi cắt cây trừ phần đã xuất cho thợ (mọi phiếu, mọi khâu).
+ * Phôi của đơn còn trên kho BTP: phôi sau đúc trừ phần đã xuất cho thợ (mọi phiếu, mọi khâu).
  * Mã phôi gom theo mã sản phẩm nên dùng chung giữa các đơn — không có mốc này thì một đơn
  * xuất lấn sang phôi của đơn khác.
  */
 export function blankLeftOf(order: BlankSource) {
   const blank = order.blankMaterialId && order.blankQty != null && order.blankWeight != null
     ? { btpMaterialId: order.blankMaterialId, qty: order.blankQty, weight: order.blankWeight }
-    : order.castingCutLines[0];
+    : null;
   if (!blank?.btpMaterialId) return { btpMaterialId: null, leftQty: null, leftWeight: null };
   let qty = new Prisma.Decimal(0);
   let weight = new Prisma.Decimal(0);
@@ -772,7 +757,7 @@ export function blankLeftOf(order: BlankSource) {
   };
 }
 
-/** Mốc xuất cho một mã: chỉ có khi mã đó là phôi cắt cây của đơn. */
+/** Mốc xuất cho một mã: chỉ có khi mã đó là phôi sau đúc của đơn. */
 export function blankLimitFor(order: BlankSource, materialId: string) {
   const left = blankLeftOf(order);
   if (left.btpMaterialId !== materialId) return null;
@@ -781,7 +766,7 @@ export function blankLimitFor(order: BlankSource, materialId: string) {
 
 /** Chặn TL giao vượt hàng đang có — dùng chung cho xác nhận giao và sửa thông tin giao. */
 export function assertHandedSilverWithin(
-  order: Pick<OrderDetail, 'stages' | 'castingCutLines' | 'blankWeight'>,
+  order: Pick<OrderDetail, 'stages' | 'blankWeight'>,
   ticketId: string | null,
   handed: Prisma.Decimal | null,
   editingEntryId?: string,
@@ -872,21 +857,13 @@ export function toDetail(order: OrderDetail) {
       ? ymd(order.castingReturnedDate)
       : null,
     cutAt: order.cutAt ? order.cutAt.toISOString() : null,
-    // Phôi đơn nhận ở phiếu cắt cây gần nhất — mốc bạc giao khâu Nguội.
+    // Phôi đơn nhận lúc xác nhận phiếu đúc — mốc bạc giao khâu Nguội.
     cut: order.blankWeight != null && order.blankQty != null
       ? {
           code: null,
           cutAt: order.cutAt?.toISOString() ?? null,
           qty: order.blankQty,
           weight: decStr(order.blankWeight),
-          ...blankLeftOf(order),
-        }
-      : order.castingCutLines[0]
-      ? {
-          code: order.castingCutLines[0].cut.code,
-          cutAt: order.castingCutLines[0].cut.cutAt.toISOString(),
-          qty: order.castingCutLines[0].qty,
-          weight: decStr(order.castingCutLines[0].weight),
           ...blankLeftOf(order),
         }
       : null,
@@ -1333,8 +1310,8 @@ export function requireSubTicket(order: OrderDetail, no: number) {
 }
 
 /**
- * Đơn NVL vào Nguội khi thủ kho đã cắt cây chia phôi (bước 10). Đơn cũ trước khi có phiếu
- * cắt vẫn đi theo ngày báo Đúc / Đúc về. Đơn BTP lấy hàng đúc sẵn.
+ * Đơn NVL vào Nguội khi thủ kho đã xác nhận phiếu đúc và cân phôi (`cutAt`). Đơn cũ nhập tay
+ * đi theo ngày báo Đúc / Đúc về. Đơn BTP lấy hàng đúc sẵn.
  */
 export function assertCastingReady(
   order: Pick<

@@ -255,7 +255,7 @@ export class ProductionSubTicketsService {
       assertOrderActive(order);
       assertCastingReady(
         order,
-        'Cắt cây chia phôi cho đơn trước khi mở khâu cho thợ',
+        'Xác nhận phiếu đúc (cân phôi) cho đơn trước khi mở khâu cho thợ',
       );
       if (order.subTickets.length > 0) {
         throw new BadRequestException(
@@ -409,7 +409,7 @@ export class ProductionSubTicketsService {
       assertHandoverManager(order, actor);
       assertCastingReady(
         order,
-        'Cắt cây chia phôi cho đơn trước khi giao khâu cho thợ',
+        'Xác nhận phiếu đúc (cân phôi) cho đơn trước khi giao khâu cho thợ',
       );
       const entries = orderEntries(order);
       const { state } = orderTicketState(order, entries);
@@ -451,7 +451,7 @@ export class ProductionSubTicketsService {
       const changedBy = actorName(actor);
       const nextStatus = STAGE_STATUS[stage];
       const handedSilver = handedSilverOf(dto, entries);
-      // TL giao không vượt hàng đang có (KCS nhận lại khâu trước / phôi cắt cây).
+      // TL giao không vượt hàng đang có (KCS nhận lại khâu trước / phôi sau đúc).
       assertHandedSilverWithin(order, null, handedSilver);
       const created = await tx.productionStageEntry.create({
         data: {
@@ -583,7 +583,7 @@ export class ProductionSubTicketsService {
       assertOrderActive(order);
       assertCastingReady(
         order,
-        'Cắt cây chia phôi cho đơn trước khi chia phiếu con',
+        'Xác nhận phiếu đúc (cân phôi) cho đơn trước khi chia phiếu con',
       );
       // Đơn từ đúc có sẵn một phiếu -1 (mặc định 1 đơn là 1 phiếu): chia lại khi phiếu đó
       // còn nguyên, chưa mở khâu / chưa giao thợ.
@@ -665,7 +665,7 @@ export class ProductionSubTicketsService {
       assertOrderActive(order);
       assertCastingReady(
         order,
-        'Cắt cây chia phôi cho đơn trước khi chia phiếu con',
+        'Xác nhận phiếu đúc (cân phôi) cho đơn trước khi chia phiếu con',
       );
       if (order.subTickets.length === 0) {
         throw new BadRequestException(
@@ -865,7 +865,7 @@ export class ProductionSubTicketsService {
       assertOrderActive(order);
       assertCastingReady(
         order,
-        'Cắt cây chia phôi cho đơn trước khi giao thợ',
+        'Xác nhận phiếu đúc (cân phôi) cho đơn trước khi giao thợ',
       );
       const ticket = requireSubTicket(order, no);
       const entries = entriesOf(order, ticket.id);
@@ -1667,7 +1667,7 @@ export class ProductionSubTicketsService {
       assertHandoverManager(order, actor);
       assertCastingReady(
         order,
-        'Cắt cây chia phôi cho đơn trước khi giao khâu cho thợ',
+        'Xác nhận phiếu đúc (cân phôi) cho đơn trước khi giao khâu cho thợ',
       );
       const ticket = requireSubTicket(order, no);
       const entries = entriesOf(order, ticket.id);
@@ -1725,7 +1725,7 @@ export class ProductionSubTicketsService {
         data: CLEAR_PENDING,
       });
       const handedSilver = handedSilverOf(dto, entries);
-      // TL giao không vượt hàng đang có (KCS nhận lại khâu trước / phôi cắt cây).
+      // TL giao không vượt hàng đang có (KCS nhận lại khâu trước / phôi sau đúc).
       assertHandedSilverWithin(order, ticket.id, handedSilver);
       const created = await tx.productionStageEntry.create({
         data: {

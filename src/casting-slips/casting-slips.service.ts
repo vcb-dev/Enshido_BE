@@ -73,6 +73,9 @@ function isUniqueViolation(error: unknown) {
   );
 }
 
+/** Mã mặc định nhận phần cây còn lại sau đúc (và hàng lỗi / S925 thừa ở Nguội, Vào đá). */
+const REST_MATERIAL_NAME = 'Bạc thu hồi / đầu cây S925';
+
 @Injectable()
 export class CastingSlipsService {
   constructor(
@@ -647,7 +650,7 @@ export class CastingSlipsService {
           if (!material) throw new BadRequestException('Mã NVL nhận phần còn lại không hợp lệ');
         } else {
           restMaterialId = await this.inventory.ensureNamedMaterial(tx, {
-            warehouseCode: 'nvl-chinh', name: 'Bạc thu hồi / đầu cây S925', unitCode: 'gram',
+            warehouseCode: 'nvl-chinh', name: REST_MATERIAL_NAME, unitCode: 'gram',
           });
         }
         const restInboundId = await this.inventory.createAutoInbound(tx, {
@@ -734,6 +737,16 @@ export class CastingSlipsService {
       after: { reworkIntake: intake.code, qty: intake.qty, weight: decStr(weight) },
       note: `Đúc xong phiếu bù ${intake.code}, tạo phiếu con ${order.code}-${no}`,
     });
+  }
+
+  /** Mã NVL nhận phần cây còn lại sau đúc: kho NVL chính, tính theo gram. */
+  async restMaterialOptions() {
+    const rows = await this.prisma.material.findMany({
+      where: { isActive: true, warehouse: { code: 'nvl-chinh' }, unit: { code: 'gram' } },
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      select: { id: true, sku: true, name: true },
+    });
+    return { defaultName: REST_MATERIAL_NAME, items: rows };
   }
 
   private async buildListWhere(query: ListCastingSlipsQuery) {

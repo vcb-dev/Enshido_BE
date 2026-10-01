@@ -143,7 +143,7 @@ export class IntakeOrdersService {
     });
     if (!order) throw new NotFoundException('Không tìm thấy đơn');
     // Trạng thái chỉ đổi qua đúng thao tác của từng bước (duyệt, gắn 3D, cân sáp, thủ kho
-    // xác nhận, phiếu đúc, cắt cây). Sửa đơn chỉ sửa thông tin, không nhảy bước được.
+    // xác nhận, phiếu đúc). Sửa đơn chỉ sửa thông tin, không nhảy bước được.
     if (dto.status !== undefined && dto.status !== order.status) {
       throw new BadRequestException(
         'Không đổi trạng thái ở form sửa đơn — dùng nút thao tác của bước tương ứng',

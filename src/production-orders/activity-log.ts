@@ -12,7 +12,7 @@ export const ACTIVITY = {
   ORDER_DELETE: 'ORDER_DELETE',
   ORDER_STATUS: 'ORDER_STATUS',
   ORDER_CASTING: 'ORDER_CASTING',
-  /** Thủ kho cắt cây thông, chia phôi cho đơn (bước 10). */
+  /** Xác nhận đúc xong: cân phôi, nhập kho BTP, đơn sang Chờ nguội. */
   ORDER_CUT: 'ORDER_CUT',
   ORDER_UNDO_CUT: 'ORDER_UNDO_CUT',
   ORDER_FINISH: 'ORDER_FINISH',

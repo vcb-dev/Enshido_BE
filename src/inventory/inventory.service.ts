@@ -3200,7 +3200,7 @@ function assertNotAutoIssued(outbound: {
 function assertInboundNotAuto(inbound: { autoIssued: boolean }) {
   if (!inbound.autoIssued) return;
   throw new BadRequestException(
-    'Phiếu nhập do phiếu cắt cây thông tự tạo — sửa / xoá ở phiếu cắt',
+    'Phiếu nhập do hệ thống tự tạo (xác nhận đúc / thủ kho xác nhận khâu) — không sửa / xoá tay được',
   );
 }
 

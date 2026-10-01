@@ -25,7 +25,6 @@ import { EditLogsModule } from './edit-logs/edit-logs.module';
 import { CastingOrdersModule } from './casting-orders/casting-orders.module';
 import { CastingSlipsModule } from './casting-slips/casting-slips.module';
 import { IntakeOrdersModule } from './intake-orders/intake-orders.module';
-import { CastingCutsModule } from './casting-cuts/casting-cuts.module';
 
 @Module({
   imports: [
@@ -55,7 +54,6 @@ import { CastingCutsModule } from './casting-cuts/casting-cuts.module';
     CastingOrdersModule,
     CastingSlipsModule,
     IntakeOrdersModule,
-    CastingCutsModule,
   ],
   controllers: [AppController],
   providers: [

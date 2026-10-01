@@ -1,7 +1,6 @@
 import { ForbiddenException, type ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { RoleCode } from '@prisma/client';
-import { CastingCutsController } from '../casting-cuts/casting-cuts.controller';
 import { CastingSlipsController } from '../casting-slips/casting-slips.controller';
 import { IntakeOrdersController } from '../intake-orders/intake-orders.controller';
 import { ProductionOrdersController } from '../production-orders/production-orders.controller';
@@ -11,7 +10,6 @@ import { MANAGER_PERMISSIONS, Permission, type PermissionCode } from './permissi
 import type { AuthUserPayload } from './types';
 
 const P = Permission;
-const KEEPER_OR_QC = [P.WAREHOUSE_KEEPER, P.PRODUCTION_QC];
 
 /** Endpoint → các quyền được phép (chỉ cần một). Khớp cột "Người thực hiện" trong file mô tả luồng. */
 const MATRIX: [string, object, string, PermissionCode[]][] = [
@@ -35,9 +33,6 @@ const MATRIX: [string, object, string, PermissionCode[]][] = [
   ['B8 bắt đầu đúc', CastingSlipsController.prototype, 'start', [P.PRODUCTION_CAST]],
   ['B9 nhập kết quả đúc', CastingSlipsController.prototype, 'submitResult', [P.PRODUCTION_CAST]],
   ['B9 thủ kho xác nhận đúc', CastingSlipsController.prototype, 'confirm', [P.WAREHOUSE_KEEPER]],
-  ['B10 cắt cây', CastingCutsController.prototype, 'create', KEEPER_OR_QC],
-  ['B10 xoá phiếu cắt', CastingCutsController.prototype, 'remove', KEEPER_OR_QC],
-  ['B10 đánh dấu đã in', CastingCutsController.prototype, 'markPrinted', KEEPER_OR_QC],
   ['B13 KCS nhận lại khâu', ProductionOrdersController.prototype, 'returnStage', [P.PRODUCTION_QC]],
   ['B14–15 KCS ghi lỗi phiếu con', ProductionOrdersController.prototype, 'defectSubTicket', [P.PRODUCTION_QC]],
   ['B14–15 KCS hoàn thiện phiếu con', ProductionOrdersController.prototype, 'finishSubTicket', [P.PRODUCTION_QC]],

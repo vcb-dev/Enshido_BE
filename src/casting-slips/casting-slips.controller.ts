@@ -49,6 +49,14 @@ export class CastingSlipsController {
   }
 
   /** Mở phiếu từ QR in trên phiếu giấy. */
+  /** Mã NVL (gram, kho NVL chính) nhận phần cây còn lại lúc xác nhận đúc. */
+  @Get('rest-material-options')
+  @BlockWorker()
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
+  restMaterialOptions() {
+    return this.slips.restMaterialOptions();
+  }
+
   @Get('by-code/:code')
   @BlockWorker()
   byCode(@Param('code') code: string) {

@@ -21,9 +21,9 @@ export const Permission = {
   PRODUCTION_WAX: 'production.wax',
   /** Bước 8–9: thợ đúc bắt đầu đúc và nhập kết quả. */
   PRODUCTION_CAST: 'production.cast',
-  /** Bước 5–11: thủ kho xác nhận sáp, lên phiếu đúc, xác nhận đúc xong, cắt cây, chia phiếu, duyệt xuất NVL. */
+  /** Bước 5–11: thủ kho xác nhận sáp, lên phiếu đúc, xác nhận đúc xong (cân phôi), chia phiếu, duyệt xuất NVL. */
   WAREHOUSE_KEEPER: 'warehouse.keeper',
-  /** Bước 10, 13–15: KCS cắt cây, nhận lại hàng, chốt Lỗi / Hoàn thiện. */
+  /** Bước 13–15, 18: KCS nhận lại hàng, chốt Lỗi / Hoàn thiện. */
   PRODUCTION_QC: 'production.qc',
   /**
    * Quản lý xưởng — một người kiêm quản lý SX + thủ kho + KCS. Tick quyền này là có đủ

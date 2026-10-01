@@ -145,11 +145,6 @@ const listInclude = {
       blankQty: true,
       blankWeight: true,
       blankMaterialId: true,
-      castingCutLines: {
-        orderBy: { createdAt: 'desc' },
-        take: 1,
-        select: { qty: true, weight: true, btpMaterialId: true },
-      },
       materialRequests: {
         where: { status: MaterialRequestStatus.ISSUED },
         select: {
@@ -436,10 +431,10 @@ export class ProductionMaterialRequestsService {
       );
     }
     assertStageWarehouse(entry.stage, material.warehouse.code);
-    // Phôi cắt cây của đơn: tổng xuất (chiếc + gram) không vượt phôi nhận ở phiếu cắt.
+    // Phôi sau đúc của đơn: tổng xuất (chiếc + gram) không vượt phôi nhận lúc xác nhận đúc.
     const blank = order.blankMaterialId && order.blankQty != null && order.blankWeight != null
       ? { btpMaterialId: order.blankMaterialId, qty: order.blankQty, weight: order.blankWeight }
-      : order.castingCutLines[0];
+      : null;
     if (blank?.btpMaterialId === line.materialId) {
       // Đọc trong transaction để tính cả các dòng vừa xuất trong cùng lần giao.
       const used = await tx.productionMaterialRequest.aggregate({
