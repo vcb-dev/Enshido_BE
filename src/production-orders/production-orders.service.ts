@@ -45,6 +45,8 @@ import {
   entriesOf,
   handedStoneOf,
   IN_STAGE_STATUSES,
+  deriveOrderStatus,
+  KEEPER_CONFIRM_STAGES,
   LAST_STAGE,
   lastStageDone,
   normalizeCode,
@@ -69,6 +71,9 @@ import {
 } from './order-detail';
 
 const S = ProductionStatus;
+
+/** Số lần KCS được sửa lại kết quả cân trước khi thủ kho xác nhận. */
+const MAX_KCS_REVISIONS = 3;
 
 type WarehouseMaterial = {
   id: string;
@@ -189,12 +194,14 @@ export class ProductionOrdersService {
         select: {
           id: true,
           status: true,
+          stoneCount: true,
           subTickets: {
             select: {
               id: true,
               pendingStage: true,
               claimedByUserId: true,
               outcome: true,
+              outcomeStage: true,
             },
           },
           // Vị trí phiếu con chỉ đọc khâu của phiếu con; khâu cấp đơn không liên quan.
@@ -205,6 +212,8 @@ export class ProductionOrdersService {
               subTicketId: true,
               stage: true,
               returnedAt: true,
+              confirmedAt: true,
+              defectReportedAt: true,
               submittedAt: true,
             },
           },
@@ -259,6 +268,7 @@ export class ProductionOrdersService {
           id: true,
           code: true,
           status: true,
+          stoneCount: true,
           source: true,
           requestType: true,
           qty: true,
@@ -305,6 +315,7 @@ export class ProductionOrdersService {
               claimedByUserId: true,
               claimedByName: true,
               outcome: true,
+              outcomeStage: true,
             },
           },
           stages: {
@@ -313,6 +324,8 @@ export class ProductionOrdersService {
               subTicketId: true,
               stage: true,
               returnedAt: true,
+              confirmedAt: true,
+              defectReportedAt: true,
               submittedAt: true,
               craftsmanName: true,
             },
@@ -375,6 +388,8 @@ export class ProductionOrdersService {
               row.code,
               ticket,
               row.stages.filter((entry) => entry.subTicketId === ticket.id),
+              parentEntries[parentEntries.length - 1]?.stage ?? null,
+              row.stoneCount === 0,
             ),
           ),
         };
@@ -995,7 +1010,7 @@ export class ProductionOrdersService {
           });
           const seq = (last?.seq ?? 0) + 1;
           const initialStatus =
-            data.source === ProductionSource.BTP ? S.FILING : S.NEW;
+            data.source === ProductionSource.BTP ? S.WAIT_FILING : S.NEW;
           const row = await tx.productionOrder.create({
             data: {
               ...data,
@@ -1150,14 +1165,14 @@ export class ProductionOrdersService {
         data: {
           ...fields,
           dataChangedAt: new Date(),
-          images: { deleteMany: {}, create: images },
+          images: { deleteMany: { kind: { not: 'CUT_BLANK' } }, create: images },
           ...(becomeBtp
             ? {
-                status: S.FILING,
+                status: S.WAIT_FILING,
                 statusLogs: {
                   create: {
                     fromStatus: order.status,
-                    toStatus: S.FILING,
+                    toStatus: S.WAIT_FILING,
                     changedBy,
                   },
                 },
@@ -1230,7 +1245,7 @@ export class ProductionOrdersService {
   async remove(code: string, actor: AuthUserPayload) {
     const order = await this.requireOrder(code);
     const freshBtp =
-      order.source === ProductionSource.BTP && order.status === S.FILING;
+      order.source === ProductionSource.BTP && order.status === S.WAIT_FILING;
     if ((!freshBtp && order.status !== S.NEW) || order.stages.length > 0) {
       throw new BadRequestException(
         'Chỉ xóa được đơn mới tạo và chưa giao khâu nào',
@@ -1545,14 +1560,38 @@ export class ProductionOrdersService {
     stageId: string,
     dto: ReturnStageDto,
     actor: AuthUserPayload,
+    /** KCS sửa lại kết quả đã nhận (Nguội / Vào đá): tối đa 3 lần, thủ kho xác nhận rồi thì khoá. */
+    revise = false,
   ) {
     const order = await this.requireOrder(code);
     const entry = requireStage(order, stageId);
-    if (entry.returnedAt) {
+    if (revise) {
+      if (!entry.returnedAt) {
+        throw new BadRequestException('KCS chưa nhận lại khâu này');
+      }
+      if (
+        entry.subTicketId == null ||
+        !KEEPER_CONFIRM_STAGES.includes(entry.stage)
+      ) {
+        throw new BadRequestException(
+          `Khâu ${STAGE_LABEL[entry.stage]} không có bước sửa lại kết quả KCS`,
+        );
+      }
+      if (entry.confirmedAt) {
+        throw new BadRequestException(
+          'Thủ kho đã xác nhận — không sửa lại kết quả KCS được nữa',
+        );
+      }
+      if (entry.kcsRevisionCount >= MAX_KCS_REVISIONS) {
+        throw new BadRequestException(
+          `KCS đã sửa lại ${MAX_KCS_REVISIONS} lần — hết lượt sửa`,
+        );
+      }
+    } else if (entry.returnedAt) {
       throw new BadRequestException('KCS đã nhận lại khâu này');
     }
     // Cả phiếu mẹ và phiếu con đều theo cùng luồng: thợ báo xong rồi KCS mới nhận lại.
-    if (!entry.submittedAt) {
+    if (!entry.submittedAt && !entry.defectReportedAt) {
       throw new BadRequestException(
         'Thợ chưa báo làm xong khâu này — chờ thợ bấm "Đã làm xong" rồi KCS mới nhận lại',
       );
@@ -1580,6 +1619,24 @@ export class ProductionOrdersService {
         `Số lượng nhận lại không được nhiều hơn số đã giao (${handedQty})`,
       );
     }
+    // Nguội / Vào đá của phiếu con: KCS tách hàng đạt và hàng lỗi, thủ kho xác nhận sau.
+    const needsKeeper =
+      entry.subTicketId != null && KEEPER_CONFIRM_STAGES.includes(entry.stage);
+    const defectQty = needsKeeper ? (dto.defectQty ?? 0) : null;
+    if (
+      !needsKeeper &&
+      (dto.defectQty != null || dto.scrapS999Weight != null)
+    ) {
+      throw new BadRequestException(
+        `Khâu ${STAGE_LABEL[entry.stage]} không tách hàng lỗi / S999 thừa ở bước KCS`,
+      );
+    }
+    if (needsKeeper && returnedQty + (defectQty ?? 0) > handedQty) {
+      throw new BadRequestException(
+        `Hàng đạt (${returnedQty}) cộng hàng lỗi (${defectQty}) không được nhiều hơn số đã giao (${handedQty})`,
+      );
+    }
+    const scrapS999 = needsKeeper ? decimalOrNull(dto.scrapS999Weight) : null;
     const returnedSilver = new Prisma.Decimal(dto.returnedSilverWeight);
     const btpRecovered = decimalOrNull(dto.btpRecoveredWeight);
     const silverRecovered = decimalOrNull(dto.silverRecoveredWeight);
@@ -1618,9 +1675,17 @@ export class ProductionOrdersService {
       stoneWeightHanded != null && stonesHanded != null && stonesHanded > 0 && stoneCount != null
         ? stoneWeightHanded.mul(stoneCount).div(stonesHanded).toDecimalPlaces(4)
         : stoneWeightHanded;
+    // Hao hụt Vào đá theo mô tả luồng: bạc trước vào đá + TL đá trên 3D − TL sản phẩm thực tế.
+    // Đơn có khai đá 3D thì lấy TL đá 3D chia theo số hàng giao (khi KCS không nhập tay).
+    const stone3dWeight =
+      isStoneStage && order.stoneWeight != null && order.qty > 0
+        ? order.stoneWeight.mul(handedQty).div(order.qty).toDecimalPlaces(4)
+        : null;
     const stoneWeight = isStoneStage
-      ? (decimalOrNull(dto.stoneWeight) ?? proratedStoneWeight)
+      ? (decimalOrNull(dto.stoneWeight) ?? stone3dWeight ?? proratedStoneWeight)
       : null;
+    const stoneWeightFrom3d =
+      stone3dWeight != null && decimalOrNull(dto.stoneWeight) == null;
     // Gắn lên + trả lại nhiều nhất bằng số đá đã phát; phần thiếu là đá mất.
     if (
       stonesHanded != null &&
@@ -1631,6 +1696,7 @@ export class ProductionOrdersService {
       );
     }
     if (
+      !stoneWeightFrom3d &&
       stoneWeightHanded != null &&
       stoneWeight != null &&
       stoneWeight.gt(stoneWeightHanded)
@@ -1655,7 +1721,8 @@ export class ProductionOrdersService {
       }
       const back = returnedSilver
         .add(btpRecovered ?? zero)
-        .add(silverRecovered ?? zero);
+        .add(silverRecovered ?? zero)
+        .add(scrapS999 ?? zero);
       if (back.gt(limit)) {
         throw new BadRequestException(
           `Nhận lại cộng thu hồi không được nhiều hơn ${label} (${decStr(limit)} g)`,
@@ -1680,8 +1747,19 @@ export class ProductionOrdersService {
               stoneCount,
               stoneWeight,
               returnedStoneCount,
+              defectQty,
+              scrapS999Weight: scrapS999,
+              ...(revise ? { kcsRevisionCount: { increment: 1 } } : {}),
               btpRecoveredWeight: btpRecovered,
               silverRecoveredWeight: silverRecovered,
+              // Khâu không qua thủ kho thì xác nhận cùng lúc KCS nhận lại.
+              ...(needsKeeper
+                ? { confirmedAt: null, confirmedByUserId: null, confirmedByName: null }
+                : {
+                    confirmedAt: returnedAt,
+                    confirmedByUserId: actor.id,
+                    confirmedByName: kcsName,
+                  }),
               laborCost: decimalOrNull(dto.laborCost),
               // Ghi chú lúc nhận lại nối vào ghi chú lúc giao, không ghi đè.
               note: joinNotes(entry.note, dto.note),
@@ -1705,13 +1783,34 @@ export class ProductionOrdersService {
               silverRecoveredWeight: silverRecovered,
               laborCost: decimalOrNull(dto.laborCost),
             },
-            note: dto.note,
+            note: revise
+              ? `Sửa lại lần ${entry.kcsRevisionCount + 1}/${MAX_KCS_REVISIONS}${dto.note ? `: ${dto.note}` : ''}`
+              : dto.note,
           }),
         },
       },
       include: detailInclude,
     });
-    return toDetail(updated);
+    // KCS nhận lại xong thì phiếu sang "Chờ" khâu kế (Nguội → L Chờ vào đá…); đơn theo phiếu xa nhất.
+    const nextStatus = deriveOrderStatus(updated);
+    if (nextStatus === updated.status) return toDetail(updated);
+    return toDetail(
+      await this.prisma.productionOrder.update({
+        where: { id: order.id },
+        data: {
+          status: nextStatus,
+          statusLogs: {
+            create: {
+              fromStatus: updated.status,
+              toStatus: nextStatus,
+              note: `KCS nhận lại khâu ${STAGE_LABEL[entry.stage]}${entry.subTicketId ? ` (phiếu ${ticketNoOf(order, entry.subTicketId) ?? ''})` : ''}`,
+              changedBy: kcsName,
+            },
+          },
+        },
+        include: detailInclude,
+      }),
+    );
   }
 
   /**
@@ -1866,6 +1965,15 @@ export class ProductionOrdersService {
     if (!entry.returnedAt) {
       throw new BadRequestException('KCS chưa nhận lại khâu này');
     }
+    // Nguội / Vào đá của phiếu con: KCS tự sửa lại (tối đa 3 lần) trước khi thủ kho xác nhận;
+    // thủ kho xác nhận rồi thì khoá hẳn — không gỡ nhận lại, không gỡ xác nhận.
+    if (entry.subTicketId && KEEPER_CONFIRM_STAGES.includes(entry.stage)) {
+      throw new BadRequestException(
+        entry.confirmedAt
+          ? 'Thủ kho đã xác nhận khâu này — không gỡ được nữa'
+          : 'Khâu này dùng "KCS sửa lại" (tối đa 3 lần) thay cho gỡ nhận lại',
+      );
+    }
     // Khâu cuối tính trong từng phiếu con (hoặc trong các khâu cấp đơn).
     const scope = order.stages.filter(
       (item) => item.subTicketId === entry.subTicketId,
@@ -1917,6 +2025,7 @@ export class ProductionOrdersService {
               returnedSilverWeight: null,
               stoneCount: null,
               stoneWeight: null,
+              returnedStoneCount: null,
               btpRecoveredWeight: null,
               silverRecoveredWeight: null,
               laborCost: null,
@@ -1942,7 +2051,26 @@ export class ProductionOrdersService {
       },
       include: detailInclude,
     });
-    return toDetail(updated);
+    // Gỡ nhận lại thì phiếu về "Đang" làm khâu đó — tính lại trạng thái đơn.
+    const nextStatus = deriveOrderStatus(updated);
+    if (nextStatus === updated.status) return toDetail(updated);
+    return toDetail(
+      await this.prisma.productionOrder.update({
+        where: { id: order.id },
+        data: {
+          status: nextStatus,
+          statusLogs: {
+            create: {
+              fromStatus: updated.status,
+              toStatus: nextStatus,
+              note: `Gỡ nhận lại khâu ${STAGE_LABEL[entry.stage]}`,
+              changedBy: actorName(actor),
+            },
+          },
+        },
+        include: detailInclude,
+      }),
+    );
   }
 
   async markPrinted(code: string, actor: AuthUserPayload) {
@@ -2141,8 +2269,11 @@ export class ProductionOrdersService {
 
   /** Ảnh mới phải nằm trong thư mục Cloudinary của hệ thống; ảnh đã có trên đơn thì giữ nguyên. */
   private newImages(images: OrderImageDto[], existing: Set<string>) {
+    if (images.some((image) => image.kind === 'CUT_BLANK')) {
+      throw new BadRequestException('Ảnh cân phôi chỉ ghi khi xác nhận đúc');
+    }
     const seen = new Set<string>();
-    const counters = { DETAIL: 0, PRODUCT: 0, CASTING_TREE: 0 };
+    const counters = { DETAIL: 0, PRODUCT: 0, CASTING_TREE: 0, CUT_BLANK: 0 };
     return images
       .filter((image) => {
         if (seen.has(image.publicId)) return false;
@@ -2528,6 +2659,7 @@ function asCreatedDetail(
       : null,
     stages: [],
     subTickets: [],
+    reworkIntakes: [],
     materialRequests: [],
     parent: null,
     children: [],

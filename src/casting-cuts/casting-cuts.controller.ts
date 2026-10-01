@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Delete,
+  GoneException,
   Get,
   Param,
   Post,
@@ -12,7 +13,6 @@ import { Permission } from '../auth/permissions';
 import type { AuthUserPayload } from '../auth/types';
 import { CastingCutsService } from './casting-cuts.service';
 import {
-  CreateCastingCutDto,
   DeleteCastingCutDto,
   ListCastingCutsQuery,
 } from './dto/casting-cut.dto';
@@ -55,11 +55,10 @@ export class CastingCutsController {
 
   @Post()
   @RequirePermissions(Permission.WAREHOUSE_KEEPER, Permission.PRODUCTION_QC)
-  create(
-    @Body() dto: CreateCastingCutDto,
-    @CurrentUser() user: AuthUserPayload,
-  ) {
-    return this.cuts.create(dto, user);
+  create() {
+    throw new GoneException(
+      'Đã bỏ phiếu cắt cây; cân phôi khi xác nhận phiếu đúc để chuyển thẳng sang Nguội',
+    );
   }
 
   @Post(':code/printed')

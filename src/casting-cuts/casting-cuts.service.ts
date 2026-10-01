@@ -565,7 +565,7 @@ export class CastingCutsService {
               cutAt: null,
               status: { in: CUTTABLE },
             },
-            data: { cutAt, status: S.FILING, dataChangedAt: new Date() },
+            data: { cutAt, status: S.WAIT_FILING, dataChangedAt: new Date() },
           });
           if (claimed.count !== 1) {
             throw new ConflictException(
@@ -608,7 +608,7 @@ export class CastingCutsService {
             data: {
               orderId: order.id,
               fromStatus: order.status,
-              toStatus: S.FILING,
+              toStatus: S.WAIT_FILING,
               note: `Cắt cây ${code}: ${line.qty} phôi, ${decStr(weight)} g — chờ Nguội`,
               changedBy: cutByName,
             },
@@ -617,7 +617,7 @@ export class CastingCutsService {
             orderCode: order.code,
             before: { status: order.status },
             after: {
-              status: S.FILING,
+              status: S.WAIT_FILING,
               cutCode: code,
               qty: line.qty,
               weight,
@@ -695,10 +695,10 @@ export class CastingCutsService {
           data: {
             cutAt: null,
             dataChangedAt: new Date(),
-            ...(order.status === S.FILING ? { status: line.prevStatus } : {}),
+            ...(order.status === S.WAIT_FILING ? { status: line.prevStatus } : {}),
           },
         });
-        if (order.status === S.FILING) {
+        if (order.status === S.WAIT_FILING) {
           await tx.productionStatusLog.create({
             data: {
               orderId: order.id,

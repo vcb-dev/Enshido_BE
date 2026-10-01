@@ -11,6 +11,8 @@ type SilverWeights = {
   returnedSilverWeight: Prisma.Decimal | null;
   btpRecoveredWeight: Prisma.Decimal | null;
   silverRecoveredWeight: Prisma.Decimal | null;
+  /** Nguội / Vào đá: nguyên liệu thừa S999. */
+  scrapS999Weight?: Prisma.Decimal | null;
 };
 
 type StoneCounts = {
@@ -74,7 +76,8 @@ export function silverLossOf(
     .add(entry.stoneWeight ?? 0)
     .sub(entry.returnedSilverWeight)
     .sub(entry.btpRecoveredWeight ?? 0)
-    .sub(entry.silverRecoveredWeight ?? 0);
+    .sub(entry.silverRecoveredWeight ?? 0)
+    .sub(entry.scrapS999Weight ?? 0);
 }
 
 /** % hao hụt trên bạc vào khâu, 2 chữ số. */
@@ -103,7 +106,25 @@ export function stoneLossOf(entry: StoneCounts, issuedStones = 0) {
 
 /** Bạc + BTP thu hồi của một khâu (gram). */
 export function recoveredOf(entry: SilverWeights): Prisma.Decimal {
-  return (entry.btpRecoveredWeight ?? zero()).add(
-    entry.silverRecoveredWeight ?? zero(),
-  );
+  return (entry.btpRecoveredWeight ?? zero())
+    .add(entry.silverRecoveredWeight ?? zero())
+    .add(entry.scrapS999Weight ?? zero());
+}
+
+/**
+ * Chia số đá thợ trả lại cho các dòng đá đã cấp (trừ từ dòng cuối ngược lên) và trả về số viên
+ * thực dùng của từng dòng = cấp − trả. Số viên dùng gồm cả đá gắn lên lẫn đá mất.
+ */
+export function stoneUsedByHold(
+  holds: readonly { id: string; stoneCount: number }[],
+  returnedStones: number,
+): Map<string, number> {
+  let toReturn = Math.max(0, returnedStones);
+  const used = new Map<string, number>();
+  for (const hold of [...holds].reverse()) {
+    const back = Math.min(toReturn, hold.stoneCount);
+    used.set(hold.id, hold.stoneCount - back);
+    toReturn -= back;
+  }
+  return used;
 }

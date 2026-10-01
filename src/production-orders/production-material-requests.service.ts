@@ -52,7 +52,8 @@ const REQUEST_WAREHOUSES = [NVL_WAREHOUSE_CODE, BTP_WAREHOUSE_CODE];
  */
 const STAGE_WAREHOUSES: Record<ProductionStage, string[]> = {
   [ProductionStage.FILING]: [BTP_WAREHOUSE_CODE],
-  [ProductionStage.STONE_SETTING]: [NVL_WAREHOUSE_CODE],
+  // Vào đá: đá lấy ở kho NVL, BTP đã nguội lấy ở kho BTP (tự xuất lúc thợ nhận hàng).
+  [ProductionStage.STONE_SETTING]: [NVL_WAREHOUSE_CODE, BTP_WAREHOUSE_CODE],
   [ProductionStage.ENGRAVING]: [],
   [ProductionStage.POLISHING]: [],
   [ProductionStage.PLATING]: [],
@@ -98,7 +99,7 @@ type HandoverEntry = {
 };
 
 /** Ngày hôm nay theo giờ Việt Nam — ngày trên phiếu xuất. */
-function todayVn() {
+export function todayVn() {
   const vn = new Date(Date.now() + 7 * 60 * 60 * 1000);
   return new Date(`${vn.toISOString().slice(0, 10)}T00:00:00.000Z`);
 }
@@ -141,6 +142,9 @@ const listInclude = {
     select: {
       code: true,
       description: true,
+      blankQty: true,
+      blankWeight: true,
+      blankMaterialId: true,
       castingCutLines: {
         orderBy: { createdAt: 'desc' },
         take: 1,
@@ -433,7 +437,9 @@ export class ProductionMaterialRequestsService {
     }
     assertStageWarehouse(entry.stage, material.warehouse.code);
     // Phôi cắt cây của đơn: tổng xuất (chiếc + gram) không vượt phôi nhận ở phiếu cắt.
-    const blank = order.castingCutLines[0];
+    const blank = order.blankMaterialId && order.blankQty != null && order.blankWeight != null
+      ? { btpMaterialId: order.blankMaterialId, qty: order.blankQty, weight: order.blankWeight }
+      : order.castingCutLines[0];
     if (blank?.btpMaterialId === line.materialId) {
       // Đọc trong transaction để tính cả các dòng vừa xuất trong cùng lần giao.
       const used = await tx.productionMaterialRequest.aggregate({

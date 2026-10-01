@@ -7,6 +7,7 @@ import {
   silverInOf,
   silverLossOf,
   stoneLossOf,
+  stoneUsedByHold,
 } from './stage-math';
 
 const dec = (value: string) => new Prisma.Decimal(value);
@@ -131,5 +132,54 @@ describe('NVL xuất thêm theo yêu cầu của thợ', () => {
         0,
       ),
     ).toEqual({ stonesIn: 10, loss: null });
+  });
+});
+
+describe('Nguội / Vào đá: hàng lỗi + S925 + S999 thừa', () => {
+  it('trừ cả nguyên liệu S999 thừa khỏi hao hụt', () => {
+    // Vào 2.000: đạt 1.850, hàng lỗi 40 (btpRecovered), S925 thừa 30, S999 thừa 20 → hao 60.
+    const loss = silverLossOf({
+      handedSilverWeight: dec('2000'),
+      returnedSilverWeight: dec('1850'),
+      btpRecoveredWeight: dec('40'),
+      silverRecoveredWeight: dec('30'),
+      scrapS999Weight: dec('20'),
+    });
+    expect(loss?.toString()).toBe('60');
+  });
+
+  it('recoveredOf cộng cả S999', () => {
+    expect(
+      recoveredOf({
+        handedSilverWeight: null,
+        returnedSilverWeight: null,
+        btpRecoveredWeight: dec('40'),
+        silverRecoveredWeight: dec('30'),
+        scrapS999Weight: dec('20'),
+      }).toString(),
+    ).toBe('90');
+  });
+});
+
+describe('stoneUsedByHold — chia đá thừa trả lại cho các dòng cấp', () => {
+  const holds = [
+    { id: 'a', stoneCount: 100 },
+    { id: 'b', stoneCount: 50 },
+  ];
+
+  it('không trả đá thì dùng hết số cấp', () => {
+    expect([...stoneUsedByHold(holds, 0)]).toEqual([['b', 50], ['a', 100]]);
+  });
+
+  it('trừ từ dòng cấp cuối ngược lên', () => {
+    const used = stoneUsedByHold(holds, 70);
+    expect(used.get('b')).toBe(0);
+    expect(used.get('a')).toBe(80);
+  });
+
+  it('trả ít hơn một dòng thì chỉ dòng cuối giảm', () => {
+    const used = stoneUsedByHold(holds, 10);
+    expect(used.get('b')).toBe(40);
+    expect(used.get('a')).toBe(100);
   });
 });

@@ -507,6 +507,21 @@ export class ReturnStageDto {
   @Min(0)
   returnedStoneCount?: number | null;
 
+  /** Nguội / Vào đá: số lượng hàng lỗi KCS tách ra (hàng đạt = số nhận lại). */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  defectQty?: number | null;
+
+  /** Nguội / Vào đá: TL nguyên liệu thừa S999 (g). */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Matches(DECIMAL, { message: 'Trọng lượng S999 thừa không hợp lệ' })
+  scrapS999Weight?: string | null;
+
+  /** TL BTP thu hồi; khâu Nguội / Vào đá là TL hàng lỗi. */
   @IsOptional()
   @Transform(emptyToNull)
   @Matches(DECIMAL, { message: 'BTP thu hồi không hợp lệ' })
@@ -591,18 +606,52 @@ export class SplitSubTicketsDto {
   tickets!: SubTicketDto[];
 }
 
-/** Mở một khâu cho thợ tự nhận trên các phiếu con. Bỏ trống `nos` = mọi phiếu con đang rảnh. */
-export class OpenSubTicketStageDto {
-  @IsEnum(ProductionStage)
-  stage!: ProductionStage;
+/** Một dòng đá cấp cho phiếu con ở khâu Vào đá. */
+export class StoneHoldLineDto {
+  @IsUUID('all', { message: 'Chọn mã đá cần cấp' })
+  materialId!: string;
+
+  /** Số viên cấp cho thợ; số lượng theo đơn vị của mã tự suy ra (viên = số viên, ct / g theo TL). */
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  stoneCount!: number;
 
   @IsOptional()
+  @Transform(emptyToNull)
+  @Matches(DECIMAL, { message: 'Trọng lượng đá không hợp lệ' })
+  weight?: string | null;
+}
+
+/**
+ * Thủ kho chỉ định thợ cho một khâu của phiếu con (bước 11). Bỏ trống `stage` = khâu kế tiếp
+ * sau khâu phiếu vừa xong. Thợ quét QR và bấm nhận thì hàng mới được giao.
+ */
+export class AssignSubTicketDto {
+  @IsOptional()
+  @IsEnum(ProductionStage)
+  stage?: ProductionStage;
+
+  @Transform(emptyToNull)
+  @IsUUID()
+  craftsmanUserId!: string;
+
+  /** Khâu Vào đá: đá thủ kho cấp cho thợ — chỉ giữ chỗ trong tồn, xuất kho khi xác nhận sau KCS. */
+  @IsOptional()
   @IsArray()
-  @ArrayMaxSize(200)
-  @Type(() => Number)
-  @IsInt({ each: true })
-  @Min(1, { each: true })
-  nos?: number[];
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => StoneHoldLineDto)
+  stones?: StoneHoldLineDto[];
+}
+
+/** Báo lỗi ở khâu đang làm của phiếu con — lý do bắt buộc. */
+export class StageDefectDto {
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @IsNotEmpty({ message: 'Ghi lý do lỗi' })
+  @MaxLength(500)
+  note!: string;
 }
 
 /** Mở khâu trên phiếu mẹ để thợ tự nhận; chỉ dùng khi đơn không chia phiếu con. */

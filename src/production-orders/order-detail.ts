@@ -44,8 +44,13 @@ export const STATUS_LABEL: Record<ProductionStatus, string> = {
   NEW: 'Mới',
   REDO_3D: 'Sửa 3D',
   CASTING: 'Đúc',
-  FILING: 'Nguội',
-  STONE_SETTING: 'Vào đá',
+  WAIT_FILING: 'Chờ nguội',
+  FILING: 'Đang nguội',
+  FILING_DEFECT: 'Lỗi nguội',
+  WAIT_STONE: 'Chờ vào đá',
+  STONE_SETTING: 'Đang vào đá',
+  STONE_DEFECT: 'Lỗi vào đá',
+  WAIT_ENGRAVING: 'Chờ khắc',
   ENGRAVING: 'Khắc',
   POLISHING: 'Bóng',
   PLATING: 'Xi',
@@ -64,8 +69,11 @@ export const STAGE_LABEL: Record<ProductionStage, string> = {
 
 /** Trạng thái đơn đang nằm ở một khâu trên phiếu (có thợ đang giữ hàng hoặc vừa nộp lại). */
 export const IN_STAGE_STATUSES: ProductionStatus[] = [
+  S.WAIT_FILING,
   S.FILING,
+  S.WAIT_STONE,
   S.STONE_SETTING,
+  S.WAIT_ENGRAVING,
   S.ENGRAVING,
   S.POLISHING,
   S.PLATING,
@@ -74,7 +82,26 @@ export const IN_STAGE_STATUSES: ProductionStatus[] = [
 export const detailInclude = {
   images: { orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }] },
   stages: { orderBy: { createdAt: 'asc' } },
-  subTickets: { orderBy: { no: 'asc' } },
+  subTickets: {
+    orderBy: { no: 'asc' },
+    include: {
+      // Đá đang giữ chỗ cho khâu chờ thợ nhận (chưa gắn vào lần giao nào).
+      stoneHolds: {
+        where: { status: 'HELD', stageEntryId: null },
+        select: { stoneCount: true, weight: true },
+      },
+    },
+  },
+  // Đơn tạo bù cho hàng lỗi của đơn này — để phiếu lỗi hiện "Phiếu bù: DH…".
+  reworkIntakes: {
+    select: {
+      code: true,
+      status: true,
+      qty: true,
+      reworkOfEntryId: true,
+      reworkOfSubTicketId: true,
+    },
+  },
   materialRequests: {
     orderBy: { requestedAt: 'asc' },
     include: materialRequestMaterial(),
@@ -127,6 +154,21 @@ export type OrderDetail = Prisma.ProductionOrderGetPayload<{
 }>;
 export type StageEntry = OrderDetail['stages'][number];
 export type SubTicket = OrderDetail['subTickets'][number];
+
+/**
+ * Số lượng phiếu con còn tính vào số lượng đơn: phiếu đã chốt Lỗi không tính nữa, phiếu còn chạy
+ * trừ phần hàng lỗi KCS đã tách (phần đó do phiếu bù làm lại).
+ */
+export function ticketNetQty(
+  order: Pick<OrderDetail, 'stages'>,
+  ticket: Pick<SubTicket, 'id' | 'qty' | 'outcome'>,
+) {
+  if (ticket.outcome === SubTicketOutcome.DEFECT) return 0;
+  const defect = order.stages
+    .filter((entry) => entry.subTicketId === ticket.id && entry.confirmedAt)
+    .reduce((sum, entry) => sum + (entry.defectQty ?? 0), 0);
+  return Math.max(0, ticket.qty - defect);
+}
 export type MaterialRequest = OrderDetail['materialRequests'][number];
 
 /** Mã NVL kèm theo mỗi yêu cầu xuất — đủ để hiện dòng trên phiếu. */
@@ -148,6 +190,7 @@ export function materialRequestMaterial() {
  * Phiếu con đang ở đâu trong khâu hiện tại:
  * IDLE chờ mở khâu · WAITING chờ thợ nhận · CLAIMED thợ đã nhận, chờ người giao xác nhận ·
  * WORKING đã giao, thợ đang làm · SUBMITTED thợ báo xong, chờ KCS cân lại ·
+ * CONFIRMING KCS đã nhận lại, chờ thủ kho xác nhận (Nguội / Vào đá) ·
  * DEFECT / FINISH là hai nhánh kết thúc phiếu.
  */
 export type SubTicketState =
@@ -156,6 +199,7 @@ export type SubTicketState =
   | 'CLAIMED'
   | 'WORKING'
   | 'SUBMITTED'
+  | 'CONFIRMING'
   | 'DEFECT'
   | 'FINISH';
 
@@ -264,7 +308,18 @@ export function lastStageDone(
 }
 
 /** Các trường của một lần giao khâu mà việc tính trạng thái phiếu con cần tới. */
-type StateEntry = Pick<StageEntry, 'stage' | 'returnedAt' | 'submittedAt'>;
+type StateEntry = Pick<StageEntry, 'stage' | 'returnedAt' | 'submittedAt'> & {
+  /** null = KCS đã nhận lại nhưng thủ kho chưa xác nhận; bỏ trống = không có bước này. */
+  confirmedAt?: Date | null;
+  /** Đã báo lỗi ở khâu đang làm — khâu coi như đã nộp cho KCS cân lại. */
+  defectReportedAt?: Date | null;
+};
+
+/** Khâu của phiếu con phải qua thủ kho xác nhận sau KCS (mô tả luồng bước 13–18). */
+export const KEEPER_CONFIRM_STAGES: ProductionStage[] = [
+  G.FILING,
+  G.STONE_SETTING,
+];
 
 export function subTicketState(
   ticket: Pick<SubTicket, 'pendingStage' | 'claimedByUserId' | 'outcome'>,
@@ -275,9 +330,15 @@ export function subTicketState(
   const open = entries.find((entry) => !entry.returnedAt);
   if (open) {
     return {
-      state: open.submittedAt ? 'SUBMITTED' : 'WORKING',
+      state: open.submittedAt || open.defectReportedAt ? 'SUBMITTED' : 'WORKING',
       activeStage: open.stage,
     };
+  }
+  const unconfirmed = entries.find(
+    (entry) => entry.returnedAt && entry.confirmedAt === null,
+  );
+  if (unconfirmed) {
+    return { state: 'CONFIRMING', activeStage: unconfirmed.stage };
   }
   if (ticket.pendingStage) {
     return {
@@ -310,6 +371,7 @@ export function ticketPosition(
  */
 export function orderListStatuses(order: {
   status: ProductionStatus;
+  stoneCount?: number | null;
   subTickets: readonly Pick<
     SubTicket,
     'id' | 'pendingStage' | 'claimedByUserId' | 'outcome'
@@ -325,9 +387,11 @@ export function orderListStatuses(order: {
   ) {
     statuses.add(order.status);
   }
+  const parentEntries = order.stages.filter((entry) => !entry.subTicketId);
+  const orderLast = parentEntries[parentEntries.length - 1]?.stage ?? null;
   for (const ticket of order.subTickets) {
     if (ticket.outcome === SubTicketOutcome.DEFECT) {
-      statuses.add(S.DEFECT);
+      statuses.add(outcomeStatus(ticket));
       continue;
     }
     if (ticket.outcome === SubTicketOutcome.FINISH) {
@@ -337,8 +401,8 @@ export function orderListStatuses(order: {
     const entries = order.stages.filter(
       (entry) => entry.subTicketId === ticket.id,
     );
-    const stage = ticketPosition(ticket, entries);
-    if (stage) statuses.add(STAGE_STATUS[stage]);
+    const status = ticketStatus(ticket, entries, orderLast, order.stoneCount === 0);
+    if (status) statuses.add(status);
   }
   if (statuses.size === 0) statuses.add(order.status);
   return [...statuses];
@@ -364,6 +428,8 @@ export function subTicketSummary(
     | 'outcome'
   >,
   entries: readonly (StateEntry & Pick<StageEntry, 'craftsmanName'>)[],
+  orderLast: ProductionStage | null = null,
+  skipStone = false,
 ) {
   const { state, activeStage } = subTicketState(ticket, entries);
   const open = entries.find((entry) => !entry.returnedAt);
@@ -374,6 +440,10 @@ export function subTicketSummary(
     note: ticket.note,
     createdAt: ticket.createdAt.toISOString(),
     state,
+    /** Trạng thái thật của phiếu (I/K/L/N/O…) — dùng xếp tab và hiện chip. */
+    status:
+      ticketStatus(ticket, entries, orderLast, skipStone) ??
+      outcomeStatus(ticket),
     stage: activeStage ?? entries[entries.length - 1]?.stage ?? null,
     workerName:
       state === 'CLAIMED'
@@ -385,24 +455,146 @@ export function subTicketSummary(
 }
 
 /**
- * Phiếu con được đi lệch khâu nhau, nhưng đơn chỉ có một trạng thái: lấy khâu của phần chậm
- * nhất. Đơn đứng ở "Nguội" nghĩa là vẫn còn hàng chưa qua Nguội — không báo tiến độ vượt
- * quá phần hàng thật sự đã tới.
+ * Thứ tự "tích cực" của trạng thái đơn — phiếu con đi lệch nhau thì đơn lấy trạng thái của phiếu
+ * đi xa nhất (mô tả luồng, ghi chú bước 15). Lỗi xếp thấp nhất: còn phiếu khác chạy thì đơn
+ * không báo lỗi.
  */
-export function slowestStage(
-  stages: readonly (ProductionStage | null)[],
-): ProductionStage | null {
-  let slowest: ProductionStage | null = null;
-  for (const stage of stages) {
-    if (
-      stage &&
-      (slowest === null ||
-        STAGE_ORDER.indexOf(stage) < STAGE_ORDER.indexOf(slowest))
-    ) {
-      slowest = stage;
+export const STATUS_RANK: ProductionStatus[] = [
+  S.FILING_DEFECT,
+  S.STONE_DEFECT,
+  S.WAIT_FILING,
+  S.FILING,
+  S.WAIT_STONE,
+  S.STONE_SETTING,
+  S.WAIT_ENGRAVING,
+  S.ENGRAVING,
+  S.POLISHING,
+  S.PLATING,
+];
+
+export function furthestStatus(
+  statuses: readonly (ProductionStatus | null)[],
+): ProductionStatus | null {
+  let best: ProductionStatus | null = null;
+  for (const status of statuses) {
+    const rank = status ? STATUS_RANK.indexOf(status) : -1;
+    if (rank >= 0 && (best === null || rank > STATUS_RANK.indexOf(best))) {
+      best = status;
     }
   }
-  return slowest;
+  return best;
+}
+
+/** Khâu đang chờ thợ nhận → trạng thái "Chờ …" (khâu không có trạng thái chờ riêng giữ trạng thái khâu). */
+const WAITING_STATUS: Record<ProductionStage, ProductionStatus> = {
+  FILING: S.WAIT_FILING,
+  STONE_SETTING: S.WAIT_STONE,
+  ENGRAVING: S.WAIT_ENGRAVING,
+  POLISHING: S.POLISHING,
+  PLATING: S.PLATING,
+};
+
+/**
+ * Trạng thái của phiếu đã chốt kết cục: Hoàn thiện, hoặc Lỗi — lỗi ở Nguội / Vào đá có trạng
+ * thái riêng (M Lỗi nguội, Lỗi vào đá), các khâu khác là "Sản xuất lỗi" chung. Trạng thái của
+ * cả đơn khi mọi phiếu lỗi vẫn là Sản xuất lỗi.
+ */
+export function outcomeStatus(
+  ticket: Pick<SubTicket, 'outcome'> & {
+    outcomeStage?: ProductionStage | null;
+  },
+): ProductionStatus {
+  if (ticket.outcome === SubTicketOutcome.FINISH) return S.FINISHING;
+  if (ticket.outcomeStage === G.FILING) return S.FILING_DEFECT;
+  if (ticket.outcomeStage === G.STONE_SETTING) return S.STONE_DEFECT;
+  return S.DEFECT;
+}
+
+/**
+ * Trạng thái của một phiếu con (hoặc cả đơn chưa chia) suy từ khâu đang chạy:
+ * - đang làm / đã báo xong → trạng thái khâu (K Đang nguội, N Đang vào đá…);
+ * - đã mở khâu, chờ thợ → "Chờ …";
+ * - rảnh sau khi KCS nhận lại → "Chờ" khâu kế (L sau Nguội, O sau Vào đá);
+ * - chưa làm khâu nào → I Chờ nguội.
+ * `skipStone`: đơn không có đá thì sau Nguội đi thẳng sang Chờ khắc (bỏ Vào đá).
+ * Trả null khi phiếu đã chốt Lỗi / Hoàn thiện — kết cục do `syncOrder` xử lý.
+ */
+export function ticketStatus(
+  ticket: Pick<SubTicket, 'pendingStage' | 'claimedByUserId' | 'outcome'>,
+  entries: readonly StateEntry[],
+  orderLast: ProductionStage | null = null,
+  skipStone = false,
+): ProductionStatus | null {
+  if (ticket.outcome) return null;
+  const { state, activeStage } = subTicketState(ticket, entries);
+  if (activeStage) {
+    return state === 'WAITING' || state === 'CLAIMED'
+      ? WAITING_STATUS[activeStage]
+      : STAGE_STATUS[activeStage];
+  }
+  const last = entries[entries.length - 1]?.stage ?? orderLast;
+  switch (last) {
+    case null:
+    case undefined:
+      return S.WAIT_FILING;
+    case G.FILING:
+      return skipStone ? S.WAIT_ENGRAVING : S.WAIT_STONE;
+    case G.STONE_SETTING:
+      return S.WAIT_ENGRAVING;
+    default:
+      return STAGE_STATUS[last];
+  }
+}
+
+/**
+ * Trạng thái đơn tính lại từ các phiếu con còn chạy (hoặc từ chính đơn khi chưa chia):
+ * phiếu đi xa nhất quyết định. Đơn đang ở ngoài các trạng thái khâu (Đúc, Lỗi, Hoàn thiện…) hoặc
+ * mọi phiếu đã có kết cục thì giữ nguyên.
+ */
+export function deriveOrderStatus(
+  order: {
+    status: ProductionStatus;
+    /** 0 = đơn không có đá (theo 3D) → sau Nguội đi thẳng sang Chờ khắc. */
+    stoneCount?: number | null;
+    pendingStage: ProductionStage | null;
+    claimedByUserId: string | null;
+    subTickets: readonly Pick<
+      SubTicket,
+      'id' | 'pendingStage' | 'claimedByUserId' | 'outcome'
+    >[];
+    stages: readonly (StateEntry & Pick<StageEntry, 'subTicketId'>)[];
+  },
+  skipStone = order.stoneCount === 0,
+): ProductionStatus {
+  if (!IN_STAGE_STATUSES.includes(order.status)) return order.status;
+  const parentEntries = order.stages.filter((entry) => !entry.subTicketId);
+  const orderLast = parentEntries[parentEntries.length - 1]?.stage ?? null;
+  if (order.subTickets.length === 0) {
+    return (
+      ticketStatus(
+        {
+          pendingStage: order.pendingStage,
+          claimedByUserId: order.claimedByUserId,
+          outcome: null,
+        },
+        parentEntries,
+        null,
+        skipStone,
+      ) ?? order.status
+    );
+  }
+  return (
+    furthestStatus(
+      order.subTickets.map((ticket) =>
+        ticketStatus(
+          ticket,
+          order.stages.filter((entry) => entry.subTicketId === ticket.id),
+          orderLast,
+          skipStone,
+        ),
+      ),
+    ) ?? order.status
+  );
 }
 
 /**
@@ -498,7 +690,7 @@ export function orderTicketAvailable(
  * `null` = không có mốc (đơn cũ chưa có số liệu) → không chặn.
  */
 export function handoverSilverLimit(
-  order: Pick<OrderDetail, 'stages' | 'castingCutLines'>,
+  order: Pick<OrderDetail, 'stages' | 'castingCutLines' | 'blankWeight'>,
   ticketId: string | null,
   editingEntryId?: string,
 ): Prisma.Decimal | null {
@@ -512,7 +704,7 @@ export function handoverSilverLimit(
   const prev = before[before.length - 1];
   if (prev) return prev.returnedSilverWeight;
 
-  const blank = order.castingCutLines[0]?.weight ?? null;
+  const blank = order.blankWeight ?? order.castingCutLines[0]?.weight ?? null;
   const parentEntries = order.stages.filter((entry) => !entry.subTicketId);
   const lastParent = ticketId ? parentEntries[parentEntries.length - 1] : undefined;
   const pool = lastParent ? lastParent.returnedSilverWeight : blank;
@@ -536,6 +728,9 @@ export function handoverSilverLimit(
 
 /** Chỉ cần dòng phôi cắt cây và các yêu cầu đã xuất — trang danh sách select gọn được. */
 type BlankSource = {
+  blankQty: number | null;
+  blankWeight: Prisma.Decimal | null;
+  blankMaterialId: string | null;
   castingCutLines: readonly {
     qty: number;
     weight: Prisma.Decimal;
@@ -555,7 +750,9 @@ type BlankSource = {
  * xuất lấn sang phôi của đơn khác.
  */
 export function blankLeftOf(order: BlankSource) {
-  const blank = order.castingCutLines[0];
+  const blank = order.blankMaterialId && order.blankQty != null && order.blankWeight != null
+    ? { btpMaterialId: order.blankMaterialId, qty: order.blankQty, weight: order.blankWeight }
+    : order.castingCutLines[0];
   if (!blank?.btpMaterialId) return { btpMaterialId: null, leftQty: null, leftWeight: null };
   let qty = new Prisma.Decimal(0);
   let weight = new Prisma.Decimal(0);
@@ -584,7 +781,7 @@ export function blankLimitFor(order: BlankSource, materialId: string) {
 
 /** Chặn TL giao vượt hàng đang có — dùng chung cho xác nhận giao và sửa thông tin giao. */
 export function assertHandedSilverWithin(
-  order: Pick<OrderDetail, 'stages' | 'castingCutLines'>,
+  order: Pick<OrderDetail, 'stages' | 'castingCutLines' | 'blankWeight'>,
   ticketId: string | null,
   handed: Prisma.Decimal | null,
   editingEntryId?: string,
@@ -676,7 +873,15 @@ export function toDetail(order: OrderDetail) {
       : null,
     cutAt: order.cutAt ? order.cutAt.toISOString() : null,
     // Phôi đơn nhận ở phiếu cắt cây gần nhất — mốc bạc giao khâu Nguội.
-    cut: order.castingCutLines[0]
+    cut: order.blankWeight != null && order.blankQty != null
+      ? {
+          code: null,
+          cutAt: order.cutAt?.toISOString() ?? null,
+          qty: order.blankQty,
+          weight: decStr(order.blankWeight),
+          ...blankLeftOf(order),
+        }
+      : order.castingCutLines[0]
       ? {
           code: order.castingCutLines[0].cut.code,
           cutAt: order.castingCutLines[0].cut.cutAt.toISOString(),
@@ -774,8 +979,21 @@ export function toDetail(order: OrderDetail) {
         : null,
     subTickets: order.subTickets.map((ticket) => toSubTicket(order, ticket)),
     subTicketTotals: {
-      qty: order.subTickets.reduce((sum, ticket) => sum + ticket.qty, 0),
+      qty: order.subTickets.reduce(
+        (sum, ticket) => sum + ticketNetQty(order, ticket),
+        0,
+      ),
     },
+    /** Phiếu bù cho hàng lỗi Nguội / Vào đá: đơn tạo bù đang đi lại từ bước sáp. */
+    reworks: order.reworkIntakes.map((rework) => ({
+      code: rework.code,
+      status: rework.status,
+      qty: rework.qty,
+      entryId: rework.reworkOfEntryId,
+      ticketNo:
+        order.subTickets.find((ticket) => ticket.id === rework.reworkOfSubTicketId)
+          ?.no ?? null,
+    })),
     /** NVL xuất thêm + hao hụt của cả đơn, cộng mọi phiếu. */
     materials: ticketMaterials(order.stages, order.materialRequests),
     statusLogs: order.statusLogs.map((log) => ({
@@ -802,6 +1020,28 @@ function toSubTicket(order: OrderDetail, ticket: SubTicket) {
     note: ticket.note,
     state,
     activeStage,
+    /** Trạng thái thật của phiếu (I/K/L/N/O…); đã chốt kết cục thì là Lỗi / Hoàn thiện. */
+    status:
+      ticketStatus(
+        ticket,
+        entries,
+        orderEntries(order).slice(-1)[0]?.stage ?? null,
+        order.stoneCount === 0,
+      ) ??
+      outcomeStatus(ticket),
+    /** Đá thủ kho đã cấp (giữ chỗ) cho khâu Vào đá đang chờ thợ nhận. */
+    heldStoneCount: (ticket.stoneHolds ?? []).reduce(
+      (sum, hold) => sum + hold.stoneCount,
+      0,
+    ),
+    heldStoneWeight: (ticket.stoneHolds ?? []).some((hold) => hold.weight != null)
+      ? decStr(
+          (ticket.stoneHolds ?? []).reduce(
+            (sum, hold) => sum.add(hold.weight ?? 0),
+            new Prisma.Decimal(0),
+          ),
+        )
+      : null,
     pendingStage: ticket.pendingStage,
     pendingAt: ticket.pendingAt?.toISOString() ?? null,
     pendingByName: ticket.pendingByName,
@@ -893,6 +1133,10 @@ export function toStage(
     craftsmanName: entry.craftsmanName,
     submittedAt: entry.submittedAt?.toISOString() ?? null,
     submittedByName: entry.submittedByName,
+    /** Báo lỗi ngay ở khâu đang làm: người báo, lúc báo và lý do. */
+    defectReportedAt: entry.defectReportedAt?.toISOString() ?? null,
+    defectReportedByName: entry.defectReportedByName,
+    defectNote: entry.defectNote,
     returnedByName: entry.returnedByName,
     returnedAt: entry.returnedAt?.toISOString() ?? null,
     returnedQty: entry.returnedQty,
@@ -902,6 +1146,14 @@ export function toStage(
     returnedStoneCount: entry.returnedStoneCount,
     btpRecoveredWeight: dec(entry.btpRecoveredWeight),
     silverRecoveredWeight: dec(entry.silverRecoveredWeight),
+    /** Nguội / Vào đá: KCS tách hàng lỗi (SL), S999 thừa; thủ kho xác nhận rồi mới nhập kho. */
+    defectQty: entry.defectQty,
+    scrapS999Weight: dec(entry.scrapS999Weight),
+    confirmedAt: entry.confirmedAt?.toISOString() ?? null,
+    confirmedByName: entry.confirmedByName,
+    /** Số lần KCS đã sửa lại kết quả (tối đa 3 trước khi thủ kho xác nhận). */
+    kcsRevisionCount: entry.kcsRevisionCount,
+    outputMaterialId: entry.outputMaterialId,
     silverLoss: dec(silverLoss),
     silverLossPercent: dec(lossPercentOf(silverLoss, silverIn)),
     /** Đá vào khâu = đá phát lúc giao + đá xuất thêm (viên). */

@@ -29,11 +29,11 @@ import { canConfirmIntakeWarehouse } from './intake-warehouse-access';
 const CREATE_RETRIES = 5;
 const SX_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
-function intakeCode(seq: number) {
+export function intakeCode(seq: number) {
   return `DH${String(seq).padStart(3, '0')}`;
 }
 
-function randomSxCode() {
+export function randomSxCode() {
   let suffix = '';
   for (let i = 0; i < 4; i++) {
     suffix += SX_CODE_CHARS[Math.floor(Math.random() * SX_CODE_CHARS.length)];
@@ -251,6 +251,7 @@ export class IntakeOrdersService {
         where: { id },
         data: {
           model3dUrl,
+          ...stoneData(dto),
           status: IntakeOrderStatus.READY_FOR_PRODUCTION,
         },
       });
@@ -316,6 +317,7 @@ export class IntakeOrdersService {
         data: {
           status: nextStatus,
           productWeightGram: dto.productWeightGram,
+          ...stoneData(dto),
           images: { deleteMany: {}, create: merged },
         },
       });
@@ -584,6 +586,7 @@ export class IntakeOrdersService {
       DETAIL: 0,
       PRODUCT: 0,
       CASTING_TREE: 0,
+      CUT_BLANK: 0,
     };
     return images
       .filter((image) => {
@@ -621,6 +624,16 @@ type IntakeRow = Prisma.IntakeOrderGetPayload<{
   castingSlipLine?: { slip: { code: string; status: string } } | null;
 };
 
+/** Đá theo 3D: chỉ ghi khi người dùng có nhập, để bước sau không xoá mất số đã khai. */
+function stoneData(dto: { stoneCount3d?: number | null; stoneWeight3dGram?: number | null }) {
+  return {
+    ...(dto.stoneCount3d !== undefined ? { stoneCount3d: dto.stoneCount3d } : {}),
+    ...(dto.stoneWeight3dGram !== undefined
+      ? { stoneWeight3dGram: dto.stoneWeight3dGram }
+      : {}),
+  };
+}
+
 function toRow(row: IntakeRow) {
   return {
     id: row.id,
@@ -648,6 +661,9 @@ function toRow(row: IntakeRow) {
         ? row.waxCheckedWeightGram.toString()
         : null,
     waxCheckedByName: row.waxCheckedByName,
+    stoneCount3d: row.stoneCount3d,
+    stoneWeight3dGram:
+      row.stoneWeight3dGram != null ? row.stoneWeight3dGram.toString() : null,
     /** Phiếu đúc đang giữ đơn (kể cả phiếu chưa cấp vật tư). */
     castingSlip: row.castingSlipLine
       ? { code: row.castingSlipLine.slip.code, status: row.castingSlipLine.slip.status }

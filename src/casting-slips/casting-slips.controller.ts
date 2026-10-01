@@ -14,6 +14,7 @@ import type { AuthUserPayload } from '../auth/types';
 import { CastingSlipsService } from './casting-slips.service';
 import {
   CastingLossQuery,
+  ConfirmCastingSlipDto,
   CastingSlipCandidatesQuery,
   CastingSlipResultDto,
   CreateCastingSlipDto,
@@ -116,14 +117,15 @@ export class CastingSlipsController {
     return this.slips.submitResult(id, dto, user);
   }
 
-  /** Bước 9: thủ kho kiểm và xác nhận → Đúc xong (H). */
+  /** Thủ kho xác nhận đúc, chia phôi vào lệnh sản xuất và chuyển sang Nguội. */
   @Post(':id/confirm')
   @BlockWorker()
   @RequirePermissions(Permission.WAREHOUSE_KEEPER)
   confirm(
     @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ConfirmCastingSlipDto,
     @CurrentUser() user: AuthUserPayload,
   ) {
-    return this.slips.confirm(id, user);
+    return this.slips.confirm(id, dto, user);
   }
 }

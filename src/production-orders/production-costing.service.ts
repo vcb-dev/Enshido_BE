@@ -35,6 +35,7 @@ const COSTING_ORDER_SELECT = {
       returnedSilverWeight: true,
       btpRecoveredWeight: true,
       silverRecoveredWeight: true,
+      scrapS999Weight: true,
       laborCost: true,
       materialRequests: {
         select: {

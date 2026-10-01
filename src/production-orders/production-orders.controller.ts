@@ -8,6 +8,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Put,
   Query,
 } from '@nestjs/common';
 import { RoleCode, SubTicketOutcome } from '@prisma/client';
@@ -23,10 +24,11 @@ import {
   CastingDto,
   ChangeStatusDto,
   FinishOrderDto,
+  AssignSubTicketDto,
+  StageDefectDto,
   HandoverInfoDto,
   HandoverStageDto,
   ListProductionOrdersQuery,
-  OpenSubTicketStageDto,
   OpenOrderStageDto,
   OrderCostDto,
   OrderOptionsQuery,
@@ -314,6 +316,43 @@ export class ProductionOrdersController {
     return this.orders.returnStage(code, stageId, dto, user);
   }
 
+  /** Thủ kho xác nhận sau KCS (Nguội / Vào đá): nhập kho BTP hàng đạt, NVL hàng lỗi + thừa. */
+  @Post(':code/stages/:stageId/confirm')
+  @BlockWorker()
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
+  confirmStage(
+    @Param('code') code: string,
+    @Param('stageId', ParseUUIDPipe) stageId: string,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.subTickets.confirmStage(code, stageId, user);
+  }
+
+  /** KCS sửa lại kết quả đã nhận ở Nguội / Vào đá — tối đa 3 lần, trước khi thủ kho xác nhận. */
+  @Put(':code/stages/:stageId/return')
+  @BlockWorker()
+  @RequirePermissions(Permission.PRODUCTION_QC)
+  reviseReturn(
+    @Param('code') code: string,
+    @Param('stageId', ParseUUIDPipe) stageId: string,
+    @Body() dto: ReturnStageDto,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.orders.returnStage(code, stageId, dto, user, true);
+  }
+
+  /** Thủ kho tạo phiếu bù cho hàng lỗi KCS đã tách (Nguội / Vào đá) — đi lại từ bước sáp. */
+  @Post(':code/stages/:stageId/rework')
+  @BlockWorker()
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
+  createRework(
+    @Param('code') code: string,
+    @Param('stageId', ParseUUIDPipe) stageId: string,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.subTickets.createRework(code, stageId, user);
+  }
+
   @Delete(':code/stages/:stageId/return')
   @Roles(RoleCode.ADMIN)
   undoReturn(
@@ -424,16 +463,6 @@ export class ProductionOrdersController {
     return this.subTickets.clearSplit(code, user);
   }
 
-  @Post(':code/sub-tickets/open-stage')
-  @BlockWorker()
-  openSubTicketStage(
-    @Param('code') code: string,
-    @Body() dto: OpenSubTicketStageDto,
-    @CurrentUser() user: AuthUserPayload,
-  ) {
-    return this.subTickets.openStage(code, dto, user);
-  }
-
   @Patch(':code/sub-tickets/:no')
   @BlockWorker()
   updateSubTicket(
@@ -464,14 +493,27 @@ export class ProductionOrdersController {
     return this.subTickets.cancelPending(code, no, user);
   }
 
-  @Post(':code/sub-tickets/:no/claim')
+  /** Thủ kho chỉ định thợ cho khâu kế tiếp của phiếu con. */
+  @Post(':code/sub-tickets/:no/assign')
+  @BlockWorker()
+  assignSubTicket(
+    @Param('code') code: string,
+    @Param('no', ParseIntPipe) no: number,
+    @Body() dto: AssignSubTicketDto,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.subTickets.assign(code, no, dto, user);
+  }
+
+  /** Thợ được chỉ định quét QR, bấm nhận hàng — hệ thống ghi giao khâu và xuất kho phôi. */
+  @Post(':code/sub-tickets/:no/accept')
   @RequirePermissions(Permission.PRODUCTION_WORKER)
-  claimSubTicket(
+  acceptSubTicket(
     @Param('code') code: string,
     @Param('no', ParseIntPipe) no: number,
     @CurrentUser() user: AuthUserPayload,
   ) {
-    return this.subTickets.claim(code, no, user);
+    return this.subTickets.accept(code, no, user);
   }
 
   @Delete(':code/sub-tickets/:no/claim')
@@ -500,6 +542,26 @@ export class ProductionOrdersController {
     @CurrentUser() user: AuthUserPayload,
   ) {
     return this.subTickets.unsubmit(code, no, user);
+  }
+
+  /** Báo lỗi ở khâu đang làm: thợ giữ khâu, KCS hoặc admin (lý do bắt buộc). */
+  @Post(':code/sub-tickets/:no/stage-defect')
+  reportStageDefect(
+    @Param('code') code: string,
+    @Param('no', ParseIntPipe) no: number,
+    @Body() dto: StageDefectDto,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.subTickets.reportStageDefect(code, no, dto, user);
+  }
+
+  @Delete(':code/sub-tickets/:no/stage-defect')
+  clearStageDefect(
+    @Param('code') code: string,
+    @Param('no', ParseIntPipe) no: number,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.subTickets.clearStageDefect(code, no, user);
   }
 
   @Post(':code/sub-tickets/:no/handover')

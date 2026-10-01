@@ -2677,6 +2677,16 @@ export class InventoryService {
     await tx.stockOutbound.updateMany({ where: { materialId }, data });
   }
 
+  /** Tồn hiện có của một mã (đang khoá dòng tồn) — để kiểm tra giữ chỗ trước khi cấp. */
+  async stockOnHand(tx: Prisma.TransactionClient, materialId: string) {
+    const material = await tx.material.findUnique({
+      where: { id: materialId },
+      select: { warehouseId: true },
+    });
+    if (!material) throw new NotFoundException('Không tìm thấy mã hàng');
+    return this.availableOnHand(tx, material.warehouseId, materialId);
+  }
+
   private async availableOnHand(
     tx: Prisma.TransactionClient,
     warehouseId: string,
