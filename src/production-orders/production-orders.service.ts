@@ -118,6 +118,30 @@ const warehouseMaterialSelect = {
 
 const CREATE_RETRIES = 3;
 const LOOKUPS_TTL_MS = 2 * 60_000;
+const STATUS_COUNTS_TTL_MS = 12_000;
+
+const splitListSelect = {
+  id: true,
+  status: true,
+  subTickets: {
+    select: {
+      id: true,
+      pendingStage: true,
+      claimedByUserId: true,
+      outcome: true,
+    },
+  },
+  stages: {
+    where: { subTicketId: { not: null } },
+    orderBy: { createdAt: 'asc' as const },
+    select: {
+      subTicketId: true,
+      stage: true,
+      returnedAt: true,
+      submittedAt: true,
+    },
+  },
+} satisfies Prisma.ProductionOrderSelect;
 
 const BTP_WAREHOUSE_CODE = 'btp-cho-vao-da';
 const NVL_WAREHOUSE_CODE = 'nvl-chinh';
@@ -134,15 +158,33 @@ export class ProductionOrdersService {
     private readonly inventory: InventoryService,
   ) {}
 
-  async list(query: ListProductionOrdersQuery) {
-    const page = query.page ?? 1;
-    const pageSize = query.pageSize ?? 25;
-    const skip = query.offset ?? (page - 1) * pageSize;
-    const dir = query.dir ?? 'desc';
-    const sort = query.sort ?? 'code';
+  /** Badge tab — cache vài giây, cùng bộ lọc với danh sách (trừ tab status / phân trang). */
+  async listStatusCounts(query: ListProductionOrdersQuery) {
+    const base = this.buildListBase(query);
+    const cacheKey = `status-counts:${JSON.stringify({
+      requestType: query.requestType ?? '',
+      source: query.source ?? '',
+      receivedDate: query.receivedDate ?? '',
+      dueDate: query.dueDate ?? '',
+      search: query.search?.trim() ?? '',
+    })}`;
+    const hit = this.cache.get<{ statusCounts: Record<ProductionStatus | 'ALL', number> }>(
+      cacheKey,
+    );
+    if (hit) return hit;
+    return this.inflight.run(cacheKey, async () => {
+      const again = this.cache.get<{ statusCounts: Record<ProductionStatus | 'ALL', number> }>(
+        cacheKey,
+      );
+      if (again) return again;
+      const { statusCounts } = await this.computeStatusCountsAndSplitIndex(base);
+      const value = { statusCounts };
+      this.cache.set(cacheKey, value, STATUS_COUNTS_TTL_MS);
+      return value;
+    });
+  }
 
-    // NOT đứng một mình loại luôn đơn có trackingCode null (NULL LIKE … ra NULL), nên phải
-    // giữ null lại bằng OR.
+  private buildListBase(query: ListProductionOrdersQuery): Prisma.ProductionOrderWhereInput {
     const base: Prisma.ProductionOrderWhereInput = {
       AND: [
         {
@@ -170,12 +212,31 @@ export class ProductionOrdersService {
         { customerName: contains },
       ];
     }
-    const orderBy: Prisma.ProductionOrderOrderByWithRelationInput[] =
-      sort === 'code' ? [{ seq: dir }] : [{ [sort]: dir }, { seq: 'desc' }];
+    return base;
+  }
 
-    // Đơn chưa chia luôn nằm đúng một tab — chính trạng thái của nó — nên lọc và đếm thẳng
-    // trong DB. Chỉ đơn đã chia mới nằm được nhiều tab cùng lúc (mỗi phiếu con một khâu),
-    // và chỉ nhóm đó mới phải kéo về tính trong bộ nhớ.
+  private async fetchSplitRowsForList(base: Prisma.ProductionOrderWhereInput) {
+    return this.prisma.productionOrder.findMany({
+      where: { AND: [base, { subTickets: { some: {} } }] },
+      select: splitListSelect,
+    });
+  }
+
+  private splitIdsFromRows(
+    splitRows: Awaited<ReturnType<ProductionOrdersService['fetchSplitRowsForList']>>,
+  ) {
+    const splitIdsByStatus = new Map<ProductionStatus, string[]>();
+    for (const row of splitRows) {
+      for (const status of orderListStatuses(row)) {
+        const ids = splitIdsByStatus.get(status);
+        if (ids) ids.push(row.id);
+        else splitIdsByStatus.set(status, [row.id]);
+      }
+    }
+    return splitIdsByStatus;
+  }
+
+  private async computeStatusCountsAndSplitIndex(base: Prisma.ProductionOrderWhereInput) {
     const plainWhere: Prisma.ProductionOrderWhereInput = {
       AND: [base, { subTickets: { none: {} } }],
     };
@@ -185,32 +246,7 @@ export class ProductionOrdersService {
         where: plainWhere,
         _count: { _all: true },
       }),
-      this.prisma.productionOrder.findMany({
-        where: { AND: [base, { subTickets: { some: {} } }] },
-        select: {
-          id: true,
-          status: true,
-          subTickets: {
-            select: {
-              id: true,
-              pendingStage: true,
-              claimedByUserId: true,
-              outcome: true,
-            },
-          },
-          // Vị trí phiếu con chỉ đọc khâu của phiếu con; khâu cấp đơn không liên quan.
-          stages: {
-            where: { subTicketId: { not: null } },
-            orderBy: { createdAt: 'asc' },
-            select: {
-              subTicketId: true,
-              stage: true,
-              returnedAt: true,
-              submittedAt: true,
-            },
-          },
-        },
-      }),
+      this.fetchSplitRowsForList(base),
     ]);
 
     const statusCounts = Object.fromEntries(
@@ -221,21 +257,45 @@ export class ProductionOrdersService {
       statusCounts[group.status] += group._count._all;
       all += group._count._all;
     }
-    // Id của đơn đã chia theo từng tab — dùng luôn làm bộ lọc để DB cắt trang, khỏi phải
-    // tải hết đơn rồi slice trong Node.
-    const splitIdsByStatus = new Map<ProductionStatus, string[]>();
+    const splitIdsByStatus = this.splitIdsFromRows(splitRows);
     for (const row of splitRows) {
       all += 1;
       for (const status of orderListStatuses(row)) {
         statusCounts[status] += 1;
-        const ids = splitIdsByStatus.get(status);
-        if (ids) ids.push(row.id);
-        else splitIdsByStatus.set(status, [row.id]);
       }
     }
+    return {
+      statusCounts: { ...statusCounts, ALL: all } as Record<ProductionStatus | 'ALL', number>,
+      splitIdsByStatus,
+    };
+  }
 
-    // Lọc theo tab: đơn chưa chia so bằng status, đơn đã chia so bằng đúng danh sách id vừa
-    // tính. Bọc trong AND để không đè mất OR tìm kiếm của `base`.
+  async list(query: ListProductionOrdersQuery) {
+    const page = query.page ?? 1;
+    const pageSize = query.pageSize ?? 25;
+    const skip = query.offset ?? (page - 1) * pageSize;
+    const dir = query.dir ?? 'desc';
+    const sort = query.sort ?? 'code';
+
+    const base = this.buildListBase(query);
+    const orderBy: Prisma.ProductionOrderOrderByWithRelationInput[] =
+      sort === 'code' ? [{ seq: dir }] : [{ [sort]: dir }, { seq: 'desc' }];
+
+    const includeCounts = query.includeCounts !== false;
+    const needsSplitIndex = Boolean(query.status);
+
+    let statusCounts: Record<ProductionStatus | 'ALL', number> | undefined;
+    let splitIdsByStatus = new Map<ProductionStatus, string[]>();
+
+    if (includeCounts) {
+      const computed = await this.computeStatusCountsAndSplitIndex(base);
+      statusCounts = computed.statusCounts;
+      splitIdsByStatus = computed.splitIdsByStatus;
+    } else if (needsSplitIndex) {
+      const splitRows = await this.fetchSplitRowsForList(base);
+      splitIdsByStatus = this.splitIdsFromRows(splitRows);
+    }
+
     const where: Prisma.ProductionOrderWhereInput = query.status
       ? {
           AND: [
@@ -325,7 +385,7 @@ export class ProductionOrdersService {
 
     return {
       total,
-      statusCounts: { ...statusCounts, ALL: all },
+      ...(statusCounts ? { statusCounts } : {}),
       items: rows.map((row) => {
         const parentEntries = row.stages.filter((entry) => !entry.subTicketId);
         const parentProgress = row.subTickets.length

@@ -126,6 +126,13 @@ export class ProductionOrdersController {
     return this.orders.lookups();
   }
 
+  /** Badge tab Lệnh sản xuất — cache ngắn, tách khỏi GET list để phân trang nhanh hơn. */
+  @Get('status-counts')
+  @BlockWorker()
+  statusCounts(@Query() query: ListProductionOrdersQuery) {
+    return this.orders.listStatusCounts(query);
+  }
+
   @Get('options')
   options(@Query() query: OrderOptionsQuery) {
     return this.orders.options(query.search);
