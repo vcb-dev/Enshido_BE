@@ -11,6 +11,8 @@ import {
   IntakeOrderStatus,
   Prisma,
 } from '@prisma/client';
+import { Permission, userHasPermission } from '../auth/permissions';
+import { isCastWorkerAssignee } from '../auth/staff-job-presets';
 import type { AuthUserPayload } from '../auth/types';
 import { canConfirmIntakeWarehouse } from '../intake-orders/intake-warehouse-access';
 import { PrismaService } from '../prisma/prisma.service';
@@ -75,16 +77,33 @@ export class CastingSlipsService {
   async list(query: ListCastingSlipsQuery) {
     const page = query.page ?? 1;
     const pageSize = Math.min(query.pageSize ?? 25, 200);
-    const where = await this.buildListWhere(query);
+    const filters = await this.buildListWhere(query, { skipStatus: true });
+    const status = query.status?.trim();
+    const rootWhere: Prisma.CastingSlipWhereInput = {
+      AND: [
+        { redoOfSlipId: null },
+        filters,
+        ...(status
+          ? [
+              {
+                OR: [
+                  { status: status as CastingSlipStatus },
+                  { redos: { some: { status: status as CastingSlipStatus } } },
+                ],
+              },
+            ]
+          : []),
+      ],
+    };
 
     const [total, rows] = await this.prisma.$transaction([
-      this.prisma.castingSlip.count({ where }),
+      this.prisma.castingSlip.count({ where: rootWhere }),
       this.prisma.castingSlip.findMany({
-        where,
+        where: rootWhere,
         orderBy: [{ slipDate: 'desc' }, { createdAt: 'desc' }],
         skip: (page - 1) * pageSize,
         take: pageSize,
-        include: slipInclude,
+        include: slipListInclude,
       }),
     ]);
 
@@ -211,6 +230,7 @@ export class CastingSlipsService {
       new Prisma.Decimal(0),
     );
     const createdByName = actorName(actor);
+    const assignee = await this.resolveCastWorker(dto.assignedUserId);
 
     for (let attempt = 0; attempt < CODE_RETRIES; attempt++) {
       try {
@@ -225,6 +245,8 @@ export class CastingSlipsService {
               issueMasterAlloyGram: dto.issueMasterAlloyGram ?? null,
               issueS925Gram: dto.issueS925Gram ?? null,
               createdByName,
+              startedByUserId: assignee.id,
+              startedByName: assignee.name,
               status: CastingSlipStatus.PENDING_ISSUE,
               orders: {
                 create: lines.map(({ intakeOrderId, sortOrder, waxWeightGram: wax }) => ({
@@ -394,8 +416,61 @@ export class CastingSlipsService {
     return { success: true };
   }
 
+  async listCastWorkers() {
+    const rows = await this.prisma.user.findMany({
+      where: { isActive: true },
+      orderBy: [{ fullName: 'asc' }, { username: 'asc' }],
+      select: {
+        id: true,
+        fullName: true,
+        username: true,
+        roleCode: true,
+        extraRoles: true,
+        allowedScreens: true,
+      },
+    });
+    return rows
+      .filter((user) => isCastWorkerAssignee(user))
+      .map((user) => ({
+        id: user.id,
+        fullName: actorName(user),
+        username: user.username,
+      }));
+  }
+
+  private async resolveCastWorker(userId: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { id: userId, isActive: true },
+      select: {
+        id: true,
+        fullName: true,
+        username: true,
+        roleCode: true,
+        extraRoles: true,
+        allowedScreens: true,
+      },
+    });
+    if (!user || !isCastWorkerAssignee(user)) {
+      throw new BadRequestException(
+        'Chỉ giao cho nhân sự có vai trò Thợ đúc',
+      );
+    }
+    return { id: user.id, name: actorName(user) };
+  }
+
   /** Bước 8: thợ đúc quét phiếu + nguyên liệu, xác nhận bắt đầu đúc (F → G). */
   async start(id: string, actor: AuthUserPayload) {
+    const slipBefore = await this.prisma.castingSlip.findUnique({
+      where: { id },
+      select: { startedByUserId: true },
+    });
+    if (!slipBefore) throw new NotFoundException('Không tìm thấy phiếu đúc');
+    if (
+      slipBefore.startedByUserId &&
+      slipBefore.startedByUserId !== actor.id
+    ) {
+      throw new ForbiddenException('Phiếu đúc giao cho thợ khác');
+    }
     const startedByName = actorName(actor);
     await this.prisma.runTx(async (tx) => {
       const slip = await tx.castingSlip.findUnique({
@@ -462,6 +537,11 @@ export class CastingSlipsService {
       );
     }
     await this.prisma.runTx(async (tx) => {
+      const slipOrders = await tx.castingSlip.findUnique({
+        where: { id },
+        select: { orders: { select: { intakeOrderId: true } } },
+      });
+      if (!slipOrders) throw new NotFoundException('Không tìm thấy phiếu đúc');
       const claimed = await tx.castingSlip.updateMany({
         where: { id, status: CastingSlipStatus.CASTING },
         data: {
@@ -479,6 +559,13 @@ export class CastingSlipsService {
           'Chỉ nhập kết quả khi phiếu đúc đang ở trạng thái Đang đúc',
         );
       }
+      await tx.intakeOrder.updateMany({
+        where: {
+          id: { in: slipOrders.orders.map((line) => line.intakeOrderId) },
+          status: IntakeOrderStatus.CASTING,
+        },
+        data: { status: IntakeOrderStatus.CAST_PENDING_CONFIRMATION },
+      });
       await tx.castingSlipImage.deleteMany({
         where: { slipId: id, kind: CastingSlipImageKind.RESULT },
       });
@@ -520,7 +607,11 @@ export class CastingSlipsService {
         where: {
           id: { in: slip.orders.map((line) => line.intakeOrderId) },
           status: {
-            in: [IntakeOrderStatus.WAIT_CASTING, IntakeOrderStatus.CASTING],
+            in: [
+              IntakeOrderStatus.WAIT_CASTING,
+              IntakeOrderStatus.CASTING,
+              IntakeOrderStatus.CAST_PENDING_CONFIRMATION,
+            ],
           },
         },
         data: { status: IntakeOrderStatus.CAST_DONE },
@@ -529,10 +620,149 @@ export class CastingSlipsService {
     return this.getById(id);
   }
 
-  private async buildListWhere(query: ListCastingSlipsQuery) {
+  /**
+   * Thủ kho báo lỗi đúc: đóng phiếu hiện tại, tạo phiếu mới (cùng đơn + vật tư đã cấp)
+   * ở Chờ đúc để thợ làm lại và nhập kết quả mới.
+   */
+  async rejectCastResult(id: string, actor: AuthUserPayload) {
+    if (!canConfirmIntakeWarehouse(actor)) {
+      throw new ForbiddenException('Chỉ thủ kho được báo lỗi đúc');
+    }
+    const rejectedByName = actorName(actor);
+    let redoId: string | null = null;
+    await this.prisma.runTx(async (tx) => {
+      const old = await tx.castingSlip.findUnique({
+        where: { id },
+        include: {
+          orders: { orderBy: { sortOrder: 'asc' } },
+          images: {
+            where: { kind: CastingSlipImageKind.ISSUE },
+            orderBy: { sortOrder: 'asc' },
+          },
+        },
+      });
+      if (!old) throw new NotFoundException('Không tìm thấy phiếu đúc');
+      /** Phiếu làm lại luôn gắn phiếu gốc — kể cả khi báo lỗi trên phiếu con. */
+      const rootSlipId = old.redoOfSlipId ?? old.id;
+      const rootRow = await tx.castingSlip.findUnique({
+        where: { id: rootSlipId },
+        select: {
+          slipDate: true,
+          waxWeightGram: true,
+          batchOrderCodes: true,
+          issueS999Gram: true,
+          issueMasterAlloyGram: true,
+          issueS925Gram: true,
+          createdByName: true,
+          startedByUserId: true,
+          startedByName: true,
+        },
+      });
+      if (!rootRow) {
+        throw new NotFoundException('Không tìm thấy phiếu đúc gốc');
+      }
+      /** Thợ đúc: luôn giữ người giao ở phiếu cha gốc (lúc lên phiếu / bắt đầu đúc). */
+      let castWorkerId =
+        rootRow.startedByUserId ??
+        (old.redoOfSlipId == null ? old.startedByUserId : null);
+      let castWorkerName =
+        rootRow.startedByName ??
+        (old.redoOfSlipId == null ? old.startedByName : null);
+      if (castWorkerId) {
+        const assignee = await this.resolveCastWorker(castWorkerId);
+        castWorkerId = assignee.id;
+        castWorkerName = assignee.name;
+      } else {
+        throw new BadRequestException(
+          'Phiếu gốc chưa giao thợ đúc — không tạo được phiếu làm lại',
+        );
+      }
+      const claimed = await tx.castingSlip.updateMany({
+        where: { id, status: CastingSlipStatus.PENDING_CONFIRMATION },
+        data: {
+          status: CastingSlipStatus.CAST_FAILED,
+          rejectedAt: new Date(),
+          rejectedByName,
+        },
+      });
+      if (claimed.count !== 1) {
+        throw new BadRequestException('Phiếu đúc chưa chờ thủ kho xác nhận');
+      }
+      const intakeIds = old.orders.map((line) => line.intakeOrderId);
+      await tx.intakeOrder.updateMany({
+        where: {
+          id: { in: intakeIds },
+          status: IntakeOrderStatus.CAST_PENDING_CONFIRMATION,
+        },
+        data: { status: IntakeOrderStatus.WAIT_CASTING },
+      });
+      await tx.castingSlipOrder.deleteMany({ where: { slipId: id } });
+
+      for (let attempt = 0; attempt < CODE_RETRIES; attempt++) {
+        try {
+          const created = await tx.castingSlip.create({
+            data: {
+              code: randomSlipCode(),
+              slipDate: rootRow.slipDate,
+              waxWeightGram: rootRow.waxWeightGram,
+              batchOrderCodes: rootRow.batchOrderCodes,
+              issueS999Gram: rootRow.issueS999Gram,
+              issueMasterAlloyGram: rootRow.issueMasterAlloyGram,
+              issueS925Gram: rootRow.issueS925Gram,
+              createdByName: rootRow.createdByName,
+              startedByUserId: castWorkerId,
+              startedByName: castWorkerName,
+              status: CastingSlipStatus.WAIT_CASTING,
+              redoOfSlipId: rootSlipId,
+              orders: {
+                create: old.orders.map((line) => ({
+                  intakeOrderId: line.intakeOrderId,
+                  sortOrder: line.sortOrder,
+                  waxWeightGram: line.waxWeightGram,
+                })),
+              },
+              images: {
+                create: old.images.map((image) => ({
+                  kind: CastingSlipImageKind.ISSUE,
+                  url: image.url,
+                  publicId: image.publicId,
+                  width: image.width,
+                  height: image.height,
+                  sortOrder: image.sortOrder,
+                })),
+              },
+            },
+            select: { id: true },
+          });
+          redoId = created.id;
+          break;
+        } catch (error) {
+          if (isUniqueViolation(error) && attempt < CODE_RETRIES - 1) {
+            const target = (error as Prisma.PrismaClientKnownRequestError).meta?.target;
+            if (String(target ?? '').includes('intake_order_id')) {
+              throw new ConflictException(
+                'Có đơn không gỡ được khỏi phiếu lỗi — tải lại và thử lại',
+              );
+            }
+            continue;
+          }
+          throw error;
+        }
+      }
+      if (!redoId) {
+        throw new BadRequestException('Không tạo được phiếu làm lại, thử lại');
+      }
+    });
+    return this.getById(redoId!);
+  }
+
+  private async buildListWhere(
+    query: ListCastingSlipsQuery,
+    opts?: { skipStatus?: boolean },
+  ) {
     const and: Prisma.CastingSlipWhereInput[] = [];
 
-    if (query.status) and.push({ status: query.status });
+    if (query.status && !opts?.skipStatus) and.push({ status: query.status });
 
     const search = query.search?.trim();
     if (search) {
@@ -657,7 +887,16 @@ const slipInclude = {
   images: { orderBy: { sortOrder: 'asc' } },
 } satisfies Prisma.CastingSlipInclude;
 
+const slipListInclude = {
+  ...slipInclude,
+  redos: {
+    orderBy: { createdAt: 'asc' as const },
+    include: slipInclude,
+  },
+} satisfies Prisma.CastingSlipInclude;
+
 type SlipRow = Prisma.CastingSlipGetPayload<{ include: typeof slipInclude }>;
+type SlipListRow = Prisma.CastingSlipGetPayload<{ include: typeof slipListInclude }>;
 
 /**
  * TL sáp (cây thông) giao, "lấy từ trạng thái E": số thủ kho cân kiểm nếu có, không thì
@@ -732,7 +971,7 @@ function toImage(image: {
   };
 }
 
-function toRow(row: SlipRow) {
+function slipRowBase(row: SlipRow) {
   return {
     id: row.id,
     code: row.code,
@@ -767,12 +1006,25 @@ function toRow(row: SlipRow) {
     submittedByName: row.submittedByName,
     confirmedAt: row.confirmedAt?.toISOString() ?? null,
     confirmedByName: row.confirmedByName,
+    rejectedAt: row.rejectedAt?.toISOString() ?? null,
+    rejectedByName: row.rejectedByName,
+    redoOfSlipId: row.redoOfSlipId,
     images: row.images
       .filter((image) => image.kind === CastingSlipImageKind.ISSUE)
       .map(toImage),
     resultImages: row.images
       .filter((image) => image.kind === CastingSlipImageKind.RESULT)
       .map(toImage),
+  };
+}
+
+type CastingSlipRowDto = ReturnType<typeof slipRowBase> & { redos: CastingSlipRowDto[] };
+
+function toRow(row: SlipRow | SlipListRow): CastingSlipRowDto {
+  const redos = 'redos' in row ? row.redos : [];
+  return {
+    ...slipRowBase(row),
+    redos: redos.map((child) => ({ ...slipRowBase(child), redos: [] })),
   };
 }
 

@@ -189,7 +189,7 @@ export class WaxPrintBatchDto {
   images!: IntakeOrderImageDto[];
 }
 
-/** Bước 5–6: thủ kho xác nhận sáp, kèm số cân kiểm. */
+/** Bước 5–6: thủ kho xác nhận sáp (số cân kiểm tùy chọn — thường dùng TL thợ báo). */
 export class ConfirmWarehouseDto {
   @IsOptional()
   @Type(() => Number)
@@ -210,6 +210,24 @@ export class IntakeCastingTreeSpecsDto {
   @ValidateNested({ each: true })
   @Type(() => IntakeOrderImageDto)
   images!: IntakeOrderImageDto[];
+}
+
+/** Lọc chung cho tab Tất cả (gộp nhiều trạng thái intake). */
+export class IntakePipelineListsQuery {
+  @IsOptional()
+  @IsEnum(ProductionRequestType)
+  requestType?: ProductionRequestType;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  search?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  pageSize?: number;
 }
 
 export class ListIntakeOrdersQuery {

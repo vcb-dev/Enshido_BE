@@ -21,6 +21,7 @@ import {
   IntakeProductSpecsDto,
   IntakeWaxPrintBatchDto,
   RejectIntakeOrderDto,
+  IntakePipelineListsQuery,
   ListIntakeOrdersQuery,
   UpsertIntakeOrderDto,
 } from './dto/intake-order.dto';
@@ -34,6 +35,18 @@ export class IntakeOrdersController {
   @BlockWorker()
   list(@Query() query: ListIntakeOrdersQuery) {
     return this.orders.list(query);
+  }
+
+  @Get('pipeline-counts')
+  @BlockWorker()
+  pipelineCounts() {
+    return this.orders.pipelineStatusCounts();
+  }
+
+  @Get('pipeline-lists')
+  @BlockWorker()
+  pipelineLists(@Query() query: IntakePipelineListsQuery) {
+    return this.orders.pipelineLists(query);
   }
 
   @Post()

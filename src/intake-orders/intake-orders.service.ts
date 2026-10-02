@@ -5,7 +5,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { IntakeOrderStatus, Prisma, ProductionImageKind } from '@prisma/client';
+import {
+  IntakeOrderStatus,
+  Prisma,
+  ProductionImageKind,
+  ProductionRequestType,
+} from '@prisma/client';
 import type { AuthUserPayload } from '../auth/types';
 import { recordEditLog } from '../edit-logs/edit-log';
 import { PrismaService } from '../prisma/prisma.service';
@@ -56,6 +61,56 @@ function isUniqueViolation(error: unknown) {
   );
 }
 
+const INTAKE_PIPELINE_STATUSES: IntakeOrderStatus[] = [
+  IntakeOrderStatus.PENDING_APPROVAL,
+  IntakeOrderStatus.APPROVED,
+  IntakeOrderStatus.READY_FOR_PRODUCTION,
+  IntakeOrderStatus.PENDING_WAREHOUSE_CONFIRMATION,
+  IntakeOrderStatus.WAX_PRINTED,
+  IntakeOrderStatus.WAX_CONFIRMED,
+  IntakeOrderStatus.WAIT_CASTING,
+  IntakeOrderStatus.CASTING,
+  IntakeOrderStatus.CAST_PENDING_CONFIRMATION,
+  IntakeOrderStatus.CAST_DONE,
+];
+
+const intakeListImageKinds: ProductionImageKind[] = [
+  ProductionImageKind.DETAIL,
+  ProductionImageKind.PRODUCT,
+  ProductionImageKind.CASTING_TREE,
+];
+
+const intakeListInclude = {
+  castingSlipLine: { select: { slip: { select: { code: true, status: true } } } },
+  images: {
+    where: { kind: { in: intakeListImageKinds } },
+    orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }],
+    take: 24,
+  },
+} satisfies Prisma.IntakeOrderInclude;
+
+function intakeListWhere(
+  query: Pick<ListIntakeOrdersQuery, 'search' | 'requestType' | 'status'>,
+): Prisma.IntakeOrderWhereInput {
+  const keyword = query.search?.trim();
+  return {
+    ...(query.status ? { status: query.status } : {}),
+    ...(query.requestType ? { requestType: query.requestType } : {}),
+    ...(keyword
+      ? {
+          OR: [
+            { code: { contains: keyword, mode: 'insensitive' } },
+            { sxCode: { contains: keyword, mode: 'insensitive' } },
+            { trackingCode: { contains: keyword, mode: 'insensitive' } },
+            { placedBy: { contains: keyword, mode: 'insensitive' } },
+            { description: { contains: keyword, mode: 'insensitive' } },
+            { productName: { contains: keyword, mode: 'insensitive' } },
+          ],
+        }
+      : {}),
+  };
+}
+
 @Injectable()
 export class IntakeOrdersService {
   constructor(
@@ -66,23 +121,7 @@ export class IntakeOrdersService {
   async list(query: ListIntakeOrdersQuery) {
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 25;
-    const keyword = query.search?.trim();
-    const where: Prisma.IntakeOrderWhereInput = {
-      ...(query.status ? { status: query.status } : {}),
-      ...(query.requestType ? { requestType: query.requestType } : {}),
-      ...(keyword
-        ? {
-            OR: [
-              { code: { contains: keyword, mode: 'insensitive' } },
-              { sxCode: { contains: keyword, mode: 'insensitive' } },
-              { trackingCode: { contains: keyword, mode: 'insensitive' } },
-              { placedBy: { contains: keyword, mode: 'insensitive' } },
-              { description: { contains: keyword, mode: 'insensitive' } },
-              { productName: { contains: keyword, mode: 'insensitive' } },
-            ],
-          }
-        : {}),
-    };
+    const where = intakeListWhere(query);
     const [total, rows] = await Promise.all([
       this.prisma.intakeOrder.count({ where }),
       this.prisma.intakeOrder.findMany({
@@ -90,13 +129,55 @@ export class IntakeOrdersService {
         orderBy: [{ createdDate: 'desc' }, { seq: 'desc' }],
         skip: (page - 1) * pageSize,
         take: pageSize,
-        include: {
-          images: { orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }] },
-          castingSlipLine: { select: { slip: { select: { code: true, status: true } } } },
-        },
+        include: intakeListInclude,
       }),
     ]);
     return { items: rows.map(toRow), total, page, pageSize };
+  }
+
+  /** Một lần đếm cho badge tab Lệnh sản xuất — tránh N request count riêng lẻ trên FE. */
+  async pipelineStatusCounts() {
+    const rows = await this.prisma.intakeOrder.groupBy({
+      by: ['status'],
+      where: { status: { in: INTAKE_PIPELINE_STATUSES } },
+      _count: { _all: true },
+    });
+    const counts = Object.fromEntries(
+      INTAKE_PIPELINE_STATUSES.map((status) => [status, 0]),
+    ) as Record<IntakeOrderStatus, number>;
+    for (const row of rows) {
+      if (row.status in counts) counts[row.status] = row._count._all;
+    }
+    return counts;
+  }
+
+  /**
+   * Tab Tất cả — một groupBy + 10 findMany (không count từng bucket), ảnh list gọn.
+   */
+  async pipelineLists(query: Pick<ListIntakeOrdersQuery, 'search' | 'requestType' | 'pageSize'>) {
+    const pageSize = Math.min(query.pageSize ?? 200, 200);
+    const counts = await this.pipelineStatusCounts();
+    const rowsByStatus = await Promise.all(
+      INTAKE_PIPELINE_STATUSES.map((status) =>
+        this.prisma.intakeOrder.findMany({
+          where: intakeListWhere({ ...query, status }),
+          orderBy: [{ createdDate: 'desc' }, { seq: 'desc' }],
+          take: pageSize,
+          include: intakeListInclude,
+        }),
+      ),
+    );
+    return Object.fromEntries(
+      INTAKE_PIPELINE_STATUSES.map((status, index) => [
+        status,
+        {
+          items: rowsByStatus[index]!.map(toRow),
+          total: counts[status] ?? 0,
+          page: 1,
+          pageSize,
+        },
+      ]),
+    ) as Record<IntakeOrderStatus, Awaited<ReturnType<IntakeOrdersService['list']>>>;
   }
 
   async create(dto: UpsertIntakeOrderDto, actor: AuthUserPayload) {
@@ -450,7 +531,7 @@ export class IntakeOrdersService {
     return { items: rows.map(toRow) };
   }
 
-  /** Bước 5–6: thủ kho kiểm sáp, ghi số cân kiểm (bắt buộc ở đơn bơm sáp) rồi xác nhận → E. */
+  /** Bước 5–6: thủ kho xác nhận đã nhận sáp → E (TL phiếu đúc lấy số thợ báo nếu không cân riêng). */
   async confirmWarehouseSpecs(
     id: string,
     dto: ConfirmWarehouseDto,
@@ -466,22 +547,16 @@ export class IntakeOrdersService {
         'Chỉ xác nhận được đơn đang chờ thủ kho xác nhận',
       );
     }
-    if (order.hasMold === true && dto.checkedWeightGram == null) {
-      throw new BadRequestException(
-        'Đơn bơm sáp: thủ kho cân kiểm và nhập trọng lượng trước khi xác nhận',
-      );
-    }
 
+    const confirmedBy = actor.fullName?.trim() || actor.username;
     const updated = await this.prisma.runTx(async (tx) => {
       await tx.intakeOrder.update({
         where: { id },
         data: {
           status: IntakeOrderStatus.WAX_CONFIRMED,
+          waxCheckedByName: confirmedBy,
           ...(dto.checkedWeightGram != null
-            ? {
-                waxCheckedWeightGram: dto.checkedWeightGram,
-                waxCheckedByName: actor.fullName?.trim() || actor.username,
-              }
+            ? { waxCheckedWeightGram: dto.checkedWeightGram }
             : {}),
         },
       });
@@ -615,10 +690,35 @@ export class IntakeOrdersService {
   }
 }
 
-type IntakeRow = Prisma.IntakeOrderGetPayload<{
-  include: { images: true };
-}> & {
-  castingSlipLine?: { slip: { code: string; status: string } } | null;
+/** Dùng chung list (ảnh lọc) và chi tiết sau mutate — không bó Prisma payload một include cố định. */
+type IntakeRow = {
+  id: string;
+  code: string;
+  sxCode: string;
+  status: IntakeOrderStatus;
+  requestType: ProductionRequestType;
+  productName: string | null;
+  qty: number;
+  trackingCode: string | null;
+  placedBy: string | null;
+  description: string | null;
+  createdDate: Date;
+  dueDate: Date | null;
+  hasMold: boolean | null;
+  model3dUrl: string | null;
+  productWeightGram: Prisma.Decimal | null;
+  castingTreeWeightGram: Prisma.Decimal | null;
+  waxCheckedWeightGram: Prisma.Decimal | null;
+  waxCheckedByName: string | null;
+  createdAt: Date;
+  images: {
+    kind: ProductionImageKind;
+    url: string;
+    publicId: string;
+    width: number | null;
+    height: number | null;
+  }[];
+  castingSlipLine?: { slip?: { code: string; status: string } | null } | null;
 };
 
 function toRow(row: IntakeRow) {
@@ -649,8 +749,11 @@ function toRow(row: IntakeRow) {
         : null,
     waxCheckedByName: row.waxCheckedByName,
     /** Phiếu đúc đang giữ đơn (kể cả phiếu chưa cấp vật tư). */
-    castingSlip: row.castingSlipLine
-      ? { code: row.castingSlipLine.slip.code, status: row.castingSlipLine.slip.status }
+    castingSlip: row.castingSlipLine?.slip
+      ? {
+          code: row.castingSlipLine.slip.code,
+          status: row.castingSlipLine.slip.status,
+        }
       : null,
     createdAt: row.createdAt.toISOString(),
     images: row.images.map((image) => ({

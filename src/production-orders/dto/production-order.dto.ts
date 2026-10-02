@@ -84,6 +84,14 @@ export class ListProductionOrdersQuery {
   @Max(200)
   pageSize?: number;
 
+  /** Bỏ qua page — dùng skip trực tiếp (tab Tất cả ghép intake + lệnh SX). */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(50_000)
+  offset?: number;
+
   @IsOptional()
   @IsIn(ORDER_SORT_KEYS)
   sort?: (typeof ORDER_SORT_KEYS)[number];

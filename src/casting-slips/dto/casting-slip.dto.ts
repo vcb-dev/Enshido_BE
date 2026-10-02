@@ -65,6 +65,9 @@ export class CreateCastingSlipDto {
   @Min(0)
   issueS925Gram?: number;
 
+  /** Thợ đúc được giao phiếu (quyền production.cast). */
+  @IsUUID('4')
+  assignedUserId!: string;
 }
 
 /** Bước 7 (sau khi in phiếu và cấp vật tư): chụp ảnh phiếu đúc + vật tư kèm theo rồi Lưu. */
@@ -121,8 +124,21 @@ export class CastingSlipResultDto {
 
 export class ListCastingSlipsQuery {
   @IsOptional()
-  @IsIn(['PENDING_ISSUE', 'WAIT_CASTING', 'CASTING', 'PENDING_CONFIRMATION', 'DONE'])
-  status?: 'PENDING_ISSUE' | 'WAIT_CASTING' | 'CASTING' | 'PENDING_CONFIRMATION' | 'DONE';
+  @IsIn([
+    'PENDING_ISSUE',
+    'WAIT_CASTING',
+    'CASTING',
+    'PENDING_CONFIRMATION',
+    'DONE',
+    'CAST_FAILED',
+  ])
+  status?:
+    | 'PENDING_ISSUE'
+    | 'WAIT_CASTING'
+    | 'CASTING'
+    | 'PENDING_CONFIRMATION'
+    | 'DONE'
+    | 'CAST_FAILED';
 
   @IsOptional()
   @IsString()

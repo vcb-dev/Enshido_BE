@@ -7,7 +7,8 @@ import { createHash, randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { LoginDto } from './dto/login.dto';
 import { AuthUserPayload, JwtPayload } from './types';
-import { permissionsForUser, roleLabelFor } from './permissions';
+import { permissionsForUser } from './permissions';
+import { staffJobLabelFor } from './staff-job-presets';
 import { COOKIE_ACCESS } from '../cookie/cookie.constants';
 import { parseDurationMs } from '../util/duration';
 import { InflightMap, TtlCache } from '../util/ttl-cache';
@@ -265,7 +266,7 @@ export class AuthService {
     const allowedScreens = user.allowedScreens ?? [];
     return {
       ...this.toPublicUser(user),
-      roleLabel: roleLabelFor(user.roleCode, extraRoles),
+      roleLabel: staffJobLabelFor(user),
       permissions: permissionsForUser(
         user.roleCode,
         extraRoles,

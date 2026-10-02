@@ -137,6 +137,7 @@ export class ProductionOrdersService {
   async list(query: ListProductionOrdersQuery) {
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 25;
+    const skip = query.offset ?? (page - 1) * pageSize;
     const dir = query.dir ?? 'desc';
     const sort = query.sort ?? 'code';
 
@@ -253,7 +254,7 @@ export class ProductionOrdersService {
       this.prisma.productionOrder.findMany({
         where,
         orderBy,
-        skip: (page - 1) * pageSize,
+        skip,
         take: pageSize,
         select: {
           id: true,

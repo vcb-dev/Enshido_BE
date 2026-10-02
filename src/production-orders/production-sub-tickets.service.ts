@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  CastingSlipStatus,
   MaterialRequestStatus,
   Prisma,
   ProductionStage,
@@ -74,6 +75,8 @@ const S = ProductionStatus;
 
 const RECENT_LIMIT = 20;
 const AVAILABLE_LIMIT = 100;
+/** Admin xem Phiếu của tôi: giới hạn mỗi nhánh để tránh kéo cả kho dữ liệu. */
+const MINE_LIMIT = 100;
 
 const CLEAR_PENDING = {
   pendingStage: null,
@@ -107,7 +110,18 @@ const myTicketInclude = {
       },
     },
   },
-  stages: { orderBy: { createdAt: 'asc' } },
+  stages: {
+    orderBy: { createdAt: 'asc' },
+    select: {
+      stage: true,
+      returnedAt: true,
+      submittedAt: true,
+      handedQty: true,
+      handedSilverWeight: true,
+      returnedQty: true,
+      returnedSilverWeight: true,
+    },
+  },
 } satisfies Prisma.ProductionSubTicketInclude;
 
 /** NVL đã xuất / đang xin của một khâu — thợ xem mình đã nhận gì và tính hao hụt cho đúng. */
@@ -1434,11 +1448,32 @@ export class ProductionSubTicketsService {
   /** Màn "Phiếu của tôi": phiếu đang mở chờ nhận, phiếu mình đang giữ, phiếu vừa nộp. */
   async myTickets(actor: AuthUserPayload) {
     // Phiếu đang mở chỉ hiện cho thợ làm đúng khâu đó; admin thấy hết.
-    const stages = await stagesOf(this.prisma, actor);
+    const adminView = isAdmin(actor);
+    const stages = adminView ? null : await stagesOf(this.prisma, actor);
     const openStage = stages ? { in: stages } : { not: null };
+    const castingHeldStatuses: CastingSlipStatus[] = [
+      CastingSlipStatus.CASTING,
+      CastingSlipStatus.PENDING_CONFIRMATION,
+      CastingSlipStatus.PENDING_ISSUE,
+    ];
     // Phiếu mẹ chạy đúng bốn nhánh như phiếu con, mỗi nhánh một câu truy vấn riêng. Gộp
     // chung một câu rồi lọc trong bộ nhớ thì `take` sẽ dùng chung: phiếu người khác đang mở
     // đủ nhiều là đẩy mất việc của chính thợ ra khỏi danh sách.
+    const castingSlipSelect = {
+      id: true,
+      code: true,
+      status: true,
+      slipDate: true,
+      batchOrderCodes: true,
+      waxWeightGram: true,
+      issueS999Gram: true,
+      issueMasterAlloyGram: true,
+      issueS925Gram: true,
+      startedAt: true,
+      confirmedAt: true,
+      _count: { select: { orders: true } },
+    } as const;
+
     const [
       available,
       claimed,
@@ -1448,6 +1483,9 @@ export class ProductionSubTicketsService {
       parentClaimed,
       parentWorking,
       parentRecent,
+      castingAvailable,
+      castingMine,
+      castingRecent,
     ] = await Promise.all([
       this.prisma.productionSubTicket.findMany({
         where: {
@@ -1460,28 +1498,36 @@ export class ProductionSubTicketsService {
         take: AVAILABLE_LIMIT,
       }),
       this.prisma.productionSubTicket.findMany({
-        where: { claimedByUserId: actor.id, pendingStage: { not: null } },
+        where: adminView
+          ? { claimedByUserId: { not: null }, pendingStage: { not: null } }
+          : { claimedByUserId: actor.id, pendingStage: { not: null } },
         include: myTicketInclude,
         orderBy: { claimedAt: 'asc' },
+        ...(adminView ? { take: MINE_LIMIT } : {}),
       }),
       this.prisma.productionStageEntry.findMany({
-        where: {
-          craftsmanUserId: actor.id,
-          subTicketId: { not: null },
-          returnedAt: null,
-        },
+        where: adminView
+          ? { subTicketId: { not: null }, returnedAt: null }
+          : {
+              craftsmanUserId: actor.id,
+              subTicketId: { not: null },
+              returnedAt: null,
+            },
         include: {
           ...entryRequestsSelect,
           subTicket: { include: myTicketInclude },
         },
         orderBy: { handedAt: 'asc' },
+        ...(adminView ? { take: MINE_LIMIT } : {}),
       }),
       this.prisma.productionStageEntry.findMany({
-        where: {
-          craftsmanUserId: actor.id,
-          subTicketId: { not: null },
-          returnedAt: { not: null },
-        },
+        where: adminView
+          ? { subTicketId: { not: null }, returnedAt: { not: null } }
+          : {
+              craftsmanUserId: actor.id,
+              subTicketId: { not: null },
+              returnedAt: { not: null },
+            },
         include: {
           ...entryRequestsSelect,
           subTicket: { include: myTicketInclude },
@@ -1501,34 +1547,85 @@ export class ProductionSubTicketsService {
         take: AVAILABLE_LIMIT,
       }),
       this.prisma.productionOrder.findMany({
-        where: {
-          subTickets: { none: {} },
-          claimedByUserId: actor.id,
-          pendingStage: { not: null },
-        },
+        where: adminView
+          ? {
+              subTickets: { none: {} },
+              claimedByUserId: { not: null },
+              pendingStage: { not: null },
+            }
+          : {
+              subTickets: { none: {} },
+              claimedByUserId: actor.id,
+              pendingStage: { not: null },
+            },
         select: myOrderPendingSelect,
         orderBy: { claimedAt: 'asc' },
+        ...(adminView ? { take: MINE_LIMIT } : {}),
       }),
       this.prisma.productionStageEntry.findMany({
-        where: {
-          craftsmanUserId: actor.id,
-          subTicketId: null,
-          returnedAt: null,
-          // Đơn đã chia thì việc đi theo phiếu con; thẻ phiếu mẹ sẽ dẫn tới ngõ cụt.
-          order: { subTickets: { none: {} } },
-        },
+        where: adminView
+          ? {
+              subTicketId: null,
+              returnedAt: null,
+              order: { subTickets: { none: {} } },
+            }
+          : {
+              craftsmanUserId: actor.id,
+              subTicketId: null,
+              returnedAt: null,
+              // Đơn đã chia thì việc đi theo phiếu con; thẻ phiếu mẹ sẽ dẫn tới ngõ cụt.
+              order: { subTickets: { none: {} } },
+            },
         select: myOrderEntrySelect,
         orderBy: { handedAt: 'asc' },
+        ...(adminView ? { take: MINE_LIMIT } : {}),
       }),
       this.prisma.productionStageEntry.findMany({
-        where: {
-          craftsmanUserId: actor.id,
-          subTicketId: null,
-          returnedAt: { not: null },
-          order: { subTickets: { none: {} } },
-        },
+        where: adminView
+          ? {
+              subTicketId: null,
+              returnedAt: { not: null },
+              order: { subTickets: { none: {} } },
+            }
+          : {
+              craftsmanUserId: actor.id,
+              subTicketId: null,
+              returnedAt: { not: null },
+              order: { subTickets: { none: {} } },
+            },
         select: myOrderEntrySelect,
         orderBy: { returnedAt: 'desc' },
+        take: RECENT_LIMIT,
+      }),
+      this.prisma.castingSlip.findMany({
+        where: adminView
+          ? { status: CastingSlipStatus.WAIT_CASTING, startedAt: null }
+          : {
+              startedByUserId: actor.id,
+              status: CastingSlipStatus.WAIT_CASTING,
+              startedAt: null,
+            },
+        select: castingSlipSelect,
+        orderBy: [{ slipDate: 'desc' }, { code: 'desc' }],
+        ...(adminView ? { take: AVAILABLE_LIMIT } : {}),
+      }),
+      this.prisma.castingSlip.findMany({
+        where: adminView
+          ? { status: { in: castingHeldStatuses } }
+          : {
+              startedByUserId: actor.id,
+              status: { in: castingHeldStatuses },
+            },
+        select: castingSlipSelect,
+        orderBy: [{ slipDate: 'desc' }, { code: 'desc' }],
+        ...(adminView ? { take: AVAILABLE_LIMIT } : {}),
+      }),
+      this.prisma.castingSlip.findMany({
+        where: adminView
+          ? { status: CastingSlipStatus.DONE }
+          : { startedByUserId: actor.id, status: CastingSlipStatus.DONE },
+        select: castingSlipSelect,
+        orderBy: { confirmedAt: 'desc' },
         take: RECENT_LIMIT,
       }),
     ]);
@@ -1557,6 +1654,9 @@ export class ProductionSubTicketsService {
         ],
         RECENT_LIMIT,
       ),
+      castingAvailable: castingAvailable.map(castingSlipMyItem),
+      castingMine: castingMine.map(castingSlipMyItem),
+      castingRecent: castingRecent.map(castingSlipMyItem),
     };
   }
 
@@ -1605,6 +1705,38 @@ const OUTCOME_LABEL: Record<SubTicketOutcome, string> = {
   DEFECT: 'lỗi',
   FINISH: 'hoàn thiện',
 };
+
+function castingSlipMyItem(row: {
+  id: string;
+  code: string;
+  status: CastingSlipStatus;
+  slipDate: Date;
+  batchOrderCodes: string;
+  waxWeightGram: Prisma.Decimal;
+  issueS999Gram: Prisma.Decimal | null;
+  issueMasterAlloyGram: Prisma.Decimal | null;
+  issueS925Gram: Prisma.Decimal | null;
+  startedAt: Date | null;
+  confirmedAt: Date | null;
+  _count: { orders: number };
+}) {
+  let issueTotal = new Prisma.Decimal(0);
+  for (const part of [row.issueS999Gram, row.issueMasterAlloyGram, row.issueS925Gram]) {
+    if (part != null) issueTotal = issueTotal.add(part);
+  }
+  return {
+    id: row.id,
+    code: row.code,
+    status: row.status,
+    slipDate: row.slipDate.toISOString().slice(0, 10),
+    batchOrderCodes: row.batchOrderCodes,
+    waxWeightGram: decStr(row.waxWeightGram),
+    issueTotalGram: decStr(issueTotal),
+    orderCount: row._count.orders,
+    startedAt: row.startedAt?.toISOString() ?? null,
+    confirmedAt: row.confirmedAt?.toISOString() ?? null,
+  };
+}
 
 function isAdmin(actor: AuthUserPayload) {
   return userHasRole(actor.roleCode, actor.extraRoles ?? [], RoleCode.ADMIN);
