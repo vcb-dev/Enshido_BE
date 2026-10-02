@@ -1057,6 +1057,8 @@ enum IntakeOrderStatus {
   WAIT_CASTING
   /// (G) Thợ đúc đã quét phiếu, bắt đầu đúc.
   CASTING
+  /// Thợ đã nộp kết quả đúc — chờ thủ kho xác nhận (phiếu đúc PENDING_CONFIRMATION).
+  CAST_PENDING_CONFIRMATION
   /// Trạng thái cũ: đúc xong nhưng chưa chia phôi (các phiếu trước khi đổi luồng).
   CAST_DONE
   /// Đã xác nhận đúc và chia phôi — chuyển sang lệnh sản xuất để Nguội.
@@ -1159,6 +1161,8 @@ enum CastingSlipStatus {
   CASTING
   PENDING_CONFIRMATION
   DONE
+  /// Thủ kho báo lỗi đúc — đơn chuyển sang phiếu đúc mới (làm lại).
+  CAST_FAILED
 }
 
 /// Ảnh phiếu đúc: ISSUE = lúc cấp vật tư (bước 7), RESULT = ảnh cân cây thông sau đúc (bước 9).
@@ -1201,6 +1205,11 @@ model CastingSlip {
   restWeightGram       Decimal?          @map("rest_weight_gram") @db.Decimal(18, 4)
   restMaterialId       String?           @map("rest_material_id") @db.Uuid
   restInboundId        String?           @unique @map("rest_inbound_id") @db.Uuid
+  /// Thủ kho báo lỗi đúc (phiếu CAST_FAILED).
+  rejectedAt           DateTime?         @map("rejected_at")
+  rejectedByName       String?           @map("rejected_by_name")
+  /// Phiếu làm lại sinh từ phiếu lỗi.
+  redoOfSlipId         String?           @map("redo_of_slip_id") @db.Uuid
   createdByName        String?           @map("created_by_name")
   lastPrintedAt        DateTime?         @map("last_printed_at")
   createdAt            DateTime          @default(now()) @map("created_at")
@@ -1208,7 +1217,9 @@ model CastingSlip {
 
   orders CastingSlipOrder[]
   images CastingSlipImage[]
-  /// Phiếu cắt cây thông của lần đúc này (bước 10).
+  /// Phiếu làm lại sinh từ phiếu đúc lỗi (mọi phiếu làm lại trỏ thẳng phiếu gốc).
+  redoOf CastingSlip?       @relation("CastingSlipRedo", fields: [redoOfSlipId], references: [id], onDelete: SetNull)
+  redos  CastingSlip[]      @relation("CastingSlipRedo")
 
   @@index([slipDate])
   @@index([status])

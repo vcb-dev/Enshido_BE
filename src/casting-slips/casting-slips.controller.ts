@@ -48,6 +48,13 @@ export class CastingSlipsController {
     return this.slips.candidates(query);
   }
 
+  @Get('cast-workers')
+  @BlockWorker()
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
+  listCastWorkers() {
+    return this.slips.listCastWorkers();
+  }
+
   /** Mở phiếu từ QR in trên phiếu giấy. */
   /** Mã NVL (gram, kho NVL chính) nhận phần cây còn lại lúc xác nhận đúc. */
   @Get('rest-material-options')
@@ -135,5 +142,16 @@ export class CastingSlipsController {
     @CurrentUser() user: AuthUserPayload,
   ) {
     return this.slips.confirm(id, dto, user);
+  }
+
+  /** Thủ kho báo lỗi đúc → phiếu mới Chờ đúc, thợ làm lại. */
+  @Post(':id/reject-cast')
+  @BlockWorker()
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
+  rejectCast(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.slips.rejectCastResult(id, user);
   }
 }

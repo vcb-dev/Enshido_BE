@@ -149,9 +149,9 @@ export class ProductionOrdersController {
     return this.orders.nvlOptions(query.search);
   }
 
-  /** Màn "Phiếu của tôi" của thợ. */
+  /** Màn "Phiếu của tôi" của thợ sản xuất và thợ đúc. */
   @Get('my-tickets')
-  @RequirePermissions(Permission.PRODUCTION_WORKER)
+  @RequirePermissions(Permission.PRODUCTION_WORKER, Permission.PRODUCTION_CAST)
   myTickets(@CurrentUser() user: AuthUserPayload) {
     return this.subTickets.myTickets(user);
   }

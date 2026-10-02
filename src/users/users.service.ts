@@ -12,7 +12,7 @@ import { actorName } from '../production-orders/order-detail';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateUserDto, UpdateUserDto } from './dto/user.dto';
 import { AuthService, BCRYPT_COST } from '../auth/auth.service';
-import { sanitizeScreens } from '../auth/permissions';
+import { isProductionStageWorker, sanitizeScreens } from '../auth/permissions';
 import { DEFAULT_STAFF_SCREENS } from '../auth/screens';
 import { InventoryService } from '../inventory/inventory.service';
 import { InflightMap, TtlCache } from '../util/ttl-cache';
@@ -89,6 +89,7 @@ export class UsersService {
       dto.roleCode,
       dto.extraRoles ?? [],
       dto.workerStages ?? [],
+      allowedScreens,
     );
 
     const created = await this.prisma.user.create({
@@ -154,6 +155,7 @@ export class UsersService {
         data.roleCode ?? user.roleCode,
         data.extraRoles ?? user.extraRoles,
         dto.workerStages ?? user.workerStages,
+        data.allowedScreens ?? user.allowedScreens,
       );
     }
 
@@ -184,10 +186,14 @@ function workerStagesFor(
   roleCode: RoleCode,
   extraRoles: RoleCode[],
   stages: ProductionStage[],
+  allowedScreens: readonly string[] = [],
 ) {
   const isWorker =
     roleCode === RoleCode.WORKER || extraRoles.includes(RoleCode.WORKER);
   if (!isWorker) return [];
+  if (isProductionStageWorker(roleCode, extraRoles, allowedScreens)) {
+    return STAGE_ORDER.filter((stage) => stages.includes(stage));
+  }
   const unique = STAGE_ORDER.filter((stage) => stages.includes(stage));
   if (unique.length === 0) {
     throw new BadRequestException('Chọn ít nhất một khâu thợ được nhận');

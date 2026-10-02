@@ -28,7 +28,14 @@ export class WorkerRestrictedGuard implements CanActivate {
       .switchToHttp()
       .getRequest<{ user?: AuthUserPayload }>();
     const user = request.user;
-    if (user && isWorkerOnly(user.roleCode, user.extraRoles ?? [])) {
+    if (
+      user &&
+      isWorkerOnly(
+        user.roleCode,
+        user.extraRoles ?? [],
+        user.allowedScreens ?? [],
+      )
+    ) {
       throw new ForbiddenException(
         'Tài khoản Thợ chỉ làm việc trên phiếu con của mình',
       );

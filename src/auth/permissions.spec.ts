@@ -57,6 +57,15 @@ describe('isWorkerOnly — điểm chặn duy nhất của màn quản lý đơn
     expect(isWorkerOnly(RoleCode.WORKER, [])).toBe(true);
   });
 
+  it('sai với thợ 3D / sáp / đúc (công đoạn trên Lệnh SX)', () => {
+    expect(
+      isWorkerOnly(RoleCode.WORKER, [], [Permission.PRODUCTION_MODEL3D]),
+    ).toBe(false);
+    expect(
+      isWorkerOnly(RoleCode.WORKER, [], [Permission.PRODUCTION_CAST]),
+    ).toBe(false);
+  });
+
   it('sai với nhân viên và admin thường', () => {
     expect(isWorkerOnly(RoleCode.USER, [])).toBe(false);
     expect(isWorkerOnly(RoleCode.ADMIN, [])).toBe(false);

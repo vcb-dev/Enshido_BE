@@ -9,6 +9,14 @@ export const Permission = {
   SCREEN_WAREHOUSE_THANH_PHAM: 'screen.warehouse.thanh-pham',
   SCREEN_LOCATIONS: 'screen.locations',
   SCREEN_CATALOGS: 'screen.catalogs',
+  /** Màn Tạo đơn (danh sách đơn mới). */
+  SCREEN_INTAKE_ORDERS: 'screen.intake-orders',
+  /** Màn Lệnh sản xuất (intake + đơn SX). */
+  SCREEN_PRODUCTION_ORDERS: 'screen.production-orders',
+  /** Màn Lệnh đúc (phiếu đúc). */
+  SCREEN_CASTING_ORDERS: 'screen.casting-orders',
+  /** Màn Phiếu của tôi (thợ sản xuất). */
+  SCREEN_MY_TICKETS: 'screen.my-tickets',
   /** Thợ sản xuất: tự nhận phiếu mẹ hoặc phiếu con ở màn "Phiếu của tôi". */
   PRODUCTION_WORKER: 'production.worker',
   /** Bước 1: tạo đơn. */
@@ -153,13 +161,80 @@ export const ROLE_LABELS: Record<RoleCode, string> = {
  * Tài khoản chỉ làm thợ — dùng để CHẶN các màn quản lý đơn. Hệ quyền màn hình chỉ biết
  * "cho thêm" nên việc cấm phải hỏi tường minh ở đây. Thợ kiêm admin thì không bị chặn.
  */
+/** Thợ 3D / sáp / đúc — không dùng khung Phiếu của tôi và không bị @BlockWorker. */
+export function isProductionStageWorker(
+  roleCode: RoleCode,
+  extraRoles: readonly RoleCode[] = [],
+  allowedScreens: readonly string[] = [],
+): boolean {
+  const granted = permissionsForUser(roleCode, extraRoles, allowedScreens);
+  return (
+    granted.includes(Permission.PRODUCTION_MODEL3D) ||
+    granted.includes(Permission.PRODUCTION_WAX) ||
+    granted.includes(Permission.PRODUCTION_CAST)
+  );
+}
+
 export function isWorkerOnly(
   roleCode: RoleCode,
   extraRoles: readonly RoleCode[] = [],
+  allowedScreens: readonly string[] = [],
 ): boolean {
-  return (
-    userHasRole(roleCode, extraRoles, RoleCode.WORKER) &&
-    !userHasRole(roleCode, extraRoles, RoleCode.ADMIN)
+  if (!userHasRole(roleCode, extraRoles, RoleCode.WORKER)) return false;
+  if (userHasRole(roleCode, extraRoles, RoleCode.ADMIN)) return false;
+  if (isProductionStageWorker(roleCode, extraRoles, allowedScreens)) {
+    return false;
+  }
+  return true;
+}
+
+/** Thợ 3D — chỉ các bước trước / in sáp, không phải quản lý văn phòng. */
+export function isIntake3dScoped(
+  roleCode: RoleCode,
+  extraRoles: readonly RoleCode[] = [],
+  allowedScreens: readonly string[] = [],
+): boolean {
+  if (userHasRole(roleCode, extraRoles, RoleCode.ADMIN)) return false;
+  if (
+    !userHasPermission(
+      roleCode,
+      extraRoles,
+      Permission.PRODUCTION_MODEL3D,
+      allowedScreens,
+    )
+  ) {
+    return false;
+  }
+  return !userHasPermission(
+    roleCode,
+    extraRoles,
+    Permission.SCREEN_DASHBOARD,
+    allowedScreens,
+  );
+}
+
+/** Thợ sáp — số liệu SP và cây thông trên Lệnh sản xuất. */
+export function isIntakeWaxScoped(
+  roleCode: RoleCode,
+  extraRoles: readonly RoleCode[] = [],
+  allowedScreens: readonly string[] = [],
+): boolean {
+  if (userHasRole(roleCode, extraRoles, RoleCode.ADMIN)) return false;
+  if (
+    !userHasPermission(
+      roleCode,
+      extraRoles,
+      Permission.PRODUCTION_WAX,
+      allowedScreens,
+    )
+  ) {
+    return false;
+  }
+  return !userHasPermission(
+    roleCode,
+    extraRoles,
+    Permission.SCREEN_DASHBOARD,
+    allowedScreens,
   );
 }
 
