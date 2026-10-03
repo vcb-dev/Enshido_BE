@@ -410,7 +410,7 @@ export class HandoverMaterialDto {
   @Matches(DECIMAL, { message: 'Trọng lượng xuất không hợp lệ' })
   weight?: string | null;
 
-  /** Đá: số viên — đơn vị không phải viên thì bắt buộc nhập. */
+  /** Đá: số viên theo nhãn gói — không bắt buộc (đá tấm / nhỏ chỉ cân TL). */
   @IsOptional()
   @Transform(emptyToNull)
   @Type(() => Number)
@@ -476,6 +476,31 @@ export class HandoverStageDto extends HandoverInfoDto {
   craftsmanUserId!: string;
 }
 
+/** Thủ kho nhận lại túi đá thợ trả giữa khâu Vào đá (đổi size) — cân cả túi. */
+export class EarlyStoneReturnDto {
+  @IsUUID('all', { message: 'Chọn mã đá thợ trả lại' })
+  materialId!: string;
+
+  @Transform(emptyToNull)
+  @Matches(DECIMAL, { message: 'TL túi đá trả lại không hợp lệ' })
+  weight!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
+}
+
+/** Khâu Vào đá: KCS cân gói đá thừa của một mã (đá rất nhỏ — cân cả gói, không đếm viên). */
+export class ReturnedStoneDto {
+  @IsUUID('all', { message: 'Chọn mã đá thừa' })
+  materialId!: string;
+
+  @Transform(emptyToNull)
+  @Matches(DECIMAL, { message: 'TL đá thừa không hợp lệ' })
+  weight!: string;
+}
+
 /** KCS nhận lại hàng từ thợ và cân lại bạc — người KCS là tài khoản đăng nhập. */
 export class ReturnStageDto {
   @IsDateString()
@@ -507,13 +532,24 @@ export class ReturnStageDto {
   @Matches(DECIMAL, { message: 'Trọng lượng đá không hợp lệ' })
   stoneWeight?: string | null;
 
-  /** Khâu Vào đá: số viên đá thợ trả lại (không gắn hết). */
+  /**
+   * Khâu Vào đá: số viên đá thợ trả lại (không gắn hết). Phiếu con có đá giữ chỗ thì chỉ dùng cho
+   * dòng cấp cũ không cân gói — dòng có cân gói thì gửi `returnedStones`.
+   */
   @IsOptional()
   @Transform(emptyToNull)
   @Type(() => Number)
   @IsInt()
   @Min(0)
   returnedStoneCount?: number | null;
+
+  /** Khâu Vào đá của phiếu con: TL gói đá thừa theo từng mã đã cấp; mã không gửi = không thừa. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
+  @Type(() => ReturnedStoneDto)
+  returnedStones?: ReturnedStoneDto[];
 
   /** Nguội / Vào đá: số lượng hàng lỗi KCS tách ra (hàng đạt = số nhận lại). */
   @IsOptional()
@@ -619,16 +655,21 @@ export class StoneHoldLineDto {
   @IsUUID('all', { message: 'Chọn mã đá cần cấp' })
   materialId!: string;
 
-  /** Số viên cấp cho thợ; số lượng theo đơn vị của mã tự suy ra (viên = số viên, ct / g theo TL). */
+  /**
+   * Số viên theo nhãn gói — chỉ bắt buộc với mã tính theo viên (tồn trừ theo viên). Mã tính theo
+   * ct / g để trống được: số lượng suy từ TL gói.
+   */
+  @IsOptional()
+  @Transform(emptyToNull)
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  stoneCount!: number;
+  stoneCount?: number | null;
 
-  @IsOptional()
+  /** TL cả gói đá (g) — bắt buộc, KCS cân gói thừa theo tỷ lệ TL này. */
   @Transform(emptyToNull)
-  @Matches(DECIMAL, { message: 'Trọng lượng đá không hợp lệ' })
-  weight?: string | null;
+  @Matches(DECIMAL, { message: 'Cân cả gói đá và nhập TL gói (g)' })
+  weight!: string;
 }
 
 /**

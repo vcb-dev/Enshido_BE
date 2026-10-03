@@ -148,6 +148,15 @@ export class UpdateStockDto {
   @Matches(DECIMAL, { message: 'Tồn đầu kỳ SL không hợp lệ' })
   openingQty?: string;
 
+  /**
+   * TL tồn kho vừa cân (g) — mã không tính theo gram (đá tính viên…). Gửi lên thì lấy làm mốc TL
+   * tồn từ lúc này; chuỗi rỗng = xoá mốc (chưa cân).
+   */
+  @IsOptional()
+  @Transform(({ value }) => (value === '' ? null : value))
+  @Matches(DECIMAL, { message: 'TL tồn (g) không hợp lệ' })
+  gramBase?: string | null;
+
   @IsOptional()
   @Matches(DECIMAL, { message: 'Đơn giá tồn không hợp lệ' })
   stockUnitPrice?: string;

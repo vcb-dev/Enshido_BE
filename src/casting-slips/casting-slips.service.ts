@@ -697,6 +697,14 @@ export class CastingSlipsService {
           data: { status: IntakeOrderStatus.WAIT_COOLING },
         });
         if (moved.count !== 1) throw new ConflictException(`Đơn ${intake.code} vừa đổi trạng thái`);
+        // Phôi cắt cho đơn ở phiếu đúc này — mốc hao hụt cắt, không lẫn với phôi phiếu bù.
+        await tx.castingSlipOrder.update({
+          where: { intakeOrderId: intake.id },
+          data: {
+            blankQty: blank.qty,
+            blankWeightGram: new Prisma.Decimal(blank.weightGram),
+          },
+        });
         // Đơn bù cho hàng lỗi: không sinh đơn A mới, thành phiếu con mới của đơn gốc.
         if (intake.reworkOfOrderId) {
           await this.attachReworkTicket(tx, intake, blank, cutAt, confirmedByName, actor);
@@ -1236,9 +1244,10 @@ function slipRowBase(row: SlipRow) {
     confirmedAt: row.confirmedAt?.toISOString() ?? null,
     confirmedByName: row.confirmedByName,
     restWeightGram: dec(row.restWeightGram),
+    // Hao hụt cắt = cây sau đúc − phôi các đơn (ghi theo phiếu lúc cắt) − phần còn lại về NVL.
     cutLossGram: row.restWeightGram != null && row.castTreeWeightGram != null
       ? row.castTreeWeightGram.sub(row.restWeightGram).sub(
-          row.orders.reduce((sum, line) => sum.add(line.intake.productionOrder?.blankWeight ?? 0), new Prisma.Decimal(0)),
+          row.orders.reduce((sum, line) => sum.add(line.blankWeightGram ?? 0), new Prisma.Decimal(0)),
         ).toString()
       : null,
     rejectedAt: row.rejectedAt?.toISOString() ?? null,

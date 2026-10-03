@@ -106,6 +106,21 @@ export const detailInclude = {
     orderBy: { requestedAt: 'asc' },
     include: materialRequestMaterial(),
   },
+  // Đá Vào đá đã gắn vào lần giao (cấp lúc chỉ định + thợ xin thêm) — KCS cân gói thừa theo mã.
+  stoneHolds: {
+    where: { stageEntryId: { not: null } },
+    orderBy: { createdAt: 'asc' },
+    include: {
+      material: {
+        select: {
+          id: true,
+          sku: true,
+          name: true,
+          unit: { select: { name: true } },
+        },
+      },
+    },
+  },
   statusLogs: { orderBy: { changedAt: 'desc' }, take: 80 },
   parent: {
     select: {
@@ -173,6 +188,7 @@ export function materialRequestMaterial() {
         warehouse: { select: { code: true, shortName: true } },
       },
     },
+    stoneHold: { select: { status: true } },
   } satisfies Prisma.ProductionMaterialRequestInclude;
 }
 
@@ -193,8 +209,16 @@ export type SubTicketState =
   | 'DEFECT'
   | 'FINISH';
 
-export function subTicketCode(orderCode: string, no: number) {
-  return `${orderCode}-${no}`;
+/**
+ * Mã phiếu. Đơn chỉ có một phiếu thì phiếu chính là đơn — mã là mã đơn; từ hai phiếu trở lên mới
+ * thêm số thứ tự (A002-1, A002-2…). Mã có số cũ vẫn mở được (detailByTicket nhận cả hai).
+ */
+export function subTicketCode(
+  orderCode: string,
+  no: number,
+  ticketCount?: number,
+) {
+  return ticketCount === 1 ? orderCode : `${orderCode}-${no}`;
 }
 
 /** Các lần giao khâu của một phiếu con, theo thứ tự giao. */
@@ -420,11 +444,12 @@ export function subTicketSummary(
   entries: readonly (StateEntry & Pick<StageEntry, 'craftsmanName'>)[],
   orderLast: ProductionStage | null = null,
   skipStone = false,
+  ticketCount?: number,
 ) {
   const { state, activeStage } = subTicketState(ticket, entries);
   const open = entries.find((entry) => !entry.returnedAt);
   return {
-    code: subTicketCode(orderCode, ticket.no),
+    code: subTicketCode(orderCode, ticket.no, ticketCount),
     no: ticket.no,
     qty: ticket.qty,
     note: ticket.note,
@@ -915,6 +940,7 @@ export function toDetail(order: OrderDetail) {
           entry,
           entry.subTicketId ? (ticketNo.get(entry.subTicketId) ?? null) : null,
           requestsOf(order, entry.id),
+          order.stoneHolds,
         ),
         /** Mốc TL giao tối đa khi sửa thông tin giao của khâu này. */
         handedSilverLimit: limit != null ? decStr(limit) : null,
@@ -929,6 +955,7 @@ export function toDetail(order: OrderDetail) {
           : null,
         order.stages.find((entry) => entry.id === request.stageEntryId)
           ?.stage ?? null,
+        order.subTickets.length,
       ),
       blankLeft: blankLimitFor(order, request.materialId),
     })),
@@ -951,7 +978,11 @@ export function toDetail(order: OrderDetail) {
                 ? decStr(parentAvailable.silver)
                 : null,
             handoverSilverLimit: decOrNull(handoverSilverLimit(order, null)),
-            materials: ticketMaterials(parentEntries, order.materialRequests),
+            materials: ticketMaterials(
+              parentEntries,
+              order.materialRequests,
+              order.stoneHolds,
+            ),
           }
         : null,
     subTickets: order.subTickets.map((ticket) => toSubTicket(order, ticket)),
@@ -972,7 +1003,11 @@ export function toDetail(order: OrderDetail) {
           ?.no ?? null,
     })),
     /** NVL xuất thêm + hao hụt của cả đơn, cộng mọi phiếu. */
-    materials: ticketMaterials(order.stages, order.materialRequests),
+    materials: ticketMaterials(
+      order.stages,
+      order.materialRequests,
+      order.stoneHolds,
+    ),
     statusLogs: order.statusLogs.map((log) => ({
       id: log.id,
       fromStatus: log.fromStatus,
@@ -992,7 +1027,7 @@ function toSubTicket(order: OrderDetail, ticket: SubTicket) {
   return {
     id: ticket.id,
     no: ticket.no,
-    code: subTicketCode(order.code, ticket.no),
+    code: subTicketCode(order.code, ticket.no, order.subTickets.length),
     qty: ticket.qty,
     note: ticket.note,
     state,
@@ -1008,7 +1043,7 @@ function toSubTicket(order: OrderDetail, ticket: SubTicket) {
       outcomeStatus(ticket),
     /** Đá thủ kho đã cấp (giữ chỗ) cho khâu Vào đá đang chờ thợ nhận. */
     heldStoneCount: (ticket.stoneHolds ?? []).reduce(
-      (sum, hold) => sum + hold.stoneCount,
+      (sum, hold) => sum + (hold.stoneCount ?? 0),
       0,
     ),
     heldStoneWeight: (ticket.stoneHolds ?? []).some((hold) => hold.weight != null)
@@ -1032,6 +1067,7 @@ function toSubTicket(order: OrderDetail, ticket: SubTicket) {
       order.materialRequests.filter(
         (request) => request.subTicketId === ticket.id,
       ),
+      order.stoneHolds,
     ),
     outcome: ticket.outcome,
     outcomeAt: ticket.outcomeAt?.toISOString() ?? null,
@@ -1062,15 +1098,134 @@ export function requestsOf(
 const dec = (value: Prisma.Decimal | null) =>
   value != null ? decStr(value) : null;
 
+export type StoneHold = OrderDetail['stoneHolds'][number];
+
+/**
+ * Đá giữ chỗ của một khâu Vào đá, gộp theo mã: SL / viên / TL gói đã cấp, TL gói thừa KCS cân,
+ * viên thừa quy đổi và viên đã xuất (sau khi thủ kho xác nhận).
+ */
+function stoneLinesOf(holds: readonly StoneHold[]) {
+  const lines = new Map<
+    string,
+    {
+      materialId: string;
+      sku: string | null;
+      name: string;
+      unit: string;
+      qty: Prisma.Decimal;
+      stoneCount: number | null;
+      weight: Prisma.Decimal | null;
+      earlyReturnedWeight: Prisma.Decimal | null;
+      earlyReturnedCount: number | null;
+      returnedWeight: Prisma.Decimal | null;
+      returnedCount: number | null;
+      usedCount: number | null;
+      extra: number;
+      done: boolean;
+    }
+  >();
+  const add = (a: Prisma.Decimal | null, b: Prisma.Decimal | null) =>
+    a != null && b != null ? a.add(b) : null;
+  /** Cộng số có thể rỗng: cả hai rỗng thì rỗng, một bên rỗng coi như 0. */
+  const sumDec = (a: Prisma.Decimal | null, b: Prisma.Decimal | null) =>
+    a == null && b == null ? null : (a ?? new Prisma.Decimal(0)).add(b ?? 0);
+  const sumInt = (a: number | null, b: number | null) =>
+    a == null && b == null ? null : (a ?? 0) + (b ?? 0);
+  for (const hold of holds) {
+    const done = hold.status !== 'HELD';
+    const line = lines.get(hold.materialId);
+    if (!line) {
+      lines.set(hold.materialId, {
+        materialId: hold.materialId,
+        sku: hold.material.sku,
+        name: hold.material.name,
+        unit: hold.material.unit.name,
+        qty: hold.qty,
+        stoneCount: hold.stoneCount,
+        weight: hold.weight,
+        earlyReturnedWeight: hold.earlyReturnedWeight,
+        earlyReturnedCount: hold.earlyReturnedCount,
+        returnedWeight: hold.returnedWeight,
+        returnedCount: hold.returnedCount,
+        usedCount: hold.usedCount,
+        extra: hold.requestId ? 1 : 0,
+        done,
+      });
+      continue;
+    }
+    line.qty = line.qty.add(hold.qty);
+    line.stoneCount = sumInt(line.stoneCount, hold.stoneCount);
+    line.weight = add(line.weight, hold.weight);
+    line.earlyReturnedWeight = sumDec(
+      line.earlyReturnedWeight,
+      hold.earlyReturnedWeight,
+    );
+    line.earlyReturnedCount = sumInt(
+      line.earlyReturnedCount,
+      hold.earlyReturnedCount,
+    );
+    line.returnedWeight = sumDec(line.returnedWeight, hold.returnedWeight);
+    line.returnedCount = sumInt(line.returnedCount, hold.returnedCount);
+    line.usedCount =
+      line.usedCount == null || hold.usedCount == null
+        ? null
+        : line.usedCount + hold.usedCount;
+    line.extra += hold.requestId ? 1 : 0;
+    line.done = line.done && done;
+  }
+  return [...lines.values()].map((line) => ({
+    materialId: line.materialId,
+    sku: line.sku,
+    name: line.name,
+    unit: line.unit,
+    /** SL / viên / TL gói còn đang giữ cho thợ (đã trừ túi trả giữa khâu). */
+    qty: decStr(line.qty),
+    stoneCount: line.stoneCount,
+    /** TL gói đang giữ (g); null = có dòng cấp cũ không cân gói. */
+    weight: dec(line.weight),
+    /** Túi thợ trả giữa khâu (đổi size) — đã nhả khỏi giữ chỗ. */
+    earlyReturnedWeight: dec(line.earlyReturnedWeight),
+    earlyReturnedCount: line.earlyReturnedCount,
+    returnedWeight: dec(line.returnedWeight),
+    returnedCount: line.returnedCount,
+    /** Viên đã xuất kho — chỉ có khi thủ kho đã xác nhận cả mã. */
+    usedCount: line.done ? line.usedCount : null,
+    /** Số lần thợ xin thêm mã này trong khâu. */
+    extraCount: line.extra,
+  }));
+}
+
+/** Tổng túi đá thợ trả giữa khâu của một lần giao — trừ khỏi đá đã phát khi tính hao hụt. */
+export function earlyReturnedOf(
+  holds: readonly {
+    stageEntryId: string | null;
+    earlyReturnedWeight: Prisma.Decimal | null;
+    earlyReturnedCount: number | null;
+  }[],
+  entryId: string,
+) {
+  const mine = holds.filter((hold) => hold.stageEntryId === entryId);
+  return {
+    weight: mine.reduce(
+      (sum, hold) => sum.add(hold.earlyReturnedWeight ?? 0),
+      new Prisma.Decimal(0),
+    ),
+    count: mine.reduce((sum, hold) => sum + (hold.earlyReturnedCount ?? 0), 0),
+  };
+}
+
 export function toStage(
   entry: StageEntry,
   subTicketNo: number | null = null,
   requests: readonly MaterialRequest[] = [],
+  holds: readonly StoneHold[] = [],
 ) {
   const issued = issuedOf(requests);
   const silverIn = silverInOf(entry, issued.metal);
   const silverLoss = silverLossOf(entry, issued.metal);
-  const stone = stoneLossOf(entry, issued.stones);
+  // Túi thợ trả giữa khâu (đổi size) không còn tính là đá đã phát cho thợ.
+  const early = earlyReturnedOf(holds, entry.id);
+  const stone = stoneLossOf(entry, issued.stones - early.count);
 
   return {
     id: entry.id,
@@ -1088,6 +1243,9 @@ export function toStage(
     issuedMetalWeight: dec(issued.metal),
     issuedStoneCount: issued.stones,
     issuedStoneWeight: dec(issued.stoneWeight),
+    /** Túi đá thợ trả giữa khâu (đổi size): TL / viên — đã trừ khỏi đá phát cho thợ. */
+    stoneReturnedEarlyWeight: early.weight.gt(0) ? decStr(early.weight) : null,
+    stoneReturnedEarlyCount: early.count || null,
     /** Từng dòng NVL đã xuất vào khâu — lúc giao hay thợ xin thêm, đủ để in lên phiếu. */
     issuedLines: requests
       .filter((request) => request.status === MaterialRequestStatus.ISSUED)
@@ -1121,6 +1279,10 @@ export function toStage(
     stoneCount: entry.stoneCount,
     stoneWeight: dec(entry.stoneWeight),
     returnedStoneCount: entry.returnedStoneCount,
+    /** Khâu Vào đá của phiếu con: đá giữ chỗ theo mã — KCS cân gói thừa từng mã. */
+    stoneLines: stoneLinesOf(
+      holds.filter((hold) => hold.stageEntryId === entry.id),
+    ),
     btpRecoveredWeight: dec(entry.btpRecoveredWeight),
     silverRecoveredWeight: dec(entry.silverRecoveredWeight),
     /** Nguội / Vào đá: KCS tách hàng lỗi (SL), S999 thừa; thủ kho xác nhận rồi mới nhập kho. */
@@ -1158,6 +1320,7 @@ export function toStage(
 export function ticketMaterials(
   entries: readonly StageEntry[],
   requests: readonly MaterialRequest[],
+  holds: readonly StoneHold[] = [],
 ) {
   const issuedRequests = requests.filter(
     (request) => request.status === MaterialRequestStatus.ISSUED,
@@ -1220,7 +1383,10 @@ export function ticketMaterials(
     if (base != null) returnedBase = (returnedBase ?? zero).add(base);
     const loss = silverLossOf(entry, issued.metal);
     if (loss != null) silverLoss = (silverLoss ?? zero).add(loss);
-    const stone = stoneLossOf(entry, issued.stones);
+    const stone = stoneLossOf(
+      entry,
+      issued.stones - earlyReturnedOf(holds, entry.id).count,
+    );
     stonesIn += stone.stonesIn ?? 0;
     if (stone.loss != null) stoneLoss = (stoneLoss ?? 0) + stone.loss;
   });
@@ -1258,13 +1424,16 @@ export function toMaterialRequest(
   orderCode: string,
   subTicketNo: number | null,
   stage: ProductionStage | null,
+  ticketCount?: number,
 ) {
   return {
     id: request.id,
     orderCode,
     subTicketNo,
     ticketCode:
-      subTicketNo != null ? subTicketCode(orderCode, subTicketNo) : orderCode,
+      subTicketNo != null
+        ? subTicketCode(orderCode, subTicketNo, ticketCount)
+        : orderCode,
     stageEntryId: request.stageEntryId,
     stage,
     status: request.status,
@@ -1287,6 +1456,8 @@ export function toMaterialRequest(
     issuedQty: dec(request.issuedQty),
     issuedWeight: dec(request.issuedWeight),
     issuedStoneCount: request.issuedStoneCount,
+    /** Đá xin thêm ở Vào đá: HELD đang giữ chỗ (chưa xuất) · CONSUMED đã xuất · RELEASED thừa hết. */
+    holdStatus: request.stoneHold?.status ?? null,
     handledByName: request.handledByName,
     handledAt: request.handledAt?.toISOString() ?? null,
     rejectReason: request.rejectReason,

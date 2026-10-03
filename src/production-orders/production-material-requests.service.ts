@@ -14,7 +14,10 @@ import {
 } from '@prisma/client';
 import { userHasRole } from '../auth/permissions';
 import type { AuthUserPayload } from '../auth/types';
-import { InventoryService } from '../inventory/inventory.service';
+import {
+  InventoryService,
+  snapshotFields,
+} from '../inventory/inventory.service';
 import { dbTable } from '../prisma/database-url';
 import { PrismaService } from '../prisma/prisma.service';
 import { decStr } from '../util/money';
@@ -39,6 +42,7 @@ import {
   toMaterialRequest,
   blankLimitFor,
 } from './order-detail';
+import { assertStoneFree, packWeightOf } from './stone-holds';
 
 const BTP_WAREHOUSE_CODE = 'btp-cho-vao-da';
 const NVL_WAREHOUSE_CODE = 'nvl-chinh';
@@ -98,6 +102,16 @@ type HandoverEntry = {
   subTicketId: string | null;
 };
 
+/** Một dòng NVL kho xuất / cấp cho khâu. */
+type IssueLine = {
+  materialId: string;
+  kind: MaterialRequestKind;
+  qty: Prisma.Decimal;
+  weight: Prisma.Decimal | null;
+  stoneCount: number | null;
+  note: string;
+};
+
 /** Ngày hôm nay theo giờ Việt Nam — ngày trên phiếu xuất. */
 export function todayVn() {
   const vn = new Date(Date.now() + 7 * 60 * 60 * 1000);
@@ -142,6 +156,7 @@ const listInclude = {
     select: {
       code: true,
       description: true,
+      _count: { select: { subTickets: true } },
       blankQty: true,
       blankWeight: true,
       blankMaterialId: true,
@@ -276,14 +291,33 @@ export class ProductionMaterialRequestsService {
           'Thợ không tự duyệt xuất cho mình — nhờ kho / người giao cân và xuất',
         );
       }
-      const issued = await this.issueStock(tx, order, entry, actor, {
+      const line: IssueLine = {
         materialId: request.materialId,
         kind: dto.kind,
         qty,
         weight: decimalOrNull(dto.weight),
         stoneCount: dto.stoneCount ?? null,
         note: `thợ ${request.requestedByName} xin`,
-      });
+      };
+      const { subTicketId } = entry;
+      // Đá ở Vào đá của phiếu con chỉ giữ chỗ; phiếu mẹ không có bước thủ kho xác nhận nên xuất luôn.
+      const holds =
+        dto.kind === MaterialRequestKind.STONE &&
+        entry.stage === ProductionStage.STONE_SETTING &&
+        subTicketId;
+      const issued = holds
+        ? {
+            ...(await this.holdStone(
+              tx,
+              order,
+              { ...entry, subTicketId },
+              actor,
+              id,
+              line,
+            )),
+            outboundId: null,
+          }
+        : await this.issueStock(tx, order, entry, actor, line);
       await tx.productionMaterialRequest.update({
         where: { id },
         data: {
@@ -385,14 +419,99 @@ export class ProductionMaterialRequestsService {
     order: OrderDetail,
     entry: HandoverEntry,
     actor: AuthUserPayload,
-    line: {
-      materialId: string;
-      kind: MaterialRequestKind;
-      qty: Prisma.Decimal;
-      weight: Prisma.Decimal | null;
-      stoneCount: number | null;
-      note: string;
-    },
+    line: IssueLine,
+  ) {
+    const { material, stoneCount } = await this.checkLine(
+      tx,
+      order,
+      entry,
+      line,
+    );
+    const no = ticketNoOf(order, entry.subTicketId);
+    const label =
+      no != null
+        ? subTicketCode(order.code, no, order.subTickets.length)
+        : order.code;
+    await tx.$executeRaw`SELECT set_config('lock_timeout', '2000', true)`;
+    // Đá xuất ngay (phiếu mẹ) không được lấy vào phần đang giữ chỗ cho phiếu Vào đá khác.
+    if (line.kind === MaterialRequestKind.STONE) {
+      await assertStoneFree(tx, this.inventory, material, line.qty);
+    }
+    const outbound = await this.inventory.issueStockForOrder(tx, {
+      orderId: order.id,
+      orderCode: order.code,
+      material,
+      qty: line.qty,
+      gramQty: line.weight,
+      issuedAt: todayVn(),
+      issuedBy: actorName(actor),
+      note: `Xuất cho phiếu ${label} · khâu ${STAGE_LABEL[entry.stage]} (${line.note})`,
+    });
+    return {
+      outboundId: outbound?.id ?? null,
+      weight: line.weight,
+      stoneCount,
+      warehouseCode: material.warehouse.code,
+    };
+  }
+
+  /**
+   * Đá thợ xin thêm ở Vào đá của phiếu con: chỉ giữ chỗ trong tồn như đá cấp lúc chỉ định, chưa
+   * xuất kho. KCS cân gói thừa theo mã, thủ kho xác nhận thì mới xuất phần đã dùng.
+   */
+  private async holdStone(
+    tx: Prisma.TransactionClient,
+    order: OrderDetail,
+    entry: HandoverEntry & { subTicketId: string },
+    actor: AuthUserPayload,
+    requestId: string,
+    line: IssueLine,
+  ) {
+    const weight = packWeightOf(line.weight ? decStr(line.weight) : null);
+    const { material, stoneCount } = await this.checkLine(tx, order, entry, {
+      ...line,
+      weight,
+    });
+    if (material.warehouse.code !== NVL_WAREHOUSE_CODE) {
+      throw new BadRequestException(
+        'Đá cấp cho khâu Vào đá phải lấy ở kho NVL chính',
+      );
+    }
+    await tx.$executeRaw`SELECT set_config('lock_timeout', '2000', true)`;
+    await assertStoneFree(tx, this.inventory, material, line.qty);
+    // Phía kho: phiếu xuất nháp (chưa trừ tồn, trừ khả dụng). Phía sản xuất: chi tiết cấp đá.
+    const no = ticketNoOf(order, entry.subTicketId);
+    const draft = await this.inventory.createOutboundDraft(tx, {
+      material,
+      qty: line.qty,
+      gramQty: weight,
+      productionOrderId: order.id,
+      note: `Đá phiếu ${no != null ? subTicketCode(order.code, no, order.subTickets.length) : order.code} · khâu Vào đá — ${line.note}`,
+      createdByName: actorName(actor),
+    });
+    await tx.productionStoneHold.create({
+      data: {
+        orderId: order.id,
+        subTicketId: entry.subTicketId,
+        materialId: material.id,
+        requestId,
+        draftId: draft.id,
+        stageEntryId: entry.id,
+        qty: line.qty,
+        stoneCount,
+        weight,
+        createdByName: actorName(actor),
+      },
+    });
+    return { weight, stoneCount };
+  }
+
+  /** Kiểm tra mã theo kho của khâu, giới hạn phôi, số viên đá — dùng chung cho xuất và giữ chỗ. */
+  private async checkLine(
+    tx: Prisma.TransactionClient,
+    order: OrderDetail,
+    entry: HandoverEntry,
+    line: IssueLine,
   ) {
     if (
       line.kind === MaterialRequestKind.STONE &&
@@ -460,6 +579,8 @@ export class ProductionMaterialRequestsService {
         );
       }
     }
+    // Đá: số viên không bắt buộc (đá tấm / nhỏ cấp theo túi chỉ cân TL). Mã tính theo viên thì
+    // số lượng xuất chính là số viên.
     let stoneCount: number | null = null;
     if (line.kind === MaterialRequestKind.STONE) {
       if (line.stoneCount != null) {
@@ -469,30 +590,9 @@ export class ProductionMaterialRequestsService {
         line.qty.isInteger()
       ) {
         stoneCount = line.qty.toNumber();
-      } else {
-        throw new BadRequestException(
-          `${material.name} tính theo ${material.unit.name} — nhập số viên đá xuất để còn đối chiếu đá mất`,
-        );
       }
     }
-    const no = ticketNoOf(order, entry.subTicketId);
-    const label = no != null ? subTicketCode(order.code, no) : order.code;
-    await tx.$executeRaw`SELECT set_config('lock_timeout', '2000', true)`;
-    const outbound = await this.inventory.issueStockForOrder(tx, {
-      orderId: order.id,
-      orderCode: order.code,
-      material,
-      qty: line.qty,
-      issuedAt: todayVn(),
-      issuedBy: actorName(actor),
-      note: `Xuất cho phiếu ${label} · khâu ${STAGE_LABEL[entry.stage]} (${line.note})`,
-    });
-    return {
-      outboundId: outbound?.id ?? null,
-      weight: line.weight,
-      stoneCount,
-      warehouseCode: material.warehouse.code,
-    };
+    return { material, stoneCount };
   }
 
   async reject(
@@ -543,17 +643,22 @@ export class ProductionMaterialRequestsService {
       orderBy: { requestedAt: pending ? 'asc' : 'desc' },
       take: LIST_LIMIT,
     });
+    const snapshot = await this.inventory.stockSnapshot([
+      ...new Set(rows.map((row) => row.materialId)),
+    ]);
     return rows.map((row) => ({
       ...toMaterialRequest(
         row,
         row.order.code,
         row.subTicket?.no ?? null,
         row.stageEntry.stage,
+        row.order._count.subTickets,
       ),
       orderDescription: row.order.description,
       craftsmanName: row.stageEntry.craftsmanName,
       suggestedKind: suggestKind(row.material),
       stockQty: row.material.balance ? decStr(row.material.balance.qty) : '0',
+      ...snapshotFields(snapshot.get(row.materialId)),
       blankLeft: blankLimitFor(row.order, row.materialId),
     }));
   }
@@ -650,7 +755,7 @@ function openEntryOf(order: OrderDetail, no: number | null) {
     return { entry, label: order.code };
   }
   const ticket = requireSubTicket(order, no);
-  const label = subTicketCode(order.code, ticket.no);
+  const label = subTicketCode(order.code, ticket.no, order.subTickets.length);
   if (ticket.outcome) {
     throw new BadRequestException(`Phiếu ${label} đã chốt kết cục`);
   }

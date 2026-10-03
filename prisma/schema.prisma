@@ -72,16 +72,17 @@ model Warehouse {
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
-  parent         Warehouse?          @relation("WarehouseTree", fields: [parentId], references: [id])
-  children       Warehouse[]         @relation("WarehouseTree")
+  parent         Warehouse?           @relation("WarehouseTree", fields: [parentId], references: [id])
+  children       Warehouse[]          @relation("WarehouseTree")
   materials      Material[]
   balances       StockBalance[]
   inbounds       StockInbound[]
   outbounds      StockOutbound[]
-  destOutbounds  StockOutbound[]     @relation("OutboundTransferDest")
-  sourceInbounds StockInbound[]      @relation("InboundTransferSource")
+  destOutbounds  StockOutbound[]      @relation("OutboundTransferDest")
+  sourceInbounds StockInbound[]       @relation("InboundTransferSource")
   btpItems       BtpWaitingItem[]
   locations      WarehouseLocation[]
+  outboundDrafts StockOutboundDraft[]
 
   @@index([parentId, sortOrder])
   @@map("warehouses")
@@ -114,10 +115,11 @@ model Unit {
   name      String
   sortOrder Int    @default(0) @map("sort_order")
 
-  materials Material[]
-  inbounds  StockInbound[]
-  outbounds StockOutbound[]
-  btpItems  BtpWaitingItem[]
+  materials      Material[]
+  inbounds       StockInbound[]
+  outbounds      StockOutbound[]
+  btpItems       BtpWaitingItem[]
+  outboundDrafts StockOutboundDraft[]
 
   @@map("units")
 }
@@ -234,6 +236,8 @@ model Material {
   nvlOrders         ProductionOrder[]           @relation("OrderNvlMaterial")
   bomLines          ProductionOrderBomLine[]
   materialRequests  ProductionMaterialRequest[]
+  stoneHolds        ProductionStoneHold[]
+  outboundDrafts    StockOutboundDraft[]
   castingOrderLines CastingOrderLine[]
 
   @@unique([warehouseId, sku])
@@ -284,6 +288,10 @@ model StockBalance {
   /// Null = chưa kiểm kê. Chênh lệch = countedQty − qty, tính động chứ không lưu.
   countedQty     Decimal?  @map("counted_qty") @db.Decimal(18, 4)
   countedAt      DateTime? @map("counted_at") @db.Date
+  /// Mã không tính theo gram (đá tính viên…): TL tồn kho cân gần nhất (g) và lúc cân. TL tồn =
+  /// số này + TL phiếu nhập − TL phiếu xuất tạo sau lúc cân. Null = kho chưa cân lần nào.
+  gramBase       Decimal?  @map("gram_base") @db.Decimal(18, 4)
+  gramBaseAt     DateTime? @map("gram_base_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")
 
   warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
@@ -399,6 +407,8 @@ model StockOutbound {
   productionOrder ProductionOrder?           @relation(fields: [productionOrderId], references: [id], onDelete: Restrict)
   /// Phiếu xuất tạo lúc duyệt yêu cầu xuất NVL của thợ.
   materialRequest ProductionMaterialRequest?
+  /// Phiếu xuất nháp (đá Vào đá) đã chuyển thành phiếu này lúc thủ kho xác nhận.
+  fromDraft       StockOutboundDraft?
 
   @@unique([warehouseId, sortOrder])
   @@index([warehouseId, issuedAt])
@@ -407,6 +417,58 @@ model StockOutbound {
   @@index([materialId], map: "stock_outbounds_material_id_idx")
   @@index([productionOrderId])
   @@map("stock_outbounds")
+}
+
+enum OutboundDraftStatus {
+  /// Đang giữ chỗ — chưa trừ tồn, chỉ trừ vào khả dụng.
+  DRAFT
+  /// Thủ kho đã xác nhận — đã thành phiếu xuất thật (`postedOutboundId`).
+  POSTED
+  /// Huỷ: thợ trả hết / thừa hết / huỷ khâu — không xuất gì.
+  VOID
+}
+
+/// Phiếu xuất nháp kho NVL — đá cấp cho khâu Vào đá của phiếu con (lúc chỉ định thợ hoặc thợ xin
+/// thêm). Chưa trừ tồn, chỉ trừ vào khả dụng = tồn thực − phiếu nháp đang mở. Thợ trả túi giữa
+/// khâu thì SL / TL giảm; thủ kho xác nhận sau KCS thì thành phiếu xuất thật với phần đã dùng.
+/// Chi tiết sản xuất (số viên, TL thừa, trả giữa khâu) nằm ở ProductionStoneHold gắn 1-1.
+model StockOutboundDraft {
+  id                String              @id @default(uuid()) @db.Uuid
+  warehouseId       String              @map("warehouse_id") @db.Uuid
+  materialId        String              @map("material_id") @db.Uuid
+  /// STT phiếu nháp trong kho.
+  sortOrder         Int                 @map("sort_order")
+  issuedAt          DateTime            @default(now()) @map("issued_at")
+  name              String
+  sku               String?
+  unitId            String?             @map("unit_id") @db.Uuid
+  unitName          String              @map("unit_name")
+  /// SL / TL gói đang giữ (đã trừ phần thợ trả giữa khâu).
+  qty               Decimal             @db.Decimal(18, 4)
+  gramQty           Decimal?            @map("gram_qty") @db.Decimal(18, 4)
+  status            OutboundDraftStatus @default(DRAFT)
+  note              String?
+  createdByName     String              @map("created_by_name")
+  productionOrderId String              @map("production_order_id") @db.Uuid
+  /// Phiếu xuất thật lúc thủ kho xác nhận (SL / TL đã dùng).
+  postedOutboundId  String?             @unique @map("posted_outbound_id") @db.Uuid
+  closedAt          DateTime?           @map("closed_at")
+  closedByName      String?             @map("closed_by_name")
+  createdAt         DateTime            @default(now()) @map("created_at")
+  updatedAt         DateTime            @updatedAt @map("updated_at")
+
+  warehouse       Warehouse            @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  material        Material             @relation(fields: [materialId], references: [id], onDelete: Restrict)
+  unit            Unit?                @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  productionOrder ProductionOrder      @relation(fields: [productionOrderId], references: [id], onDelete: Cascade)
+  postedOutbound  StockOutbound?       @relation(fields: [postedOutboundId], references: [id], onDelete: SetNull)
+  stoneHold       ProductionStoneHold?
+
+  @@unique([warehouseId, sortOrder])
+  @@index([materialId, status])
+  @@index([warehouseId, status])
+  @@index([productionOrderId])
+  @@map("stock_outbound_drafts")
 }
 
 /// Sổ Kho BTP — theo dõi dòng, không nhập / xuất / tồn.
@@ -589,6 +651,7 @@ model ProductionOrder {
   materialRequests ProductionMaterialRequest[]
   stoneHolds       ProductionStoneHold[]
   outbounds        StockOutbound[]
+  outboundDrafts   StockOutboundDraft[]
   costs            ProductionOrderCost[]
   receipt          FinishedGoodsReceipt?
   shipmentLines    ShipmentLine[]
@@ -787,27 +850,45 @@ model ProductionSubTicket {
 /// Đá thủ kho cấp cho một phiếu con ở khâu Vào đá: chỉ GIỮ CHỖ trong tồn (không cấp trùng cho
 /// đơn khác), chưa xuất kho. Thủ kho xác nhận sau KCS thì xuất = số cấp − đá thừa trả lại.
 model ProductionStoneHold {
-  id            String   @id @default(uuid()) @db.Uuid
-  orderId       String   @map("order_id") @db.Uuid
-  subTicketId   String   @map("sub_ticket_id") @db.Uuid
-  materialId    String   @map("material_id") @db.Uuid
-  /// Số lượng theo đơn vị của mã (viên / ct / g).
-  qty           Decimal  @db.Decimal(18, 4)
-  /// Số viên — bắt buộc để chia đá thừa theo viên khi xuất.
-  stoneCount    Int      @map("stone_count")
-  weight        Decimal? @db.Decimal(18, 4)
+  id                  String   @id @default(uuid()) @db.Uuid
+  orderId             String   @map("order_id") @db.Uuid
+  subTicketId         String   @map("sub_ticket_id") @db.Uuid
+  materialId          String   @map("material_id") @db.Uuid
+  /// Yêu cầu xin thêm của thợ; null = đá cấp lúc chỉ định thợ.
+  requestId           String?  @unique @map("request_id") @db.Uuid
+  /// Phiếu xuất nháp kho của dòng cấp này.
+  draftId             String?  @unique @map("draft_id") @db.Uuid
+  /// Số lượng theo đơn vị của mã (viên / ct / g) còn đang giữ — trừ phần thợ đã trả giữa khâu.
+  qty                 Decimal  @db.Decimal(18, 4)
+  /// Số viên theo nhãn gói (còn đang giữ); null = đá tính theo ct / g không đếm viên.
+  stoneCount          Int?     @map("stone_count")
+  /// TL gói đá đang giữ (g) — mốc chia tỷ lệ khi KCS cân gói thừa. Dòng cũ có thể null.
+  weight              Decimal? @db.Decimal(18, 4)
+  /// Thợ trả túi giữa khâu (đổi size): tổng TL / SL / viên đã nhận lại — đã nhả khỏi giữ chỗ.
+  /// Số cấp ban đầu = phần đang giữ + phần này.
+  earlyReturnedWeight Decimal? @map("early_returned_weight") @db.Decimal(18, 4)
+  earlyReturnedQty    Decimal? @map("early_returned_qty") @db.Decimal(18, 4)
+  earlyReturnedCount  Int?     @map("early_returned_count")
   /// HELD đang giữ · CONSUMED đã xuất kho (có `outboundId`) · RELEASED đã nhả.
-  status        String   @default("HELD")
-  stageEntryId  String?  @map("stage_entry_id") @db.Uuid
-  outboundId    String?  @map("outbound_id") @db.Uuid
-  /// Số viên đã xuất kho / thừa trả lại lúc xác nhận.
-  usedCount     Int?     @map("used_count")
-  createdByName String   @map("created_by_name")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
+  status              String   @default("HELD")
+  stageEntryId        String?  @map("stage_entry_id") @db.Uuid
+  outboundId          String?  @map("outbound_id") @db.Uuid
+  /// KCS cân gói đá thừa của dòng này (g); null = KCS chưa nhận lại / dòng cũ không cân.
+  returnedWeight      Decimal? @map("returned_weight") @db.Decimal(18, 4)
+  /// Số viên thừa quy theo tỷ lệ TL (hoặc KCS đếm với dòng cũ không cân) — ghi lúc KCS nhận lại.
+  returnedCount       Int?     @map("returned_count")
+  /// Số viên đã xuất kho lúc thủ kho xác nhận.
+  usedCount           Int?     @map("used_count")
+  createdByName       String   @map("created_by_name")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
 
-  order     ProductionOrder     @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  subTicket ProductionSubTicket @relation(fields: [subTicketId], references: [id], onDelete: Cascade)
+  order     ProductionOrder            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  subTicket ProductionSubTicket        @relation(fields: [subTicketId], references: [id], onDelete: Cascade)
+  request   ProductionMaterialRequest? @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  /// Phiếu xuất nháp kho tương ứng (SL / TL đang giữ, trạng thái phía kho).
+  draft     StockOutboundDraft?        @relation(fields: [draftId], references: [id], onDelete: SetNull)
+  material  Material                   @relation(fields: [materialId], references: [id], onDelete: Restrict)
 
   @@index([materialId, status])
   @@index([subTicketId, status])
@@ -857,6 +938,8 @@ model ProductionMaterialRequest {
   stageEntry ProductionStageEntry @relation(fields: [stageEntryId], references: [id], onDelete: Cascade)
   material   Material             @relation(fields: [materialId], references: [id], onDelete: Restrict)
   outbound   StockOutbound?       @relation(fields: [outboundId], references: [id], onDelete: SetNull)
+  /// Đá xin thêm ở Vào đá của phiếu con: giữ chỗ, xuất khi thủ kho xác nhận sau KCS.
+  stoneHold  ProductionStoneHold?
 
   @@index([orderId, createdAt])
   @@index([subTicketId])
@@ -1224,16 +1307,21 @@ model CastingSlip {
   @@index([slipDate])
   @@index([status])
   @@index([startedByUserId])
+  @@index([redoOfSlipId])
   @@map("casting_slips")
 }
 
 /// Một đơn trong lô đúc. TL sáp chụp lúc lên phiếu, không đổi theo đơn sau này.
 model CastingSlipOrder {
-  id            String  @id @default(uuid()) @db.Uuid
-  slipId        String  @map("slip_id") @db.Uuid
-  intakeOrderId String  @unique @map("intake_order_id") @db.Uuid
-  sortOrder     Int     @default(0) @map("sort_order")
-  waxWeightGram Decimal @map("wax_weight_gram") @db.Decimal(18, 4)
+  id              String   @id @default(uuid()) @db.Uuid
+  slipId          String   @map("slip_id") @db.Uuid
+  intakeOrderId   String   @unique @map("intake_order_id") @db.Uuid
+  sortOrder       Int      @default(0) @map("sort_order")
+  waxWeightGram   Decimal  @map("wax_weight_gram") @db.Decimal(18, 4)
+  /// Phôi cắt ra cho đơn này ở lần cắt cây của phiếu đúc (SL / TL) — mốc tính hao hụt cắt. Lưu
+  /// riêng theo phiếu vì phôi đơn bù cộng dồn vào lệnh gốc, lấy từ lệnh sẽ lẫn giữa các phiếu.
+  blankQty        Int?     @map("blank_qty")
+  blankWeightGram Decimal? @map("blank_weight_gram") @db.Decimal(18, 4)
 
   slip   CastingSlip @relation(fields: [slipId], references: [id], onDelete: Cascade)
   intake IntakeOrder @relation(fields: [intakeOrderId], references: [id], onDelete: Restrict)

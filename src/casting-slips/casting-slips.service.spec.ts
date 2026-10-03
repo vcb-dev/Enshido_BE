@@ -56,6 +56,7 @@ function setup(treeWeight: number) {
       update: jest.fn(),
     },
     intakeOrder: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+    castingSlipOrder: { update: jest.fn().mockResolvedValue({}) },
     productionOrder: {
       findFirst: jest.fn().mockResolvedValue({ seq: 42 }),
       create: jest
@@ -124,6 +125,12 @@ describe('xác nhận đúc → Nguội', () => {
       }),
     );
     expect(inventory.createAutoInbound).toHaveBeenCalledTimes(3);
+    // Phôi ghi theo dòng phiếu đúc — mốc hao hụt cắt, không lẫn phôi phiếu bù.
+    expect(tx.castingSlipOrder.update).toHaveBeenCalledTimes(2);
+    expect(tx.castingSlipOrder.update).toHaveBeenNthCalledWith(1, {
+      where: { intakeOrderId: '1' },
+      data: { blankQty: 2, blankWeightGram: new Prisma.Decimal(4) },
+    });
     expect(tx.intakeOrder.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: { status: 'WAIT_COOLING' },

@@ -16,7 +16,10 @@ import {
 } from '@prisma/client';
 import { Permission } from '../auth/permissions';
 import type { AuthUserPayload } from '../auth/types';
-import { InventoryService } from '../inventory/inventory.service';
+import {
+  InventoryService,
+  snapshotFields,
+} from '../inventory/inventory.service';
 import { dbTable } from '../prisma/database-url';
 import { PrismaService } from '../prisma/prisma.service';
 import { recordEditLog } from '../edit-logs/edit-log';
@@ -46,6 +49,7 @@ import {
   handedStoneOf,
   IN_STAGE_STATUSES,
   deriveOrderStatus,
+  earlyReturnedOf,
   KEEPER_CONFIRM_STAGES,
   LAST_STAGE,
   lastStageDone,
@@ -69,6 +73,7 @@ import {
   ymd,
   assertHandedSilverWithin,
 } from './order-detail';
+import { planStoneReturn } from './stone-holds';
 
 const S = ProductionStatus;
 
@@ -391,6 +396,7 @@ export class ProductionOrdersService {
               row.stages.filter((entry) => entry.subTicketId === ticket.id),
               parentEntries[parentEntries.length - 1]?.stage ?? null,
               row.stoneCount === 0,
+              row.subTickets.length,
             ),
           ),
         };
@@ -769,12 +775,16 @@ export class ProductionOrdersService {
         },
       },
     });
+    const snapshot = await this.inventory.stockSnapshot(
+      rows.map((row) => row.id),
+    );
     return rows.map((row) => ({
       id: row.id,
       sku: row.sku,
       name: row.name,
       unit: row.unit.name,
       qty: decStr(row.balance?.qty),
+      ...snapshotFields(snapshot.get(row.id)),
       shape: row.shape?.name ?? null,
       color: row.color?.name ?? null,
       materialType: row.materialType?.name ?? null,
@@ -983,7 +993,7 @@ export class ProductionOrdersService {
         const entries = entriesOf(order, ticket.id);
         const { state, activeStage } = subTicketState(ticket, entries);
         return {
-          code: subTicketCode(order.code, ticket.no),
+          code: subTicketCode(order.code, ticket.no, order.subTickets.length),
           no: ticket.no,
           qty: ticket.qty,
           state,
@@ -1647,22 +1657,52 @@ export class ProductionOrdersService {
       !isStoneStage &&
       (dto.stoneCount != null ||
         dto.stoneWeight != null ||
-        dto.returnedStoneCount != null)
+        dto.returnedStoneCount != null ||
+        dto.returnedStones?.length)
     ) {
       throw new BadRequestException(
         `Chỉ khâu ${STAGE_LABEL[ProductionStage.STONE_SETTING]} mới ghi đá gắn thêm`,
       );
     }
-    // Đá phát cho thợ = đá giao lúc nhận việc + đá xuất thêm theo yêu cầu.
+    // Đá giữ chỗ của khâu (cấp lúc chỉ định + thợ xin thêm): KCS cân gói thừa từng mã, hệ thống
+    // quy ra viên theo tỷ lệ TL — không ai đếm từng viên. Thủ kho xác nhận mới xuất phần đã dùng.
+    const holds = isStoneStage
+      ? order.stoneHolds.filter(
+          (hold) => hold.stageEntryId === entry.id && hold.status === 'HELD',
+        )
+      : [];
+    if (holds.length === 0 && dto.returnedStones?.length) {
+      throw new BadRequestException(
+        'Khâu này không có đá giữ chỗ — không nhập TL gói đá thừa được',
+      );
+    }
+    const stonePlan =
+      holds.length > 0
+        ? planStoneReturn(
+            holds,
+            dto.returnedStones ?? [],
+            dto.returnedStoneCount ?? null,
+          )
+        : null;
+    // Đá phát cho thợ = đá giao lúc nhận việc + đá xuất thêm theo yêu cầu − túi thợ trả giữa
+    // khâu (đổi size).
+    const early = earlyReturnedOf(order.stoneHolds, entry.id);
     const stonesHanded =
       entry.handedStoneCount != null || issued.stones > 0
-        ? (entry.handedStoneCount ?? 0) + issued.stones
+        ? Math.max(
+            0,
+            (entry.handedStoneCount ?? 0) + issued.stones - early.count,
+          )
         : null;
-    const stoneWeightHanded = stoneWeightHandedOf(entry, requests);
+    const handedStoneWeight = stoneWeightHandedOf(entry, requests);
+    const stoneWeightHanded =
+      handedStoneWeight != null
+        ? Prisma.Decimal.max(handedStoneWeight.sub(early.weight), 0)
+        : null;
     // Sau khâu Vào đá, đá và bạc đã thành một BTP — KCS chỉ cân lại cả cụm, không tách đá.
     // Không gửi số đá gắn thì coi như gắn hết số đã phát để mốc cân vẫn là bạc giao + đá.
     const returnedStoneCount = isStoneStage
-      ? (dto.returnedStoneCount ?? null)
+      ? (stonePlan?.returnedStoneCount ?? dto.returnedStoneCount ?? null)
       : null;
     const stoneCount = isStoneStage
       ? (dto.stoneCount ??
@@ -1672,10 +1712,24 @@ export class ProductionOrdersService {
       : null;
     // Không gửi TL đá gắn thì chia theo số viên: phát 250 viên nặng X g, gắn 2 viên → X × 2/250.
     // Lấy nguyên TL đá đã phát là sai khi thợ trả lại đá — mốc cân bị đội lên, che mất hao hụt bạc.
+    // Đá giữ chỗ đều cân gói thì TL đá gắn = TL đã phát − TL gói thừa KCS cân, khỏi chia theo viên.
+    const weighedHolds =
+      stonePlan != null &&
+      holds.every((hold) => hold.weight != null && hold.weight.gt(0));
+    const prorate =
+      stoneWeightHanded != null &&
+      stonesHanded != null &&
+      stonesHanded > 0 &&
+      stoneCount != null;
     const proratedStoneWeight =
-      stoneWeightHanded != null && stonesHanded != null && stonesHanded > 0 && stoneCount != null
-        ? stoneWeightHanded.mul(stoneCount).div(stonesHanded).toDecimalPlaces(4)
-        : stoneWeightHanded;
+      weighedHolds && stoneWeightHanded != null
+        ? Prisma.Decimal.max(stoneWeightHanded.sub(stonePlan.returnedWeight), 0)
+        : prorate
+          ? stoneWeightHanded
+              .mul(stoneCount)
+              .div(stonesHanded)
+              .toDecimalPlaces(4)
+          : stoneWeightHanded;
     // Hao hụt Vào đá theo mô tả luồng: bạc trước vào đá + TL đá trên 3D − TL sản phẩm thực tế.
     // Đơn có khai đá 3D thì lấy TL đá 3D chia theo số hàng giao (khi KCS không nhập tay).
     const stone3dWeight =
@@ -1767,6 +1821,16 @@ export class ProductionOrdersService {
             },
           },
         },
+        ...(stonePlan
+          ? {
+              stoneHolds: {
+                update: stonePlan.updates.map(({ id, ...data }) => ({
+                  where: { id },
+                  data,
+                })),
+              },
+            }
+          : {}),
         activityLogs: {
           create: activity(actor, ACTIVITY.STAGE_RETURN, {
             orderCode: order.code,
@@ -1780,6 +1844,9 @@ export class ProductionOrdersService {
               stoneCount,
               stoneWeight,
               returnedStoneCount,
+              returnedStones: dto.returnedStones?.length
+                ? dto.returnedStones
+                : undefined,
               btpRecoveredWeight: btpRecovered,
               silverRecoveredWeight: silverRecovered,
               laborCost: decimalOrNull(dto.laborCost),
@@ -1852,7 +1919,7 @@ export class ProductionOrdersService {
     const pending = order.subTickets.find((t) => t.pendingStage);
     if (pending?.pendingStage) {
       throw new BadRequestException(
-        `Phiếu ${subTicketCode(order.code, pending.no)} đang mở khâu ${STAGE_LABEL[pending.pendingStage]} — huỷ mở khâu trước khi hoàn thiện`,
+        `Phiếu ${subTicketCode(order.code, pending.no, order.subTickets.length)} đang mở khâu ${STAGE_LABEL[pending.pendingStage]} — huỷ mở khâu trước khi hoàn thiện`,
       );
     }
     const entries = orderEntries(order);
@@ -1994,12 +2061,12 @@ export class ProductionOrdersService {
     const ticket = order.subTickets.find((t) => t.id === entry.subTicketId);
     if (ticket?.outcome) {
       throw new BadRequestException(
-        `Phiếu ${subTicketCode(order.code, ticket.no)} đã chốt lỗi / hoàn thiện — gỡ kết cục phiếu con trước khi gỡ nhận lại`,
+        `Phiếu ${subTicketCode(order.code, ticket.no, order.subTickets.length)} đã chốt lỗi / hoàn thiện — gỡ kết cục phiếu con trước khi gỡ nhận lại`,
       );
     }
     if (ticket?.pendingStage) {
       throw new BadRequestException(
-        `Phiếu ${subTicketCode(order.code, ticket.no)} đã mở khâu ${STAGE_LABEL[ticket.pendingStage]} — huỷ mở khâu trước khi gỡ nhận lại`,
+        `Phiếu ${subTicketCode(order.code, ticket.no, order.subTickets.length)} đã mở khâu ${STAGE_LABEL[ticket.pendingStage]} — huỷ mở khâu trước khi gỡ nhận lại`,
       );
     }
     if (order.status === S.DELIVERED) {
@@ -2662,6 +2729,7 @@ function asCreatedDetail(
     subTickets: [],
     reworkIntakes: [],
     materialRequests: [],
+    stoneHolds: [],
     parent: null,
     children: [],
     receipt: null,

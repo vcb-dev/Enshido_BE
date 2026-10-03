@@ -8,6 +8,7 @@ import {
   MaterialClass,
   MetalKind,
   OtherClassKind,
+  OutboundDraftStatus,
   Prisma,
 } from '@prisma/client';
 import { recordEditLog } from '../edit-logs/edit-log';
@@ -361,15 +362,17 @@ export class InventoryService {
       ? await this.consumedLayersByMaterial(warehouse.id, materials)
       : undefined;
 
-    const items = materials.map((m) =>
-      this.toStockRow(
+    const snapshot = await this.stockSnapshot(materials.map((m) => m.id));
+    const items = materials.map((m) => ({
+      ...this.toStockRow(
         m,
         undefined,
         undefined,
         undefined,
         layersByMaterial?.get(m.id),
       ),
-    );
+      ...snapshotFields(snapshot.get(m.id)),
+    }));
     const zero = new Prisma.Decimal(0);
     const totals = materials.reduce(
       (acc, m) => {
@@ -715,6 +718,14 @@ export class InventoryService {
       const stockUnitPrice =
         dec(dto.stockUnitPrice) ?? current?.stockUnitPrice ?? zero;
       const openingAmount = openingMoney(openingQty, stockUnitPrice);
+      // Kho vừa cân TL tồn: lấy làm mốc từ lúc này; xoá thì quay về "chưa cân".
+      const gramBase =
+        dto.gramBase !== undefined
+          ? {
+              gramBase: dto.gramBase ? new Prisma.Decimal(dto.gramBase) : null,
+              gramBaseAt: dto.gramBase ? new Date() : null,
+            }
+          : {};
 
       await tx.stockBalance.upsert({
         where: { materialId: material.id },
@@ -726,11 +737,13 @@ export class InventoryService {
           stockUnitPrice,
           qty: openingQty,
           amount: openingAmount,
+          ...gramBase,
         },
         update: {
           openingQty,
           openingAmount,
           stockUnitPrice,
+          ...gramBase,
         },
       });
       // TL đá vừa sửa ở form là TL của tồn hiện tại — không chia tỉ lệ đè lên.
@@ -758,13 +771,17 @@ export class InventoryService {
     });
     this.bustWarehouseCaches(code);
     await this.cloudinary.destroy(removedImages);
-    return this.toStockRow(
-      updated,
-      inboundMap.get(material.id),
-      outboundMap.get(material.id),
-      firstInboundMap.get(material.id),
-      layers,
-    );
+    const snapshot = await this.stockSnapshot([material.id]);
+    return {
+      ...this.toStockRow(
+        updated,
+        inboundMap.get(material.id),
+        outboundMap.get(material.id),
+        firstInboundMap.get(material.id),
+        layers,
+      ),
+      ...snapshotFields(snapshot.get(material.id)),
+    };
   }
 
   async listInbounds(code: string) {
@@ -900,6 +917,12 @@ export class InventoryService {
           unitId: unit?.id ?? null,
           unitName,
           qty,
+          // Mã tính theo gram (theo đơn vị của mã, không theo dòng gửi lên) thì TL = SL.
+          gramQty: inboundGramOf(
+            dto.gramQty,
+            qty,
+            existing?.unit.name ?? unitName,
+          ),
           stockUnitPrice: prices.stock,
           unitPrice: prices.inbound,
           amount,
@@ -1033,6 +1056,7 @@ export class InventoryService {
           unitId: unit?.id ?? null,
           unitName,
           qty,
+          gramQty: inboundGramOf(dto.gramQty, qty, unitName),
           stockUnitPrice: prices.stock,
           unitPrice: prices.inbound,
           amount,
@@ -1666,20 +1690,20 @@ export class InventoryService {
     if (materialId) {
       return this.prisma.material.findFirst({
         where: { id: materialId, warehouseId, isActive: true },
-        select: { id: true, sku: true },
+        select: { id: true, sku: true, unit: { select: { name: true } } },
       });
     }
     if (sku?.trim()) {
       const bySku = await this.prisma.material.findFirst({
         where: { warehouseId, sku: sku.trim(), isActive: true },
-        select: { id: true, sku: true },
+        select: { id: true, sku: true, unit: { select: { name: true } } },
       });
       if (bySku) return bySku;
     }
     if (name?.trim()) {
       return this.prisma.material.findFirst({
         where: { warehouseId, name: name.trim(), isActive: true },
-        select: { id: true, sku: true },
+        select: { id: true, sku: true, unit: { select: { name: true } } },
       });
     }
     return null;
@@ -2123,6 +2147,8 @@ export class InventoryService {
         unit: { id: string; name: string };
       };
       qty: number | Prisma.Decimal;
+      /** Trọng lượng xuất (g) — cột TL trên phiếu xuất; đá / bạc kho cân lúc xuất. */
+      gramQty?: Prisma.Decimal | null;
       issuedAt: Date;
       issuedBy: string;
       note?: string;
@@ -2141,6 +2167,7 @@ export class InventoryService {
         unitName: material.unit.name,
         issuedAt: params.issuedAt,
         qty,
+        gramQty: params.gramQty ?? null,
         note: params.note ?? `Xuất cho đơn ${params.orderCode}`,
         issuedBy: params.issuedBy,
         receivedBy: null,
@@ -2732,11 +2759,267 @@ export class InventoryService {
       materialId,
       exceptOutboundId,
     );
-    if (qty.gt(available)) {
+    // Đá đang giữ chỗ cho phiếu Vào đá không được xuất tay cho việc khác.
+    const held = await this.heldQty(tx, materialId);
+    if (qty.gt(available.sub(held))) {
       throw new BadRequestException(
-        `Không đủ tồn để xuất (sẵn có ${decStr(available)}, xuất ${decStr(qty)})`,
+        held.gt(0)
+          ? `Không đủ tồn để xuất (tồn thực ${decStr(available)}, đang giữ chỗ ${decStr(held)} — khả dụng ${decStr(available.sub(held))}, xuất ${decStr(qty)})`
+          : `Không đủ tồn để xuất (sẵn có ${decStr(available)}, xuất ${decStr(qty)})`,
       );
     }
+  }
+
+  /** Số đang giữ chỗ của một mã = tổng SL các phiếu xuất nháp đang mở. */
+  async heldQty(client: Prisma.TransactionClient, materialId: string) {
+    const held = await client.stockOutboundDraft.aggregate({
+      where: { materialId, status: OutboundDraftStatus.DRAFT },
+      _sum: { qty: true },
+    });
+    return held._sum.qty ?? new Prisma.Decimal(0);
+  }
+
+  /**
+   * Lập phiếu xuất nháp: đá cấp cho khâu Vào đá — chưa trừ tồn, chỉ trừ vào khả dụng. Gọi trong
+   * transaction đã kiểm tra khả dụng (`assertStoneFree`).
+   */
+  async createOutboundDraft(
+    tx: Prisma.TransactionClient,
+    params: {
+      material: {
+        id: string;
+        name: string;
+        sku: string | null;
+        warehouseId: string;
+        unit: { id: string; name: string };
+      };
+      qty: Prisma.Decimal;
+      gramQty: Prisma.Decimal | null;
+      productionOrderId: string;
+      note: string;
+      createdByName: string;
+    },
+  ) {
+    const { material } = params;
+    const last = await tx.stockOutboundDraft.aggregate({
+      where: { warehouseId: material.warehouseId },
+      _max: { sortOrder: true },
+    });
+    return tx.stockOutboundDraft.create({
+      data: {
+        warehouseId: material.warehouseId,
+        materialId: material.id,
+        sortOrder: (last._max.sortOrder ?? 0) + 1,
+        name: material.name,
+        sku: material.sku,
+        unitId: material.unit.id,
+        unitName: material.unit.name,
+        qty: params.qty,
+        gramQty: params.gramQty,
+        note: params.note,
+        createdByName: params.createdByName,
+        productionOrderId: params.productionOrderId,
+      },
+    });
+  }
+
+  /** Thợ trả túi giữa khâu: phiếu nháp còn SL / TL mới; trả hết thì huỷ phiếu. */
+  async shrinkOutboundDraft(
+    tx: Prisma.TransactionClient,
+    id: string,
+    left: { qty: Prisma.Decimal; gramQty: Prisma.Decimal | null },
+    by: string,
+  ) {
+    const emptied = left.qty.lte(0);
+    await tx.stockOutboundDraft.update({
+      where: { id },
+      data: {
+        qty: left.qty,
+        gramQty: left.gramQty,
+        ...(emptied
+          ? {
+              status: OutboundDraftStatus.VOID,
+              closedAt: new Date(),
+              closedByName: by,
+            }
+          : {}),
+      },
+    });
+  }
+
+  /**
+   * Đóng phiếu nháp: thủ kho xác nhận → POSTED gắn phiếu xuất thật; không dùng gì (thừa hết / huỷ
+   * khâu) → VOID. Chỉ đóng phiếu đang mở.
+   */
+  async closeOutboundDraft(
+    tx: Prisma.TransactionClient,
+    ids: readonly string[],
+    by: string,
+    postedOutboundId: string | null = null,
+  ) {
+    if (ids.length === 0) return;
+    await tx.stockOutboundDraft.updateMany({
+      where: { id: { in: [...ids] }, status: OutboundDraftStatus.DRAFT },
+      data: {
+        status: postedOutboundId
+          ? OutboundDraftStatus.POSTED
+          : OutboundDraftStatus.VOID,
+        postedOutboundId,
+        closedAt: new Date(),
+        closedByName: by,
+      },
+    });
+  }
+
+  /** Danh sách phiếu xuất nháp của kho (mới nhất trước) — tab "Phiếu xuất nháp". */
+  async listOutboundDrafts(code: string) {
+    assertNvlWarehouse(code);
+    const warehouse = await this.prisma.warehouse.findUnique({
+      where: { code },
+      select: { id: true },
+    });
+    if (!warehouse) throw new NotFoundException('Không tìm thấy kho');
+    const rows = await this.prisma.stockOutboundDraft.findMany({
+      where: { warehouseId: warehouse.id },
+      orderBy: { sortOrder: 'desc' },
+      take: 500,
+      include: {
+        productionOrder: {
+          select: { code: true, _count: { select: { subTickets: true } } },
+        },
+        postedOutbound: {
+          select: { sortOrder: true, qty: true, gramQty: true },
+        },
+        stoneHold: {
+          select: {
+            requestId: true,
+            subTicket: { select: { no: true } },
+            stoneCount: true,
+            earlyReturnedWeight: true,
+          },
+        },
+      },
+    });
+    return rows.map((row) => ({
+      id: row.id,
+      stt: row.sortOrder,
+      issuedAt: row.issuedAt.toISOString(),
+      name: row.name,
+      sku: row.sku,
+      unit: row.unitName,
+      qty: decStr(row.qty),
+      gramQty: row.gramQty != null ? decStr(row.gramQty) : null,
+      stoneCount: row.stoneHold?.stoneCount ?? null,
+      /** Thợ đã trả giữa khâu (g) — SL / TL trên phiếu là phần còn giữ. */
+      earlyReturnedWeight:
+        row.stoneHold?.earlyReturnedWeight != null
+          ? decStr(row.stoneHold.earlyReturnedWeight)
+          : null,
+      status: row.status,
+      note: row.note,
+      createdByName: row.createdByName,
+      orderCode: row.productionOrder.code,
+      ticketCode:
+        row.stoneHold?.subTicket != null
+          ? row.productionOrder._count.subTickets === 1
+            ? row.productionOrder.code
+            : `${row.productionOrder.code}-${row.stoneHold.subTicket.no}`
+          : row.productionOrder.code,
+      /** Lúc chỉ định thợ hay thợ xin thêm. */
+      fromRequest: row.stoneHold?.requestId != null,
+      posted: row.postedOutbound
+        ? {
+            stt: row.postedOutbound.sortOrder,
+            qty: decStr(row.postedOutbound.qty),
+            gramQty:
+              row.postedOutbound.gramQty != null
+                ? decStr(row.postedOutbound.gramQty)
+                : null,
+          }
+        : null,
+      closedAt: row.closedAt?.toISOString() ?? null,
+      closedByName: row.closedByName,
+    }));
+  }
+
+  /**
+   * Tồn thực của nhiều mã cùng lúc — cùng công thức với bước kiểm tra xuất kho: tồn đầu kỳ +
+   * phiếu nhập − phiếu xuất (chỉ phiếu tính tồn). Kèm phần đang giữ chỗ và khả dụng = thực − giữ.
+   * `ledgerQty` là số đang ghi trên sổ tồn; lệch với tồn thực là dữ liệu cần kiểm kê lại.
+   */
+  async stockSnapshot(materialIds: readonly string[]) {
+    const result = new Map<
+      string,
+      {
+        onHand: Prisma.Decimal;
+        held: Prisma.Decimal;
+        available: Prisma.Decimal;
+        ledgerQty: Prisma.Decimal;
+        /** TL tồn (g): mã gram = tồn thực; mã khác tính từ lần kho cân; null = chưa cân. */
+        gramOnHand: Prisma.Decimal | null;
+        gramBaseAt: Date | null;
+      }
+    >();
+    if (materialIds.length === 0) return result;
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        material_id: string;
+        on_hand: Prisma.Decimal;
+        held: Prisma.Decimal;
+        ledger_qty: Prisma.Decimal;
+        unit_name: string;
+        gram_base: Prisma.Decimal | null;
+        gram_base_at: Date | null;
+        gram_in: Prisma.Decimal;
+        gram_out: Prisma.Decimal;
+      }>
+    >`
+      SELECT m.id AS material_id,
+        COALESCE(b.opening_qty, 0)
+          + COALESCE((SELECT SUM(i.qty) FROM ${dbTable('stock_inbounds')} i
+              WHERE i.material_id = m.id AND i.warehouse_id = m.warehouse_id
+                AND i.apply_to_stock AND i.qty > 0), 0)
+          - COALESCE((SELECT SUM(o.qty) FROM ${dbTable('stock_outbounds')} o
+              WHERE o.material_id = m.id AND o.warehouse_id = m.warehouse_id
+                AND o.apply_to_stock AND o.qty > 0), 0) AS on_hand,
+        COALESCE((SELECT SUM(d.qty) FROM ${dbTable('stock_outbound_drafts')} d
+          WHERE d.material_id = m.id AND d.status = 'DRAFT'), 0) AS held,
+        COALESCE(b.qty, 0) AS ledger_qty,
+        u.name AS unit_name,
+        b.gram_base,
+        b.gram_base_at,
+        COALESCE((SELECT SUM(i.gram_qty) FROM ${dbTable('stock_inbounds')} i
+          WHERE i.material_id = m.id AND i.warehouse_id = m.warehouse_id
+            AND i.apply_to_stock AND i.gram_qty > 0
+            AND i.created_at > b.gram_base_at), 0) AS gram_in,
+        COALESCE((SELECT SUM(o.gram_qty) FROM ${dbTable('stock_outbounds')} o
+          WHERE o.material_id = m.id AND o.warehouse_id = m.warehouse_id
+            AND o.apply_to_stock AND o.gram_qty > 0
+            AND o.created_at > b.gram_base_at), 0) AS gram_out
+      FROM ${dbTable('materials')} m
+      JOIN ${dbTable('units')} u ON u.id = m.unit_id
+      LEFT JOIN ${dbTable('stock_balances')} b ON b.material_id = m.id
+      WHERE m.id = ANY(${[...materialIds]}::uuid[])
+    `;
+    for (const row of rows) {
+      const onHand = new Prisma.Decimal(row.on_hand);
+      const held = new Prisma.Decimal(row.held);
+      // Mã tính theo gram: SL chính là TL. Mã khác: TL kho cân + TL nhập − TL xuất sau lúc cân.
+      const gramOnHand = isGram(row.unit_name)
+        ? onHand
+        : row.gram_base != null
+          ? new Prisma.Decimal(row.gram_base).add(row.gram_in).sub(row.gram_out)
+          : null;
+      result.set(row.material_id, {
+        onHand,
+        held,
+        available: onHand.sub(held),
+        ledgerQty: new Prisma.Decimal(row.ledger_qty),
+        gramOnHand,
+        gramBaseAt: row.gram_base_at,
+      });
+    }
+    return result;
   }
 
   private async resolveDestWarehouse(
@@ -3197,6 +3480,28 @@ function assertNotAutoIssued(outbound: {
   );
 }
 
+const GRAM_UNITS = new Set(['g', 'gr', 'gram', 'grams', 'gam']);
+
+const isGram = (unitName: string) =>
+  GRAM_UNITS.has(unitName.trim().toLowerCase());
+
+/**
+ * TL nhập (g) của phiếu nhập: mã tính theo gram thì chính là SL; mã khác lấy số kho cân (không
+ * bắt buộc — để trống thì TL tồn của mã không cộng phần này).
+ */
+function inboundGramOf(
+  gramQty: string | null | undefined,
+  qty: Prisma.Decimal,
+  unitName: string,
+) {
+  if (isGram(unitName)) return qty;
+  if (gramQty == null || gramQty === '') return null;
+  const gram = new Prisma.Decimal(gramQty);
+  if (gram.lt(0))
+    throw new BadRequestException('Trọng lượng nhập không được âm');
+  return gram.gt(0) ? gram : null;
+}
+
 function assertInboundNotAuto(inbound: { autoIssued: boolean }) {
   if (!inbound.autoIssued) return;
   throw new BadRequestException(
@@ -3318,6 +3623,43 @@ function takeFifo(layers: PriceLayer[], qty: Prisma.Decimal) {
   return {
     amount,
     unitPrice: samePrice ? takes[0].unitPrice : zero,
+  };
+}
+
+/**
+ * Tồn thực / đang giữ chỗ / khả dụng của một mã để trả cho FE. `ledgerMismatch` = sổ tồn ghi khác
+ * tồn thực (thường là mã seed có số tồn nhưng tồn đầu kỳ = 0) — cần kiểm kê.
+ */
+export function snapshotFields(
+  snap:
+    | {
+        onHand: Prisma.Decimal;
+        held: Prisma.Decimal;
+        available: Prisma.Decimal;
+        ledgerQty: Prisma.Decimal;
+        gramOnHand: Prisma.Decimal | null;
+        gramBaseAt: Date | null;
+      }
+    | undefined,
+) {
+  if (!snap) {
+    return {
+      onHandQty: '0',
+      heldQty: '0',
+      availableQty: '0',
+      ledgerMismatch: false,
+      gramOnHand: null,
+      gramBaseAt: null,
+    };
+  }
+  return {
+    onHandQty: decStr(snap.onHand),
+    heldQty: decStr(snap.held),
+    availableQty: decStr(snap.available),
+    ledgerMismatch: !snap.ledgerQty.eq(snap.onHand),
+    /** TL tồn (g); null = mã không tính theo gram và kho chưa cân lần nào. */
+    gramOnHand: snap.gramOnHand != null ? decStr(snap.gramOnHand) : null,
+    gramBaseAt: snap.gramBaseAt?.toISOString() ?? null,
   };
 }
 

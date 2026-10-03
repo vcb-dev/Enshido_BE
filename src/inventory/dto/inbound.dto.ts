@@ -39,6 +39,12 @@ export class CreateInboundDto {
   @Matches(DECIMAL, { message: 'Số lượng không hợp lệ' })
   qty!: string;
 
+  /** Trọng lượng nhập (g) — kho NVL ghi nhận TL tồn cho mã không tính theo gram (đá tính viên…). */
+  @IsOptional()
+  @Transform(({ value }) => (value === '' || value == null ? null : value))
+  @Matches(DECIMAL, { message: 'Số gram không hợp lệ' })
+  gramQty?: string | null;
+
   @IsOptional()
   @Matches(DECIMAL, { message: 'Đơn giá tồn không hợp lệ' })
   stockUnitPrice?: string;

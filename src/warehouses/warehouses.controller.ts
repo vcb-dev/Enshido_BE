@@ -70,6 +70,12 @@ export class WarehousesController {
     return this.inventory.listOutbounds(code);
   }
 
+  /** Phiếu xuất nháp — đá cấp cho khâu Vào đá, chưa trừ tồn (chỉ xem; hệ thống tự lập / đóng). */
+  @Get(':code/outbound-drafts')
+  outboundDrafts(@Param('code') code: string) {
+    return this.inventory.listOutboundDrafts(code);
+  }
+
   @Post(':code/outbounds')
   createOutbound(
     @Param('code') code: string,

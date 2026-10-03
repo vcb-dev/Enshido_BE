@@ -40,6 +40,7 @@ import {
   UpsertProductionOrderDto,
   IssueMaterialRequestDto,
   MaterialRequestDto,
+  EarlyStoneReturnDto,
   MaterialRequestListQuery,
   RejectMaterialRequestDto,
 } from './dto/production-order.dto';
@@ -314,6 +315,19 @@ export class ProductionOrdersController {
     @CurrentUser() user: AuthUserPayload,
   ) {
     return this.orders.returnStage(code, stageId, dto, user);
+  }
+
+  /** Thủ kho nhận lại túi đá thợ trả giữa khâu Vào đá (đổi size) — nhả giữ chỗ phần trả. */
+  @Post(':code/stages/:stageId/stone-returns')
+  @BlockWorker()
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
+  returnStoneEarly(
+    @Param('code') code: string,
+    @Param('stageId', ParseUUIDPipe) stageId: string,
+    @Body() dto: EarlyStoneReturnDto,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.subTickets.returnStoneEarly(code, stageId, dto, user);
   }
 
   /** Thủ kho xác nhận sau KCS (Nguội / Vào đá): nhập kho BTP hàng đạt, NVL hàng lỗi + thừa. */

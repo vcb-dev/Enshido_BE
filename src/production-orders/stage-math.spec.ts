@@ -6,8 +6,11 @@ import {
   recoveredOf,
   silverInOf,
   silverLossOf,
+  splitReturnedWeight,
   stoneLossOf,
+  stoneReturnedCount,
   stoneUsedByHold,
+  stoneUsedQty,
 } from './stage-math';
 
 const dec = (value: string) => new Prisma.Decimal(value);
@@ -168,7 +171,10 @@ describe('stoneUsedByHold — chia đá thừa trả lại cho các dòng cấp'
   ];
 
   it('không trả đá thì dùng hết số cấp', () => {
-    expect([...stoneUsedByHold(holds, 0)]).toEqual([['b', 50], ['a', 100]]);
+    expect([...stoneUsedByHold(holds, 0)]).toEqual([
+      ['b', 50],
+      ['a', 100],
+    ]);
   });
 
   it('trừ từ dòng cấp cuối ngược lên', () => {
@@ -181,5 +187,66 @@ describe('stoneUsedByHold — chia đá thừa trả lại cho các dòng cấp'
     const used = stoneUsedByHold(holds, 10);
     expect(used.get('b')).toBe(40);
     expect(used.get('a')).toBe(100);
+  });
+});
+
+describe('đá thừa theo cân gói — không đếm từng viên', () => {
+  it('chia TL gói thừa từ dòng cấp cuối ngược lên, không quá TL từng dòng', () => {
+    const back = splitReturnedWeight(
+      [
+        { id: 'a', weight: dec('2') },
+        { id: 'b', weight: dec('0.5') },
+      ],
+      dec('0.8'),
+    );
+    expect(back.get('b')?.toString()).toBe('0.5');
+    expect(back.get('a')?.toString()).toBe('0.3');
+  });
+
+  it('viên thừa quy theo tỷ lệ TL, làm tròn', () => {
+    // Gói 250 viên nặng 1,25 g, thừa 0,3 g → 60 viên.
+    expect(
+      stoneReturnedCount({ stoneCount: 250, weight: dec('1.25') }, dec('0.3')),
+    ).toBe(60);
+    expect(
+      stoneReturnedCount({ stoneCount: 3, weight: dec('1') }, dec('0.5')),
+    ).toBe(2);
+    expect(
+      stoneReturnedCount({ stoneCount: 10, weight: null }, dec('0.5')),
+    ).toBe(0);
+  });
+
+  it('SL xuất = SL cấp × (TL cấp − TL thừa) / TL cấp', () => {
+    const base = { stoneCount: 250, weight: dec('1.25'), returnedCount: 60 };
+    expect(
+      stoneUsedQty(
+        { ...base, qty: dec('250'), returnedWeight: dec('0.3') },
+        true,
+      ).toString(),
+    ).toBe('190');
+    // Mã tính theo ct: 6,25 ct cấp, thừa 24% TL → xuất 4,75 ct.
+    expect(
+      stoneUsedQty(
+        { ...base, qty: dec('6.25'), returnedWeight: dec('0.3') },
+        false,
+      ).toString(),
+    ).toBe('4.75');
+    expect(
+      stoneUsedQty(
+        { ...base, qty: dec('250'), returnedWeight: dec('1.25') },
+        true,
+      ).toString(),
+    ).toBe('0');
+  });
+
+  it('dòng cũ không cân gói thì xuất theo số viên thừa KCS đếm', () => {
+    const hold = {
+      qty: dec('100'),
+      stoneCount: 100,
+      weight: null,
+      returnedWeight: null,
+      returnedCount: 30,
+    };
+    expect(stoneUsedQty(hold, true).toString()).toBe('70');
   });
 });
