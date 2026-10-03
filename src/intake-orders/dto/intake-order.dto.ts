@@ -113,11 +113,29 @@ export class RejectIntakeOrderDto {
 }
 
 export class IntakeModel3dDto {
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
   @IsNotEmpty()
   @MaxLength(2000)
   model3dUrl!: string;
+
+  /** Đá theo file 3D: số viên cả đơn; 0 = đơn không có đá (bỏ qua khâu Vào đá). */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  stoneCount3d?: number | null;
+
+  /** Đá theo file 3D: tổng TL (g) cả đơn — mốc tính hao hụt khâu Vào đá. */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  stoneWeight3dGram?: number | null;
 }
 
 export class IntakeProductSpecsDto {
@@ -125,6 +143,22 @@ export class IntakeProductSpecsDto {
   @IsNumber()
   @Min(0.0001)
   productWeightGram!: number;
+
+  /** Đá theo file 3D: số viên cả đơn; 0 = đơn không có đá (bỏ qua khâu Vào đá). */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  stoneCount3d?: number | null;
+
+  /** Đá theo file 3D: tổng TL (g) cả đơn — mốc tính hao hụt khâu Vào đá. */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  stoneWeight3dGram?: number | null;
 
   @IsArray()
   @ArrayMinSize(1)

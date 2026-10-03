@@ -23,12 +23,12 @@ export class CreateOutboundDto {
   sku?: string;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   materialId?: string | null;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   unitId?: string | null;
 
@@ -40,7 +40,9 @@ export class CreateOutboundDto {
   qty!: string;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' || value == null ? null : value))
+  @Transform(({ value }: { value: unknown }) =>
+    value === '' || value == null ? null : value,
+  )
   @Matches(DECIMAL, { message: 'Số gram không hợp lệ' })
   gramQty?: string | null;
 
@@ -69,7 +71,7 @@ export class CreateOutboundDto {
   receivedBy?: string;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   receivedByUserId?: string | null;
 
@@ -87,7 +89,7 @@ export class CreateOutboundDto {
 
   /** Mã kho nhận — xuất ở kho này sẽ tự nhập sang kho đó. */
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsString()
   destWarehouseCode?: string | null;
 

@@ -1,4 +1,5 @@
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
@@ -7,7 +8,7 @@ import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const config = app.get(ConfigService);
 
   app.setGlobalPrefix('api');
@@ -42,7 +43,7 @@ async function bootstrap() {
   });
 
   if (config.get<string>('NODE_ENV') === 'production') {
-    app.getHttpAdapter().getInstance().disable('x-powered-by');
+    app.disable('x-powered-by');
   }
 
   app.enableShutdownHooks();
@@ -51,4 +52,4 @@ async function bootstrap() {
   await app.listen(port);
   console.log(`Enshido_BE listening on http://localhost:${port}/api`);
 }
-bootstrap();
+void bootstrap();

@@ -28,17 +28,37 @@ export class CastingOrdersService {
     const keyword = query.search?.trim();
     const where: Prisma.CastingOrderWhereInput = {
       ...(sku
-        ? { lines: { some: { materialSku: { contains: sku, mode: 'insensitive' } } } }
+        ? {
+            lines: {
+              some: { materialSku: { contains: sku, mode: 'insensitive' } },
+            },
+          }
         : {}),
       ...(name
-        ? { lines: { some: { materialName: { contains: name, mode: 'insensitive' } } } }
+        ? {
+            lines: {
+              some: { materialName: { contains: name, mode: 'insensitive' } },
+            },
+          }
         : {}),
       ...(keyword
         ? {
             OR: [
               { code: { contains: keyword, mode: 'insensitive' } },
-              { lines: { some: { materialSku: { contains: keyword, mode: 'insensitive' } } } },
-              { lines: { some: { materialName: { contains: keyword, mode: 'insensitive' } } } },
+              {
+                lines: {
+                  some: {
+                    materialSku: { contains: keyword, mode: 'insensitive' },
+                  },
+                },
+              },
+              {
+                lines: {
+                  some: {
+                    materialName: { contains: keyword, mode: 'insensitive' },
+                  },
+                },
+              },
             ],
           }
         : {}),
@@ -146,7 +166,10 @@ export class CastingOrdersService {
             code,
             moldCount: dto.moldCount,
             lines: {
-              create: lines.map((line, index) => ({ sortOrder: index, ...line })),
+              create: lines.map((line, index) => ({
+                sortOrder: index,
+                ...line,
+              })),
             },
           },
           include: { lines: { orderBy: { sortOrder: 'asc' } } },
@@ -183,7 +206,10 @@ export class CastingOrdersService {
         if (gram.lte(0)) {
           throw new BadRequestException('Số gram phải lớn hơn 0');
         }
-        return { ...(await this.materialSnapshot(line.materialId)), gramQty: gram };
+        return {
+          ...(await this.materialSnapshot(line.materialId)),
+          gramQty: gram,
+        };
       }),
     );
   }
@@ -208,7 +234,8 @@ export class CastingOrdersService {
         otherClass: { select: { name: true } },
       },
     });
-    if (!material) throw new NotFoundException('Không tìm thấy mã NVL trên Tồn');
+    if (!material)
+      throw new NotFoundException('Không tìm thấy mã NVL trên Tồn');
     return {
       materialId: material.id,
       materialSku: material.sku,

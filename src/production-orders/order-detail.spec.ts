@@ -1,5 +1,10 @@
-import { Prisma, ProductionStatus } from '@prisma/client';
 import {
+  MaterialRequestStatus,
+  Prisma,
+  ProductionStatus,
+} from '@prisma/client';
+import {
+  blankLeftOf,
   entriesOf,
   handedStoneOf,
   lastStageDone,
@@ -7,17 +12,44 @@ import {
   orderListStatuses,
   orderTicketAvailable,
   orderTicketState,
+  outcomeStatus,
   recentFirst,
-  slowestStage,
+  deriveOrderStatus,
+  furthestStatus,
   subTicketAvailable,
   subTicketCode,
   subTicketState,
   subTicketSummary,
   ticketPosition,
+  ticketStatus,
   type OrderDetail,
   type StageEntry,
   type SubTicket,
 } from './order-detail';
+
+describe('phôi ghi trực tiếp trên lệnh sau đúc', () => {
+  it('trừ số phôi đã cấp cho thợ theo chiếc và gram', () => {
+    const order = {
+      blankQty: 3,
+      blankWeight: new Prisma.Decimal('12.5'),
+      blankMaterialId: 'blank-material',
+      castingCutLines: [],
+      materialRequests: [
+        {
+          status: MaterialRequestStatus.ISSUED,
+          materialId: 'blank-material',
+          issuedQty: new Prisma.Decimal(1),
+          issuedWeight: new Prisma.Decimal('4.5'),
+        },
+      ],
+    };
+    expect(blankLeftOf(order)).toEqual({
+      btpMaterialId: 'blank-material',
+      leftQty: '2',
+      leftWeight: '8',
+    });
+  });
+});
 
 const dec = (value: string) => new Prisma.Decimal(value);
 
@@ -117,16 +149,15 @@ describe('orderListStatuses — tab theo vị trí thật của từng phiếu',
   it('một đơn xuất hiện ở mọi khâu mà phiếu con đang đứng', () => {
     const statuses = orderListStatuses({
       status: 'FILING',
-      subTickets: [
-        ticket({ id: 't1' }),
-        ticket({ id: 't2', pendingStage: 'STONE_SETTING' }),
-      ],
+      subTickets: [ticket({ id: 't1' }), ticket({ id: 't2' })],
       stages: [
         entry({ subTicketId: 't1', stage: 'FILING', returnedAt: new Date() }),
+        entry({ id: 'e2', subTicketId: 't2', stage: 'STONE_SETTING' }),
       ],
     });
+    // t1 xong Nguội chờ vào đá (L), t2 đang vào đá (N).
     expect(statuses).toEqual(
-      expect.arrayContaining(['FILING', 'STONE_SETTING']),
+      expect.arrayContaining(['WAIT_STONE', 'STONE_SETTING']),
     );
   });
 
@@ -481,32 +512,188 @@ describe('ticketPosition — phiếu con đang đứng ở khâu nào', () => {
   });
 });
 
-describe('slowestStage — trạng thái đơn khi phiếu con đi lệch khâu', () => {
-  it('lấy khâu của phần chậm nhất, không theo phiếu nhanh', () => {
-    // A002-1 đã sang Vào đá, A002-2 / A002-3 còn Nguội → đơn vẫn là Nguội.
-    expect(slowestStage(['STONE_SETTING', 'FILING', 'FILING'])).toBe('FILING');
+describe('furthestStatus — trạng thái đơn khi phiếu con đi lệch', () => {
+  it('lấy phiếu đi xa nhất (tích cực nhất), không theo phiếu chậm', () => {
+    expect(furthestStatus(['STONE_SETTING', 'FILING', 'WAIT_FILING'])).toBe(
+      'STONE_SETTING',
+    );
   });
 
   it('không phụ thuộc thứ tự phiếu', () => {
-    expect(slowestStage(['PLATING', 'ENGRAVING', 'POLISHING'])).toBe(
-      'ENGRAVING',
+    expect(furthestStatus(['ENGRAVING', 'PLATING', 'POLISHING'])).toBe(
+      'PLATING',
     );
-    expect(slowestStage(['ENGRAVING', 'PLATING', 'POLISHING'])).toBe(
-      'ENGRAVING',
+    expect(furthestStatus(['PLATING', 'ENGRAVING', 'POLISHING'])).toBe(
+      'PLATING',
     );
   });
 
-  it('bỏ qua phiếu không đứng ở khâu nào (đã chốt kết cục)', () => {
-    expect(slowestStage([null, 'POLISHING', null])).toBe('POLISHING');
-    expect(slowestStage([null, null])).toBeNull();
-    expect(slowestStage([])).toBeNull();
+  it('phiếu lỗi xếp thấp nhất: còn phiếu khác chạy thì đơn không báo lỗi', () => {
+    expect(furthestStatus(['FILING_DEFECT', 'WAIT_FILING'])).toBe(
+      'WAIT_FILING',
+    );
+    expect(furthestStatus(['FILING_DEFECT', 'STONE_DEFECT'])).not.toBeNull();
   });
 
-  it('phần chậm nhất bắt kịp thì đơn mới tiến lên', () => {
-    // A002-2, A002-3 xong Nguội và được giao Vào đá — giờ cả đơn đã tới Vào đá.
+  it('bỏ qua phiếu đã chốt kết cục', () => {
+    expect(furthestStatus([null, 'WAIT_STONE', null])).toBe('WAIT_STONE');
+    expect(furthestStatus([null, null])).toBeNull();
+    expect(furthestStatus([])).toBeNull();
+  });
+});
+
+describe('ticketStatus — I/K/L/N/O của phiếu con', () => {
+  const DONE = new Date('2026-09-21T02:58:00Z');
+
+  it('chưa làm khâu nào là Chờ nguội (I)', () => {
+    expect(ticketStatus(ticket(), [])).toBe('WAIT_FILING');
+  });
+
+  it('khâu mở chờ thợ là "Chờ", thợ đang làm là "Đang"', () => {
+    expect(ticketStatus(ticket({ pendingStage: 'FILING' }), [])).toBe(
+      'WAIT_FILING',
+    );
+    expect(ticketStatus(ticket({ pendingStage: 'STONE_SETTING' }), [])).toBe(
+      'WAIT_STONE',
+    );
+    expect(ticketStatus(ticket(), [entry({ stage: 'FILING' })])).toBe('FILING');
     expect(
-      slowestStage(['STONE_SETTING', 'STONE_SETTING', 'STONE_SETTING']),
-    ).toBe('STONE_SETTING');
+      ticketStatus(ticket(), [entry({ stage: 'FILING', submittedAt: DONE })]),
+    ).toBe('FILING');
+    expect(ticketStatus(ticket(), [entry({ stage: 'STONE_SETTING' })])).toBe(
+      'STONE_SETTING',
+    );
+  });
+
+  it('KCS nhận lại xong thì sang Chờ khâu kế: Nguội → L, Vào đá → O', () => {
+    expect(
+      ticketStatus(ticket(), [entry({ stage: 'FILING', returnedAt: DONE })]),
+    ).toBe('WAIT_STONE');
+    expect(
+      ticketStatus(ticket(), [
+        entry({ stage: 'FILING', returnedAt: DONE }),
+        entry({ stage: 'STONE_SETTING', returnedAt: DONE }),
+      ]),
+    ).toBe('WAIT_ENGRAVING');
+  });
+
+  it('đơn không có đá: Nguội xong đi thẳng Chờ khắc (O)', () => {
+    expect(
+      ticketStatus(
+        ticket(),
+        [entry({ stage: 'FILING', returnedAt: DONE })],
+        null,
+        true,
+      ),
+    ).toBe('WAIT_ENGRAVING');
+  });
+
+  it('các khâu sau Khắc giữ trạng thái khâu', () => {
+    expect(
+      ticketStatus(ticket(), [entry({ stage: 'POLISHING', returnedAt: DONE })]),
+    ).toBe('POLISHING');
+  });
+
+  it('KCS đã nhận nhưng thủ kho chưa xác nhận: vẫn "Đang" khâu đó, chưa sang L', () => {
+    const waiting = entry({
+      stage: 'FILING',
+      returnedAt: DONE,
+      confirmedAt: null,
+    });
+    expect(subTicketState(ticket(), [waiting]).state).toBe('CONFIRMING');
+    expect(ticketStatus(ticket(), [waiting])).toBe('FILING');
+    const confirmed = entry({
+      stage: 'FILING',
+      returnedAt: DONE,
+      confirmedAt: DONE,
+    });
+    expect(subTicketState(ticket(), [confirmed]).state).toBe('IDLE');
+    expect(ticketStatus(ticket(), [confirmed])).toBe('WAIT_STONE');
+  });
+
+  it('báo lỗi ở khâu đang làm: coi như đã nộp cho KCS cân lại', () => {
+    const flagged = entry({ stage: 'FILING', defectReportedAt: DONE });
+    expect(subTicketState(ticket(), [flagged]).state).toBe('SUBMITTED');
+    expect(subTicketState(ticket(), [entry({ stage: 'FILING' })]).state).toBe(
+      'WORKING',
+    );
+  });
+
+  it('lỗi 100% ở Nguội / Vào đá có trạng thái lỗi riêng', () => {
+    expect(outcomeStatus({ outcome: 'DEFECT', outcomeStage: 'FILING' })).toBe(
+      'FILING_DEFECT',
+    );
+    expect(
+      outcomeStatus({ outcome: 'DEFECT', outcomeStage: 'STONE_SETTING' }),
+    ).toBe('STONE_DEFECT');
+    expect(outcomeStatus({ outcome: 'DEFECT', outcomeStage: 'PLATING' })).toBe(
+      'DEFECT',
+    );
+    expect(outcomeStatus({ outcome: 'FINISH', outcomeStage: 'PLATING' })).toBe(
+      'FINISHING',
+    );
+  });
+
+  it('phiếu đã chốt kết cục thì không có trạng thái khâu', () => {
+    expect(ticketStatus(ticket({ outcome: 'DEFECT' }), [])).toBeNull();
+  });
+});
+
+describe('deriveOrderStatus', () => {
+  const DONE = new Date('2026-09-21T02:58:00Z');
+  const base = {
+    pendingStage: null,
+    claimedByUserId: null,
+  } as const;
+
+  it('đơn chưa chia theo khâu của chính nó', () => {
+    expect(
+      deriveOrderStatus({
+        ...base,
+        status: ProductionStatus.WAIT_FILING,
+        subTickets: [],
+        stages: [entry({ stage: 'FILING', subTicketId: null })],
+      }),
+    ).toBe('FILING');
+  });
+
+  it('đơn nhiều phiếu theo phiếu đi xa nhất', () => {
+    const t1 = ticket({ id: 't1' });
+    const t2 = ticket({ id: 't2' });
+    expect(
+      deriveOrderStatus({
+        ...base,
+        status: ProductionStatus.FILING,
+        subTickets: [t1, t2],
+        stages: [
+          entry({ stage: 'FILING', subTicketId: 't1', returnedAt: DONE }),
+          entry({ stage: 'FILING', subTicketId: 't2' }),
+        ],
+      }),
+    ).toBe('WAIT_STONE');
+  });
+
+  it('giữ nguyên trạng thái ngoài các khâu (Đúc, Lỗi, Hoàn thiện…)', () => {
+    for (const status of [
+      ProductionStatus.CASTING,
+      ProductionStatus.DEFECT,
+      ProductionStatus.FINISHING,
+    ]) {
+      expect(
+        deriveOrderStatus({ ...base, status, subTickets: [], stages: [] }),
+      ).toBe(status);
+    }
+  });
+
+  it('mọi phiếu đã có kết cục thì giữ nguyên cho syncOrder xử lý', () => {
+    expect(
+      deriveOrderStatus({
+        ...base,
+        status: ProductionStatus.PLATING,
+        subTickets: [ticket({ id: 't1', outcome: 'FINISH' })],
+        stages: [],
+      }),
+    ).toBe('PLATING');
   });
 });
 
@@ -531,6 +718,7 @@ describe('subTicketSummary — cột Phiếu con ở danh sách đơn', () => {
       note: null,
       createdAt: '2026-09-21T02:00:00.000Z',
       state: 'WAITING',
+      status: 'WAIT_STONE',
       stage: 'STONE_SETTING',
       workerName: null,
     });

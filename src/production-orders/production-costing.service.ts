@@ -20,6 +20,7 @@ const money = (value: Prisma.Decimal) =>
 const COSTING_ORDER_SELECT = {
   id: true,
   code: true,
+  _count: { select: { subTickets: true } },
   qty: true,
   stages: {
     orderBy: { createdAt: 'asc' as const },
@@ -35,6 +36,7 @@ const COSTING_ORDER_SELECT = {
       returnedSilverWeight: true,
       btpRecoveredWeight: true,
       silverRecoveredWeight: true,
+      scrapS999Weight: true,
       laborCost: true,
       materialRequests: {
         select: {
@@ -77,7 +79,7 @@ export class ProductionCostingService {
       select: { id: true },
     });
     if (!order) throw new NotFoundException('Không tìm thấy đơn sản xuất');
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+
     const { unitCostDecimal, ...result } = await this.costing(order.id);
     return result;
   }
@@ -198,7 +200,11 @@ export class ProductionCostingService {
         stageLabel: STAGE_LABEL[entry.stage],
         attempt: entry.attempt,
         ticketCode: entry.subTicket
-          ? subTicketCode(order.code, entry.subTicket.no)
+          ? subTicketCode(
+              order.code,
+              entry.subTicket.no,
+              order._count.subTickets,
+            )
           : null,
         craftsmanName: entry.craftsmanName,
         amount: entry.laborCost as Prisma.Decimal,
