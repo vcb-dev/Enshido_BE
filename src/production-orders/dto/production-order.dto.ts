@@ -99,6 +99,15 @@ export class ListProductionOrdersQuery {
   @IsOptional()
   @IsIn(['asc', 'desc'])
   dir?: 'asc' | 'desc';
+
+  /** false = danh sách không tính badge tab (FE gọi /status-counts riêng). */
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (value === undefined || value === null || value === '') return undefined;
+    if (value === 'false' || value === '0' || value === false) return false;
+    return true;
+  })
+  includeCounts?: boolean;
 }
 
 export class OrderImageDto {
