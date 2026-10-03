@@ -342,7 +342,8 @@ export class FinishedGoodsService {
         description: receipt.order.description,
         qtyUnit: receipt.order.qtyUnit,
         sizeLabel: receipt.order.sizeLabel,
-        weight: receipt.order.weight != null ? decStr(receipt.order.weight) : null,
+        weight:
+          receipt.order.weight != null ? decStr(receipt.order.weight) : null,
         mainMaterial: receipt.order.mainMaterial,
         imageUrl: receipt.order.images[0]?.url ?? null,
         qty: decStr(qty),
@@ -1280,11 +1281,6 @@ function receiptDate(value: string) {
 
 function actorName(actor: { fullName: string; username: string }) {
   return actor.fullName.trim() || actor.username;
-}
-
-function optionalWeight(value?: string | null) {
-  const text = value?.trim();
-  return text ? new Prisma.Decimal(text) : null;
 }
 
 function isUniqueViolation(error: unknown) {

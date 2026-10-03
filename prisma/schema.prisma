@@ -771,6 +771,8 @@ model ProductionStageEntry {
   /// nhập kho NVL, hàng đạt nhập kho BTP. `btpRecoveredWeight` giữ TL hàng lỗi,
   /// `silverRecoveredWeight` giữ TL nguyên liệu thừa S925.
   defectQty              Int?            @map("defect_qty")
+  /// Lý do hàng lỗi KCS ghi lúc nhận lại (tuỳ chọn; bắt buộc khi lỗi hết ở khâu không qua thủ kho).
+  defectReason           String?         @map("defect_reason")
   /// TL nguyên liệu thừa S999 (g) KCS cân lúc nhận lại.
   scrapS999Weight        Decimal?        @map("scrap_s999_weight") @db.Decimal(18, 4)
   /// Thủ kho xác nhận sau khi KCS nhận lại; chỉ khâu Nguội / Vào đá của phiếu con cần bước này
@@ -1183,6 +1185,10 @@ model IntakeOrder {
   /// Bước 5–6: TL thủ kho cân kiểm lúc xác nhận sáp (bắt buộc ở đơn bơm sáp). Phiếu đúc lấy số này nếu có.
   waxCheckedWeightGram  Decimal?              @map("wax_checked_weight_gram") @db.Decimal(18, 4)
   waxCheckedByName      String?               @map("wax_checked_by_name")
+  /// Bước 2 từ chối đơn: lý do (tuỳ chọn), người và lúc từ chối.
+  rejectReason          String?               @map("reject_reason")
+  rejectedByName        String?               @map("rejected_by_name")
+  rejectedAt            DateTime?             @map("rejected_at")
   createdAt             DateTime              @default(now()) @map("created_at")
   updatedAt             DateTime              @updatedAt @map("updated_at")
 

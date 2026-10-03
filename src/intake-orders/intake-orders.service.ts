@@ -81,7 +81,9 @@ const intakeListImageKinds: ProductionImageKind[] = [
 ];
 
 const intakeListInclude = {
-  castingSlipLine: { select: { slip: { select: { code: true, status: true } } } },
+  castingSlipLine: {
+    select: { slip: { select: { code: true, status: true } } },
+  },
   images: {
     where: { kind: { in: intakeListImageKinds } },
     orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }],
@@ -154,7 +156,9 @@ export class IntakeOrdersService {
   /**
    * Tab Tất cả — một groupBy + 10 findMany (không count từng bucket), ảnh list gọn.
    */
-  async pipelineLists(query: Pick<ListIntakeOrdersQuery, 'search' | 'requestType' | 'pageSize'>) {
+  async pipelineLists(
+    query: Pick<ListIntakeOrdersQuery, 'search' | 'requestType' | 'pageSize'>,
+  ) {
     const pageSize = Math.min(query.pageSize ?? 200, 200);
     const counts = await this.pipelineStatusCounts();
     const rowsByStatus = await Promise.all(
@@ -171,13 +175,16 @@ export class IntakeOrdersService {
       INTAKE_PIPELINE_STATUSES.map((status, index) => [
         status,
         {
-          items: rowsByStatus[index]!.map(toRow),
+          items: rowsByStatus[index].map(toRow),
           total: counts[status] ?? 0,
           page: 1,
           pageSize,
         },
       ]),
-    ) as Record<IntakeOrderStatus, Awaited<ReturnType<IntakeOrdersService['list']>>>;
+    ) as Record<
+      IntakeOrderStatus,
+      Awaited<ReturnType<IntakeOrdersService['list']>>
+    >;
   }
 
   async create(dto: UpsertIntakeOrderDto, actor: AuthUserPayload) {
@@ -231,7 +238,11 @@ export class IntakeOrdersService {
       );
     }
 
-    const { placedBy: _ignored, createdDate: _created, ...data } = this.fields(dto);
+    const {
+      placedBy: _ignored,
+      createdDate: _created,
+      ...data
+    } = this.fields(dto);
     const existing = new Set(order.images.map((image) => image.publicId));
     const images = this.newImages(dto.images, existing);
     const kept = new Set(images.map((image) => image.publicId));
@@ -266,7 +277,11 @@ export class IntakeOrdersService {
     return toRow(updated);
   }
 
-  async approve(id: string, dto: ApproveIntakeOrderDto, actor: AuthUserPayload) {
+  async approve(
+    id: string,
+    dto: ApproveIntakeOrderDto,
+    _actor: AuthUserPayload,
+  ) {
     const order = await this.prisma.intakeOrder.findUnique({ where: { id } });
     if (!order) throw new NotFoundException('Không tìm thấy đơn');
     if (order.status !== IntakeOrderStatus.PENDING_APPROVAL) {
@@ -304,7 +319,13 @@ export class IntakeOrdersService {
     const updated = await this.prisma.runTx(async (tx) => {
       await tx.intakeOrder.update({
         where: { id },
-        data: { status: IntakeOrderStatus.REJECTED, hasMold: null },
+        data: {
+          status: IntakeOrderStatus.REJECTED,
+          hasMold: null,
+          rejectReason: dto.reason?.trim() || null,
+          rejectedByName: actor.fullName?.trim() || actor.username,
+          rejectedAt: new Date(),
+        },
       });
       return tx.intakeOrder.findUniqueOrThrow({
         where: { id },
@@ -317,7 +338,11 @@ export class IntakeOrdersService {
     return toRow(updated);
   }
 
-  async attachModel3d(id: string, dto: IntakeModel3dDto, actor: AuthUserPayload) {
+  async attachModel3d(
+    id: string,
+    dto: IntakeModel3dDto,
+    _actor: AuthUserPayload,
+  ) {
     const order = await this.prisma.intakeOrder.findUnique({ where: { id } });
     if (!order) throw new NotFoundException('Không tìm thấy đơn');
     if (order.status !== IntakeOrderStatus.APPROVED) {
@@ -430,7 +455,10 @@ export class IntakeOrdersService {
     for (const id of ids) {
       const order = byId.get(id);
       if (!order) throw new NotFoundException('Không tìm thấy đơn');
-      if (order.status !== IntakeOrderStatus.READY_FOR_PRODUCTION || order.hasMold !== false) {
+      if (
+        order.status !== IntakeOrderStatus.READY_FOR_PRODUCTION ||
+        order.hasMold !== false
+      ) {
         throw new BadRequestException(
           `Đơn ${order.code} không ở bước chờ in sáp resin (C, không khuôn)`,
         );
@@ -441,16 +469,23 @@ export class IntakeOrdersService {
       for (const item of dto.items) {
         const order = byId.get(item.id)!;
         const moved = await tx.intakeOrder.updateMany({
-          where: { id: order.id, status: IntakeOrderStatus.READY_FOR_PRODUCTION },
+          where: {
+            id: order.id,
+            status: IntakeOrderStatus.READY_FOR_PRODUCTION,
+          },
           data: {
             status: IntakeOrderStatus.WAX_PRINTED,
             productWeightGram: item.productWeightGram,
           },
         });
         if (moved.count !== 1) {
-          throw new ConflictException(`Đơn ${order.code} vừa được cập nhật — tải lại danh sách`);
+          throw new ConflictException(
+            `Đơn ${order.code} vừa được cập nhật — tải lại danh sách`,
+          );
         }
-        const start = order.images.filter((image) => image.kind === ProductionImageKind.PRODUCT).length;
+        const start = order.images.filter(
+          (image) => image.kind === ProductionImageKind.PRODUCT,
+        ).length;
         await tx.intakeOrderImage.createMany({
           data: tray.map((image, index) => ({
             ...image,
@@ -501,7 +536,10 @@ export class IntakeOrdersService {
         const base = order.images.length;
         // Chặn hai người cùng nhập một đơn: chỉ đơn còn ở C mới chuyển được.
         const moved = await tx.intakeOrder.updateMany({
-          where: { id: order.id, status: IntakeOrderStatus.READY_FOR_PRODUCTION },
+          where: {
+            id: order.id,
+            status: IntakeOrderStatus.READY_FOR_PRODUCTION,
+          },
           data: {
             status: IntakeOrderStatus.WAX_PRINTED,
             productWeightGram: item.productWeightGram,
@@ -540,7 +578,9 @@ export class IntakeOrdersService {
     actor: AuthUserPayload,
   ) {
     if (!canConfirmIntakeWarehouse(actor)) {
-      throw new ForbiddenException('Chỉ thủ kho được xác nhận số liệu sản phẩm');
+      throw new ForbiddenException(
+        'Chỉ thủ kho được xác nhận số liệu sản phẩm',
+      );
     }
     const order = await this.prisma.intakeOrder.findUnique({ where: { id } });
     if (!order) throw new NotFoundException('Không tìm thấy đơn');
@@ -576,7 +616,7 @@ export class IntakeOrdersService {
   async submitCastingTreeSpecs(
     id: string,
     dto: IntakeCastingTreeSpecsDto,
-    actor: AuthUserPayload,
+    _actor: AuthUserPayload,
   ) {
     const order = await this.prisma.intakeOrder.findUnique({
       where: { id },
@@ -639,7 +679,9 @@ export class IntakeOrdersService {
 
   private fields(dto: UpsertIntakeOrderDto) {
     const createdDate = parseDate(dto.createdDate, 'Ngày tạo');
-    const dueDate = dto.dueDate ? parseDate(dto.dueDate, 'Thời gian trả hàng') : null;
+    const dueDate = dto.dueDate
+      ? parseDate(dto.dueDate, 'Thời gian trả hàng')
+      : null;
     if (dueDate && dueDate < createdDate) {
       throw new BadRequestException('Ngày trả hàng không được trước ngày tạo');
     }
@@ -713,6 +755,9 @@ type IntakeRow = {
   castingTreeWeightGram: Prisma.Decimal | null;
   waxCheckedWeightGram: Prisma.Decimal | null;
   waxCheckedByName: string | null;
+  rejectReason: string | null;
+  rejectedByName: string | null;
+  rejectedAt: Date | null;
   /** Đá theo 3D (khai ở bước 3D / bơm sáp) — mốc hao hụt Vào đá. */
   stoneCount3d: number | null;
   stoneWeight3dGram: Prisma.Decimal | null;
@@ -728,9 +773,14 @@ type IntakeRow = {
 };
 
 /** Đá theo 3D: chỉ ghi khi người dùng có nhập, để bước sau không xoá mất số đã khai. */
-function stoneData(dto: { stoneCount3d?: number | null; stoneWeight3dGram?: number | null }) {
+function stoneData(dto: {
+  stoneCount3d?: number | null;
+  stoneWeight3dGram?: number | null;
+}) {
   return {
-    ...(dto.stoneCount3d !== undefined ? { stoneCount3d: dto.stoneCount3d } : {}),
+    ...(dto.stoneCount3d !== undefined
+      ? { stoneCount3d: dto.stoneCount3d }
+      : {}),
     ...(dto.stoneWeight3dGram !== undefined
       ? { stoneWeight3dGram: dto.stoneWeight3dGram }
       : {}),
@@ -764,6 +814,9 @@ function toRow(row: IntakeRow) {
         ? row.waxCheckedWeightGram.toString()
         : null,
     waxCheckedByName: row.waxCheckedByName,
+    rejectReason: row.rejectReason,
+    rejectedByName: row.rejectedByName,
+    rejectedAt: row.rejectedAt?.toISOString() ?? null,
     stoneCount3d: row.stoneCount3d,
     stoneWeight3dGram:
       row.stoneWeight3dGram != null ? row.stoneWeight3dGram.toString() : null,

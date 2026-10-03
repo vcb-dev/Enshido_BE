@@ -514,10 +514,7 @@ export class InventoryService {
           weight: isBtp ? null : optionalDecimal(dto.weight),
           images: { create: images },
           classification: classificationOf(warehouse.code),
-          metalKind:
-            isBtp || otherClassId
-              ? null
-              : (dto.metalKind ?? defaultMetalKind(warehouse.code)),
+          metalKind,
           note: dto.note?.trim() || null,
           sortOrder,
         },
@@ -3353,7 +3350,7 @@ export class InventoryService {
     materials: MaterialStock[],
   ) {
     const materialIds = materials.map((m) => m.id);
-    if (!materialIds.length) return new Map();
+    if (!materialIds.length) return new Map<string, PriceLayer[]>();
     const [inboundLots, outboundConsumed] = await Promise.all([
       this.prisma.stockInbound.findMany({
         where: {
@@ -3505,7 +3502,7 @@ function inboundGramOf(
 function assertInboundNotAuto(inbound: { autoIssued: boolean }) {
   if (!inbound.autoIssued) return;
   throw new BadRequestException(
-    'Phiếu nhập do hệ thống tự tạo (xác nhận đúc / thủ kho xác nhận khâu) — không sửa / xoá tay được',
+    'Phiếu nhập do hệ thống tự tạo (cắt cây thông / thủ kho xác nhận khâu) — không sửa / xoá tay được',
   );
 }
 

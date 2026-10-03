@@ -18,7 +18,7 @@ export class CreateOtherClassDto {
   kind?: OtherClassKind;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   parentId?: string | null;
 
@@ -34,7 +34,7 @@ export class UpdateOtherClassDto {
   name?: string;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   parentId?: string | null;
 

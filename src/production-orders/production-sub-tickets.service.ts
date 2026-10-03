@@ -18,7 +18,10 @@ import { Permission, userCan, userHasRole } from '../auth/permissions';
 import type { AuthUserPayload } from '../auth/types';
 import { dbTable } from '../prisma/database-url';
 import { InventoryService } from '../inventory/inventory.service';
-import { intakeCode, randomSxCode } from '../intake-orders/intake-orders.service';
+import {
+  intakeCode,
+  randomSxCode,
+} from '../intake-orders/intake-orders.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { decStr } from '../util/money';
 import {
@@ -60,7 +63,6 @@ import {
   subTicketAvailable,
   subTicketCode,
   subTicketState,
-  ticketPosition,
   toDetail,
   assertHandedSilverWithin,
   blankLeftOf,
@@ -278,7 +280,7 @@ export class ProductionSubTicketsService {
       assertOrderActive(order);
       assertCastingReady(
         order,
-        'Xác nhận phiếu đúc (cân phôi) cho đơn trước khi mở khâu cho thợ',
+        'Cắt cây thông (cân phôi) cho đơn trước khi mở khâu cho thợ',
       );
       if (order.subTickets.length > 0) {
         throw new BadRequestException(
@@ -432,7 +434,7 @@ export class ProductionSubTicketsService {
       assertHandoverManager(order, actor);
       assertCastingReady(
         order,
-        'Xác nhận phiếu đúc (cân phôi) cho đơn trước khi giao khâu cho thợ',
+        'Cắt cây thông (cân phôi) cho đơn trước khi giao khâu cho thợ',
       );
       const entries = orderEntries(order);
       const { state } = orderTicketState(order, entries);
@@ -606,11 +608,12 @@ export class ProductionSubTicketsService {
       assertOrderActive(order);
       assertCastingReady(
         order,
-        'Xác nhận phiếu đúc (cân phôi) cho đơn trước khi chia phiếu con',
+        'Cắt cây thông (cân phôi) cho đơn trước khi chia phiếu con',
       );
       // Đơn từ đúc có sẵn một phiếu -1 (mặc định 1 đơn là 1 phiếu): chia lại khi phiếu đó
       // còn nguyên, chưa mở khâu / chưa giao thợ.
-      const defaultTicket = order.subTickets.length === 1 ? order.subTickets[0] : null;
+      const defaultTicket =
+        order.subTickets.length === 1 ? order.subTickets[0] : null;
       if (defaultTicket && !isUntouched(order, defaultTicket)) {
         throw new BadRequestException(
           `Phiếu ${ticketCode(order, defaultTicket)} đã mở khâu / giao thợ — cả đơn đi tiếp trên phiếu này, không chia lại được`,
@@ -677,7 +680,11 @@ export class ProductionSubTicketsService {
       await logActivity(tx, order.id, actor, ACTIVITY.TICKET_SPLIT, {
         orderCode: order.code,
         after: allRows.map((ticket, index) => ({
-          no: defaultTicket ? (index === 0 ? defaultTicket.no : firstNo + index - 1) : firstNo + index,
+          no: defaultTicket
+            ? index === 0
+              ? defaultTicket.no
+              : firstNo + index - 1
+            : firstNo + index,
           qty: ticket.qty,
         })),
       });
@@ -690,7 +697,7 @@ export class ProductionSubTicketsService {
       assertOrderActive(order);
       assertCastingReady(
         order,
-        'Xác nhận phiếu đúc (cân phôi) cho đơn trước khi chia phiếu con',
+        'Cắt cây thông (cân phôi) cho đơn trước khi chia phiếu con',
       );
       if (order.subTickets.length === 0) {
         throw new BadRequestException(
@@ -781,7 +788,9 @@ export class ProductionSubTicketsService {
         throw new BadRequestException('Đơn chưa chia phiếu con');
       }
       if (order.intakeOrderId && order.subTickets.length === 1) {
-        throw new BadRequestException('Đơn chỉ có một phiếu, không có gì để hủy chia');
+        throw new BadRequestException(
+          'Đơn chỉ có một phiếu, không có gì để hủy chia',
+        );
       }
       const started = order.subTickets.find(
         (ticket) =>
@@ -814,7 +823,9 @@ export class ProductionSubTicketsService {
           data: { qty: order.qty, note: null },
         });
       } else {
-        await tx.productionSubTicket.deleteMany({ where: { orderId: order.id } });
+        await tx.productionSubTicket.deleteMany({
+          where: { orderId: order.id },
+        });
       }
       if (!printed) {
         await tx.productionOrder.update({
@@ -906,7 +917,7 @@ export class ProductionSubTicketsService {
       assertOrderActive(order);
       assertCastingReady(
         order,
-        'Xác nhận phiếu đúc (cân phôi) cho đơn trước khi giao thợ',
+        'Cắt cây thông (cân phôi) cho đơn trước khi giao thợ',
       );
       const ticket = requireSubTicket(order, no);
       const entries = entriesOf(order, ticket.id);
@@ -919,7 +930,11 @@ export class ProductionSubTicketsService {
       const last = lastOf(entries) ?? lastOf(orderEntries(order));
       let stage = dto.stage ?? nextStageAfter(last?.stage ?? null);
       // Đơn không có đá (0 viên theo 3D) bỏ qua khâu Vào đá khi để hệ thống chọn khâu kế tiếp.
-      if (!dto.stage && stage === ProductionStage.STONE_SETTING && order.stoneCount === 0) {
+      if (
+        !dto.stage &&
+        stage === ProductionStage.STONE_SETTING &&
+        order.stoneCount === 0
+      ) {
         stage = nextStageAfter(stage);
       }
       if (!stage) {
@@ -952,7 +967,11 @@ export class ProductionSubTicketsService {
         throw new BadRequestException('Tài khoản thợ không còn hoạt động');
       }
       if (
-        !userHasRole(craftsman.roleCode, craftsman.extraRoles, RoleCode.ADMIN) &&
+        !userHasRole(
+          craftsman.roleCode,
+          craftsman.extraRoles,
+          RoleCode.ADMIN,
+        ) &&
         !craftsman.workerStages.includes(stage)
       ) {
         throw new BadRequestException(
@@ -960,8 +979,14 @@ export class ProductionSubTicketsService {
         );
       }
       const stones = dto.stones ?? [];
-      if (stage === ProductionStage.STONE_SETTING && stones.length === 0 && order.stoneCount !== 0) {
-        throw new BadRequestException('Khâu Vào đá: chọn đá cấp cho thợ (số viên, TL)');
+      if (
+        stage === ProductionStage.STONE_SETTING &&
+        stones.length === 0 &&
+        order.stoneCount !== 0
+      ) {
+        throw new BadRequestException(
+          'Khâu Vào đá: chọn đá cấp cho thợ (số viên, TL)',
+        );
       }
       if (stage !== ProductionStage.STONE_SETTING && stones.length > 0) {
         throw new BadRequestException('Chỉ khâu Vào đá mới cấp đá');
@@ -1079,7 +1104,7 @@ export class ProductionSubTicketsService {
    * - Nguội: phôi của phiếu (SL = SL phiếu, TL chia theo phôi còn lại của đơn).
    * - Vào đá: BTP đã nguội thủ kho nhập kho ở bước xác nhận (SL + TL KCS nhận lại); đá cấp ở
    *   bước chỉ định được gắn vào khâu nhưng CHƯA xuất kho — xuất khi xác nhận sau KCS.
-   * Khâu khác cần thủ kho cấp NVL nên đi bằng "Xác nhận giao".
+   * Khâu khác chưa đi qua kho nên người giao cân bạc và bấm "Xác nhận giao".
    */
   async accept(code: string, no: number, actor: AuthUserPayload) {
     const touched: string[] = [];
@@ -1104,7 +1129,7 @@ export class ProductionSubTicketsService {
         stage !== ProductionStage.STONE_SETTING
       ) {
         throw new BadRequestException(
-          `Khâu ${STAGE_LABEL[stage]} cần thủ kho cấp NVL — nhờ thủ kho bấm "Xác nhận giao"`,
+          `Khâu ${STAGE_LABEL[stage]} không nhận hàng qua QR — nhờ người giao bấm "Xác nhận giao"`,
         );
       }
       const craftsman = await tx.user.findFirst({
@@ -1112,7 +1137,9 @@ export class ProductionSubTicketsService {
         select: { id: true, fullName: true, username: true },
       });
       if (!craftsman) {
-        throw new BadRequestException('Tài khoản thợ được chỉ định không còn hoạt động');
+        throw new BadRequestException(
+          'Tài khoản thợ được chỉ định không còn hoạt động',
+        );
       }
 
       // Hàng giao cho thợ: số lượng, TL (gram) và dòng xuất BTP tự động.
@@ -1127,7 +1154,11 @@ export class ProductionSubTicketsService {
       if (stage === ProductionStage.FILING) {
         // Phôi của phiếu: SL = SL phiếu; TL chia theo phôi còn lại (phiếu cuối lấy hết).
         const left = blankLeftOf(order);
-        if (!left.btpMaterialId || left.leftQty == null || left.leftWeight == null) {
+        if (
+          !left.btpMaterialId ||
+          left.leftQty == null ||
+          left.leftWeight == null
+        ) {
           throw new BadRequestException(
             `Đơn ${order.code} chưa có phôi sau đúc trong kho BTP`,
           );
@@ -1300,7 +1331,11 @@ export class ProductionSubTicketsService {
         );
       }
       const isHolder = open.craftsmanUserId === actor.id;
-      if (!isHolder && !isAdmin(actor) && !userCan(actor, Permission.PRODUCTION_QC)) {
+      if (
+        !isHolder &&
+        !isAdmin(actor) &&
+        !userCan(actor, Permission.PRODUCTION_QC)
+      ) {
         throw new ForbiddenException(
           'Chỉ thợ đang giữ khâu, KCS hoặc admin được báo lỗi khâu này',
         );
@@ -1331,7 +1366,9 @@ export class ProductionSubTicketsService {
   async clearStageDefect(code: string, no: number, actor: AuthUserPayload) {
     return this.mutate(code, async (tx, order) => {
       const ticket = requireSubTicket(order, no);
-      const open = entriesOf(order, ticket.id).find((entry) => !entry.returnedAt);
+      const open = entriesOf(order, ticket.id).find(
+        (entry) => !entry.returnedAt,
+      );
       if (!open?.defectReportedAt) {
         throw new BadRequestException('Khâu này chưa báo lỗi');
       }
@@ -1340,7 +1377,9 @@ export class ProductionSubTicketsService {
         !isAdmin(actor) &&
         !userCan(actor, Permission.PRODUCTION_QC)
       ) {
-        throw new ForbiddenException('Chỉ người đã báo lỗi, KCS hoặc admin được bỏ báo lỗi');
+        throw new ForbiddenException(
+          'Chỉ người đã báo lỗi, KCS hoặc admin được bỏ báo lỗi',
+        );
       }
       await tx.productionStageEntry.update({
         where: { id: open.id },
@@ -1365,14 +1404,12 @@ export class ProductionSubTicketsService {
    * kho: hàng đạt → kho BTP (mã riêng của đơn, khâu sau lấy hàng từ đây), hàng lỗi + nguyên liệu
    * thừa S925 / S999 → kho NVL. Cả phiếu lỗi 100% thì phiếu tự chốt Lỗi (M Lỗi nguội…).
    */
-  async confirmStage(
-    code: string,
-    stageId: string,
-    actor: AuthUserPayload,
-  ) {
+  async confirmStage(code: string, stageId: string, actor: AuthUserPayload) {
     return this.mutate(code, async (tx, order) => {
       const entry = requireStage(order, stageId);
-      const ticket = order.subTickets.find((item) => item.id === entry.subTicketId);
+      const ticket = order.subTickets.find(
+        (item) => item.id === entry.subTicketId,
+      );
       if (!ticket || !KEEPER_CONFIRM_STAGES.includes(entry.stage)) {
         throw new BadRequestException(
           `Khâu ${STAGE_LABEL[entry.stage]} không có bước thủ kho xác nhận`,
@@ -1494,7 +1531,7 @@ export class ProductionSubTicketsService {
         },
       });
       await this.syncOrderAfterStage(tx, order.id, actor, allDefect);
-    }).then(async (detail) => {
+    }).then((detail) => {
       this.inventory.bustBtpStock();
       this.inventory.bustNvlStock();
       return detail;
@@ -1737,12 +1774,18 @@ export class ProductionSubTicketsService {
     return this.mutate(code, async (tx, order) => {
       assertOrderActive(order);
       const entry = requireStage(order, stageId);
-      const ticket = order.subTickets.find((item) => item.id === entry.subTicketId);
+      const ticket = order.subTickets.find(
+        (item) => item.id === entry.subTicketId,
+      );
       if (!ticket || !KEEPER_CONFIRM_STAGES.includes(entry.stage)) {
-        throw new BadRequestException('Chỉ tạo phiếu bù cho hàng lỗi ở khâu Nguội / Vào đá');
+        throw new BadRequestException(
+          'Chỉ tạo phiếu bù cho hàng lỗi ở khâu Nguội / Vào đá',
+        );
       }
       if (!entry.confirmedAt) {
-        throw new BadRequestException('Thủ kho xác nhận khâu này rồi mới tạo phiếu bù được');
+        throw new BadRequestException(
+          'Thủ kho xác nhận khâu này rồi mới tạo phiếu bù được',
+        );
       }
       const defectQty = entry.defectQty ?? 0;
       if (defectQty <= 0) {
@@ -1758,7 +1801,9 @@ export class ProductionSubTicketsService {
         select: { code: true },
       });
       if (existing) {
-        throw new BadRequestException(`Đã có phiếu bù ${existing.code} cho lần KCS nhận lại này`);
+        throw new BadRequestException(
+          `Đã có phiếu bù ${existing.code} cho lần KCS nhận lại này`,
+        );
       }
       const source = await tx.intakeOrder.findUnique({
         where: { id: order.intakeOrderId },
@@ -1798,7 +1843,9 @@ export class ProductionSubTicketsService {
           model3dUrl: source.model3dUrl,
           productWeightGram: source.productWeightGram,
           stoneCount3d:
-            source.stoneCount3d != null ? Math.round(source.stoneCount3d * ratio) : null,
+            source.stoneCount3d != null
+              ? Math.round(source.stoneCount3d * ratio)
+              : null,
           stoneWeight3dGram: source.stoneWeight3dGram
             ? source.stoneWeight3dGram.mul(ratio).toDecimalPlaces(4)
             : null,
@@ -1910,7 +1957,7 @@ export class ProductionSubTicketsService {
       assertHandoverManager(order, actor);
       assertCastingReady(
         order,
-        'Xác nhận phiếu đúc (cân phôi) cho đơn trước khi giao khâu cho thợ',
+        'Cắt cây thông (cân phôi) cho đơn trước khi giao khâu cho thợ',
       );
       const ticket = requireSubTicket(order, no);
       const entries = entriesOf(order, ticket.id);
@@ -1924,7 +1971,10 @@ export class ProductionSubTicketsService {
       }
       // Nguội / Vào đá đi theo luồng mới: thủ kho chỉ định thợ, thợ quét QR bấm "Nhận hàng" —
       // hệ thống tự xuất BTP (và đá đã giữ chỗ ở Vào đá) nên không còn bước chọn NVL tay ở đây.
-      if (stage === ProductionStage.FILING || stage === ProductionStage.STONE_SETTING) {
+      if (
+        stage === ProductionStage.FILING ||
+        stage === ProductionStage.STONE_SETTING
+      ) {
         throw new BadRequestException(
           `Khâu ${STAGE_LABEL[stage]} không xác nhận giao tay — thủ kho chỉ định thợ rồi thợ bấm "Nhận hàng" (admin bấm thay thợ được)`,
         );
@@ -2109,6 +2159,45 @@ export class ProductionSubTicketsService {
       });
       await this.syncOrder(tx, order, actor);
     });
+  }
+
+  /**
+   * KCS nhận lại 0 sản phẩm ở khâu không qua thủ kho: phiếu con chốt Lỗi ngay trong transaction
+   * của lần nhận lại, đơn mẹ tính lại trạng thái (mọi phiếu con lỗi thì Sản xuất lỗi).
+   */
+  async closeTicketAsDefect(
+    tx: Prisma.TransactionClient,
+    target: {
+      orderId: string;
+      orderCode: string;
+      ticketId: string;
+      ticketNo: number;
+      stage: ProductionStage;
+      note: string;
+    },
+    actor: AuthUserPayload,
+  ) {
+    await tx.productionSubTicket.update({
+      where: { id: target.ticketId },
+      data: {
+        ...CLEAR_PENDING,
+        outcome: SubTicketOutcome.DEFECT,
+        outcomeAt: new Date(),
+        outcomeByUserId: actor.id,
+        outcomeByName: actorName(actor),
+        outcomeStage: target.stage,
+        outcomeQty: null,
+        outcomeNote: target.note,
+      },
+    });
+    await logActivity(tx, target.orderId, actor, ACTIVITY.TICKET_OUTCOME, {
+      orderCode: target.orderCode,
+      subTicketNo: target.ticketNo,
+      stage: target.stage,
+      after: { outcome: SubTicketOutcome.DEFECT, outcomeQty: null },
+      note: target.note,
+    });
+    await this.syncOrderAfterStage(tx, target.orderId, actor, true);
   }
 
   /** Admin gỡ kết cục để sửa sai: phiếu về lại luồng làm, đơn tính lại trạng thái và kho. */
@@ -2567,9 +2656,7 @@ export class ProductionSubTicketsService {
     return {
       /** Khâu tài khoản này được nhận; admin nhận mọi khâu. */
       stages: stages ?? Object.values(ProductionStage),
-      available: [
-        ...parentAvailable.map((order) => parentPendingItem(order)),
-      ],
+      available: [...parentAvailable.map((order) => parentPendingItem(order))],
       mine: [
         ...parentClaimed.map((order) => parentPendingItem(order)),
         ...parentWorking.map((entry) => parentEntryItem(entry)),
@@ -2631,8 +2718,8 @@ const STATE_LABEL = {
   WORKING: 'được thợ làm, chờ KCS nhận lại',
   SUBMITTED: 'thợ đã báo xong, chờ KCS cân lại',
   CONFIRMING: 'chờ thủ kho xác nhận sau KCS',
-  DEFECT: 'đã chốt lỗi',
-  FINISH: 'đã hoàn thiện',
+  DEFECT: 'ở nhánh Lỗi',
+  FINISH: 'ở nhánh Hoàn thiện',
 } as const;
 
 const OUTCOME_LABEL: Record<SubTicketOutcome, string> = {
@@ -2655,7 +2742,11 @@ function castingSlipMyItem(row: {
   _count: { orders: number };
 }) {
   let issueTotal = new Prisma.Decimal(0);
-  for (const part of [row.issueS999Gram, row.issueMasterAlloyGram, row.issueS925Gram]) {
+  for (const part of [
+    row.issueS999Gram,
+    row.issueMasterAlloyGram,
+    row.issueS925Gram,
+  ]) {
     if (part != null) issueTotal = issueTotal.add(part);
   }
   return {
@@ -2737,6 +2828,7 @@ function defectNoteOf(
   entry: {
     defectReportedByName: string | null;
     defectNote: string | null;
+    defectReason: string | null;
     defectQty: number | null;
     handedQty: number | null;
     btpRecoveredWeight: Prisma.Decimal | null;
@@ -2753,14 +2845,21 @@ function defectNoteOf(
       `Lý do: ${entry.defectNote}${entry.defectReportedByName ? ` (báo bởi ${entry.defectReportedByName})` : ''}`,
     );
   }
+  if (entry.defectReason) parts.push(`KCS ghi lỗi: ${entry.defectReason}`);
   const qty = entry.defectQty ?? entry.handedQty;
-  const weight = entry.btpRecoveredWeight ? ` · ${decStr(entry.btpRecoveredWeight)} g` : '';
+  const weight = entry.btpRecoveredWeight
+    ? ` · ${decStr(entry.btpRecoveredWeight)} g`
+    : '';
   parts.push(
     `KCS${entry.returnedByName ? ` ${entry.returnedByName}` : ''} cân: toàn bộ ${qty ?? '—'} sp lỗi${weight} (đạt 0 sp)`,
   );
   const scraps = [
-    entry.silverRecoveredWeight?.gt(0) ? `S925 thừa ${decStr(entry.silverRecoveredWeight)} g` : '',
-    entry.scrapS999Weight?.gt(0) ? `S999 thừa ${decStr(entry.scrapS999Weight)} g` : '',
+    entry.silverRecoveredWeight?.gt(0)
+      ? `S925 thừa ${decStr(entry.silverRecoveredWeight)} g`
+      : '',
+    entry.scrapS999Weight?.gt(0)
+      ? `S999 thừa ${decStr(entry.scrapS999Weight)} g`
+      : '',
   ].filter(Boolean);
   if (scraps.length) parts.push(scraps.join(' · '));
   if (entry.note) parts.push(`Ghi chú: ${entry.note}`);
@@ -2896,10 +2995,6 @@ function touch(tx: Prisma.TransactionClient, orderId: string) {
 
 function lastOf<T>(items: T[]): T | undefined {
   return items[items.length - 1];
-}
-
-function unique(values: number[]) {
-  return Array.from(new Set(values));
 }
 
 function baseItem(row: MyTicketRow) {

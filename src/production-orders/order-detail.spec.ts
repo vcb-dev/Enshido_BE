@@ -1,4 +1,8 @@
-import { MaterialRequestStatus, Prisma, ProductionStatus } from '@prisma/client';
+import {
+  MaterialRequestStatus,
+  Prisma,
+  ProductionStatus,
+} from '@prisma/client';
 import {
   blankLeftOf,
   entriesOf,
@@ -30,15 +34,19 @@ describe('phôi ghi trực tiếp trên lệnh sau đúc', () => {
       blankWeight: new Prisma.Decimal('12.5'),
       blankMaterialId: 'blank-material',
       castingCutLines: [],
-      materialRequests: [{
-        status: MaterialRequestStatus.ISSUED,
-        materialId: 'blank-material',
-        issuedQty: new Prisma.Decimal(1),
-        issuedWeight: new Prisma.Decimal('4.5'),
-      }],
+      materialRequests: [
+        {
+          status: MaterialRequestStatus.ISSUED,
+          materialId: 'blank-material',
+          issuedQty: new Prisma.Decimal(1),
+          issuedWeight: new Prisma.Decimal('4.5'),
+        },
+      ],
     };
     expect(blankLeftOf(order)).toEqual({
-      btpMaterialId: 'blank-material', leftQty: '2', leftWeight: '8',
+      btpMaterialId: 'blank-material',
+      leftQty: '2',
+      leftWeight: '8',
     });
   });
 });
@@ -506,18 +514,24 @@ describe('ticketPosition — phiếu con đang đứng ở khâu nào', () => {
 
 describe('furthestStatus — trạng thái đơn khi phiếu con đi lệch', () => {
   it('lấy phiếu đi xa nhất (tích cực nhất), không theo phiếu chậm', () => {
-    expect(
-      furthestStatus(['STONE_SETTING', 'FILING', 'WAIT_FILING']),
-    ).toBe('STONE_SETTING');
+    expect(furthestStatus(['STONE_SETTING', 'FILING', 'WAIT_FILING'])).toBe(
+      'STONE_SETTING',
+    );
   });
 
   it('không phụ thuộc thứ tự phiếu', () => {
-    expect(furthestStatus(['ENGRAVING', 'PLATING', 'POLISHING'])).toBe('PLATING');
-    expect(furthestStatus(['PLATING', 'ENGRAVING', 'POLISHING'])).toBe('PLATING');
+    expect(furthestStatus(['ENGRAVING', 'PLATING', 'POLISHING'])).toBe(
+      'PLATING',
+    );
+    expect(furthestStatus(['PLATING', 'ENGRAVING', 'POLISHING'])).toBe(
+      'PLATING',
+    );
   });
 
   it('phiếu lỗi xếp thấp nhất: còn phiếu khác chạy thì đơn không báo lỗi', () => {
-    expect(furthestStatus(['FILING_DEFECT', 'WAIT_FILING'])).toBe('WAIT_FILING');
+    expect(furthestStatus(['FILING_DEFECT', 'WAIT_FILING'])).toBe(
+      'WAIT_FILING',
+    );
     expect(furthestStatus(['FILING_DEFECT', 'STONE_DEFECT'])).not.toBeNull();
   });
 
@@ -536,13 +550,19 @@ describe('ticketStatus — I/K/L/N/O của phiếu con', () => {
   });
 
   it('khâu mở chờ thợ là "Chờ", thợ đang làm là "Đang"', () => {
-    expect(ticketStatus(ticket({ pendingStage: 'FILING' }), [])).toBe('WAIT_FILING');
-    expect(ticketStatus(ticket({ pendingStage: 'STONE_SETTING' }), [])).toBe('WAIT_STONE');
+    expect(ticketStatus(ticket({ pendingStage: 'FILING' }), [])).toBe(
+      'WAIT_FILING',
+    );
+    expect(ticketStatus(ticket({ pendingStage: 'STONE_SETTING' }), [])).toBe(
+      'WAIT_STONE',
+    );
     expect(ticketStatus(ticket(), [entry({ stage: 'FILING' })])).toBe('FILING');
     expect(
       ticketStatus(ticket(), [entry({ stage: 'FILING', submittedAt: DONE })]),
     ).toBe('FILING');
-    expect(ticketStatus(ticket(), [entry({ stage: 'STONE_SETTING' })])).toBe('STONE_SETTING');
+    expect(ticketStatus(ticket(), [entry({ stage: 'STONE_SETTING' })])).toBe(
+      'STONE_SETTING',
+    );
   });
 
   it('KCS nhận lại xong thì sang Chờ khâu kế: Nguội → L, Vào đá → O', () => {
@@ -559,7 +579,12 @@ describe('ticketStatus — I/K/L/N/O của phiếu con', () => {
 
   it('đơn không có đá: Nguội xong đi thẳng Chờ khắc (O)', () => {
     expect(
-      ticketStatus(ticket(), [entry({ stage: 'FILING', returnedAt: DONE })], null, true),
+      ticketStatus(
+        ticket(),
+        [entry({ stage: 'FILING', returnedAt: DONE })],
+        null,
+        true,
+      ),
     ).toBe('WAIT_ENGRAVING');
   });
 
@@ -570,10 +595,18 @@ describe('ticketStatus — I/K/L/N/O của phiếu con', () => {
   });
 
   it('KCS đã nhận nhưng thủ kho chưa xác nhận: vẫn "Đang" khâu đó, chưa sang L', () => {
-    const waiting = entry({ stage: 'FILING', returnedAt: DONE, confirmedAt: null });
+    const waiting = entry({
+      stage: 'FILING',
+      returnedAt: DONE,
+      confirmedAt: null,
+    });
     expect(subTicketState(ticket(), [waiting]).state).toBe('CONFIRMING');
     expect(ticketStatus(ticket(), [waiting])).toBe('FILING');
-    const confirmed = entry({ stage: 'FILING', returnedAt: DONE, confirmedAt: DONE });
+    const confirmed = entry({
+      stage: 'FILING',
+      returnedAt: DONE,
+      confirmedAt: DONE,
+    });
     expect(subTicketState(ticket(), [confirmed]).state).toBe('IDLE');
     expect(ticketStatus(ticket(), [confirmed])).toBe('WAIT_STONE');
   });
@@ -581,14 +614,24 @@ describe('ticketStatus — I/K/L/N/O của phiếu con', () => {
   it('báo lỗi ở khâu đang làm: coi như đã nộp cho KCS cân lại', () => {
     const flagged = entry({ stage: 'FILING', defectReportedAt: DONE });
     expect(subTicketState(ticket(), [flagged]).state).toBe('SUBMITTED');
-    expect(subTicketState(ticket(), [entry({ stage: 'FILING' })]).state).toBe('WORKING');
+    expect(subTicketState(ticket(), [entry({ stage: 'FILING' })]).state).toBe(
+      'WORKING',
+    );
   });
 
   it('lỗi 100% ở Nguội / Vào đá có trạng thái lỗi riêng', () => {
-    expect(outcomeStatus({ outcome: 'DEFECT', outcomeStage: 'FILING' })).toBe('FILING_DEFECT');
-    expect(outcomeStatus({ outcome: 'DEFECT', outcomeStage: 'STONE_SETTING' })).toBe('STONE_DEFECT');
-    expect(outcomeStatus({ outcome: 'DEFECT', outcomeStage: 'PLATING' })).toBe('DEFECT');
-    expect(outcomeStatus({ outcome: 'FINISH', outcomeStage: 'PLATING' })).toBe('FINISHING');
+    expect(outcomeStatus({ outcome: 'DEFECT', outcomeStage: 'FILING' })).toBe(
+      'FILING_DEFECT',
+    );
+    expect(
+      outcomeStatus({ outcome: 'DEFECT', outcomeStage: 'STONE_SETTING' }),
+    ).toBe('STONE_DEFECT');
+    expect(outcomeStatus({ outcome: 'DEFECT', outcomeStage: 'PLATING' })).toBe(
+      'DEFECT',
+    );
+    expect(outcomeStatus({ outcome: 'FINISH', outcomeStage: 'PLATING' })).toBe(
+      'FINISHING',
+    );
   });
 
   it('phiếu đã chốt kết cục thì không có trạng thái khâu', () => {

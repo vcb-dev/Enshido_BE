@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -195,8 +194,6 @@ function workerStagesFor(
     return STAGE_ORDER.filter((stage) => stages.includes(stage));
   }
   const unique = STAGE_ORDER.filter((stage) => stages.includes(stage));
-  if (unique.length === 0) {
-    throw new BadRequestException('Chọn ít nhất một khâu thợ được nhận');
-  }
-  return unique;
+  // Form Nhân sự không còn chọn khâu: thợ sản xuất mặc định nhận mọi khâu.
+  return unique.length ? unique : [...STAGE_ORDER];
 }

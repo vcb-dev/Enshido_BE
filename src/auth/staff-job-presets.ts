@@ -68,6 +68,7 @@ export function roleAndScreensForPreset(preset: StaffJobPreset): {
           ...WAREHOUSE_SCREENS,
           Permission.SCREEN_PRODUCTION_ORDERS,
           Permission.WAREHOUSE_KEEPER,
+          Permission.INTAKE_CREATE,
           Permission.INTAKE_APPROVE,
         ],
       };

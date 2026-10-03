@@ -21,7 +21,7 @@ export const Permission = {
   PRODUCTION_WORKER: 'production.worker',
   /** Bước 1: tạo đơn. */
   INTAKE_CREATE: 'intake.create',
-  /** Bước 2: quản lý sản xuất duyệt / từ chối / sửa / xoá đơn. */
+  /** Bước 2: thủ kho duyệt / từ chối / sửa / xoá đơn. */
   INTAKE_APPROVE: 'intake.approve',
   /** Bước 3–4: thợ 3D gắn link 3D, in sáp resin. */
   PRODUCTION_MODEL3D: 'production.model3d',
@@ -29,15 +29,10 @@ export const Permission = {
   PRODUCTION_WAX: 'production.wax',
   /** Bước 8–9: thợ đúc bắt đầu đúc và nhập kết quả. */
   PRODUCTION_CAST: 'production.cast',
-  /** Bước 5–11: thủ kho xác nhận sáp, lên phiếu đúc, xác nhận đúc xong (cân phôi), chia phiếu, duyệt xuất NVL. */
+  /** Bước 5–11: thủ kho xác nhận sáp, lên phiếu đúc, cắt cây thông (cân phôi), chia phiếu, duyệt xuất NVL. */
   WAREHOUSE_KEEPER: 'warehouse.keeper',
   /** Bước 13–15, 18: KCS nhận lại hàng, chốt Lỗi / Hoàn thiện. */
   PRODUCTION_QC: 'production.qc',
-  /**
-   * Quản lý xưởng — một người kiêm quản lý SX + thủ kho + KCS. Tick quyền này là có đủ
-   * `intake.create`, `intake.approve`, `warehouse.keeper`, `production.qc`.
-   */
-  PRODUCTION_MANAGER: 'production.manager',
 } as const;
 
 export type PermissionCode = (typeof Permission)[keyof typeof Permission];
@@ -73,14 +68,6 @@ export function permissionsForRoles(
   );
 }
 
-/** Các việc mà quyền Quản lý xưởng bao gồm. */
-export const MANAGER_PERMISSIONS: readonly PermissionCode[] = [
-  Permission.INTAKE_CREATE,
-  Permission.INTAKE_APPROVE,
-  Permission.WAREHOUSE_KEEPER,
-  Permission.PRODUCTION_QC,
-];
-
 export function sanitizeScreens(
   screens: readonly string[] | undefined | null,
 ): PermissionCode[] {
@@ -106,13 +93,7 @@ export function permissionsForUser(
     ...permissionsForRoles(roleCode, extraRoles),
     ...sanitizeScreens(allowedScreens),
   ];
-  return Array.from(
-    new Set(
-      granted.includes(Permission.PRODUCTION_MANAGER)
-        ? [...granted, ...MANAGER_PERMISSIONS]
-        : granted,
-    ),
-  );
+  return Array.from(new Set(granted));
 }
 
 export function userHasPermission(

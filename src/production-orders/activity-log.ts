@@ -12,7 +12,7 @@ export const ACTIVITY = {
   ORDER_DELETE: 'ORDER_DELETE',
   ORDER_STATUS: 'ORDER_STATUS',
   ORDER_CASTING: 'ORDER_CASTING',
-  /** Xác nhận đúc xong: cân phôi, nhập kho BTP, đơn sang Chờ nguội. */
+  /** Cắt cây thông: cân phôi, nhập kho BTP, đơn sang Chờ nguội. */
   ORDER_CUT: 'ORDER_CUT',
   ORDER_UNDO_CUT: 'ORDER_UNDO_CUT',
   ORDER_FINISH: 'ORDER_FINISH',

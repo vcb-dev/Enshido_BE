@@ -110,7 +110,7 @@ describe('xác nhận đúc → Nguội', () => {
           status: 'WAIT_FILING',
           blankQty: 2,
           intakeOrderId: '1',
-        }),
+        }) as unknown,
       }),
     );
     expect(tx.productionOrder.create).toHaveBeenNthCalledWith(
@@ -121,7 +121,7 @@ describe('xác nhận đúc → Nguội', () => {
           status: 'WAIT_FILING',
           blankQty: 2,
           intakeOrderId: '2',
-        }),
+        }) as unknown,
       }),
     );
     expect(inventory.createAutoInbound).toHaveBeenCalledTimes(3);

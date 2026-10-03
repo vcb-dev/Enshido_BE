@@ -595,25 +595,6 @@ export class ProductionOrdersController {
     return this.subTickets.handover(code, no, dto, user);
   }
 
-  /** Chốt phiếu con ở nhánh Lỗi — lý do bắt buộc. */
-  @Post(':code/sub-tickets/:no/defect')
-  @BlockWorker()
-  @RequirePermissions(Permission.PRODUCTION_QC)
-  defectSubTicket(
-    @Param('code') code: string,
-    @Param('no', ParseIntPipe) no: number,
-    @Body() dto: SubTicketOutcomeDto,
-    @CurrentUser() user: AuthUserPayload,
-  ) {
-    return this.subTickets.setOutcome(
-      code,
-      no,
-      SubTicketOutcome.DEFECT,
-      dto,
-      user,
-    );
-  }
-
   /** Chốt phiếu con ở nhánh Hoàn thiện — số lượng phiếu vào kho thành phẩm. */
   @Post(':code/sub-tickets/:no/finish')
   @BlockWorker()

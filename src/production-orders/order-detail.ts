@@ -344,7 +344,8 @@ export function subTicketState(
   const open = entries.find((entry) => !entry.returnedAt);
   if (open) {
     return {
-      state: open.submittedAt || open.defectReportedAt ? 'SUBMITTED' : 'WORKING',
+      state:
+        open.submittedAt || open.defectReportedAt ? 'SUBMITTED' : 'WORKING',
       activeStage: open.stage,
     };
   }
@@ -415,7 +416,12 @@ export function orderListStatuses(order: {
     const entries = order.stages.filter(
       (entry) => entry.subTicketId === ticket.id,
     );
-    const status = ticketStatus(ticket, entries, orderLast, order.stoneCount === 0);
+    const status = ticketStatus(
+      ticket,
+      entries,
+      orderLast,
+      order.stoneCount === 0,
+    );
     if (status) statuses.add(status);
   }
   if (statuses.size === 0) statuses.add(order.status);
@@ -721,7 +727,9 @@ export function handoverSilverLimit(
 
   const blank = order.blankWeight;
   const parentEntries = order.stages.filter((entry) => !entry.subTicketId);
-  const lastParent = ticketId ? parentEntries[parentEntries.length - 1] : undefined;
+  const lastParent = ticketId
+    ? parentEntries[parentEntries.length - 1]
+    : undefined;
   const pool = lastParent ? lastParent.returnedSilverWeight : blank;
   if (pool == null) return null;
   if (!ticketId) return pool;
@@ -760,10 +768,16 @@ type BlankSource = {
  * xuất lấn sang phôi của đơn khác.
  */
 export function blankLeftOf(order: BlankSource) {
-  const blank = order.blankMaterialId && order.blankQty != null && order.blankWeight != null
-    ? { btpMaterialId: order.blankMaterialId, qty: order.blankQty, weight: order.blankWeight }
-    : null;
-  if (!blank?.btpMaterialId) return { btpMaterialId: null, leftQty: null, leftWeight: null };
+  const blank =
+    order.blankMaterialId && order.blankQty != null && order.blankWeight != null
+      ? {
+          btpMaterialId: order.blankMaterialId,
+          qty: order.blankQty,
+          weight: order.blankWeight,
+        }
+      : null;
+  if (!blank?.btpMaterialId)
+    return { btpMaterialId: null, leftQty: null, leftWeight: null };
   let qty = new Prisma.Decimal(0);
   let weight = new Prisma.Decimal(0);
   for (const request of order.materialRequests) {
@@ -883,15 +897,16 @@ export function toDetail(order: OrderDetail) {
       : null,
     cutAt: order.cutAt ? order.cutAt.toISOString() : null,
     // Phôi đơn nhận lúc xác nhận phiếu đúc — mốc bạc giao khâu Nguội.
-    cut: order.blankWeight != null && order.blankQty != null
-      ? {
-          code: null,
-          cutAt: order.cutAt?.toISOString() ?? null,
-          qty: order.blankQty,
-          weight: decStr(order.blankWeight),
-          ...blankLeftOf(order),
-        }
-      : null,
+    cut:
+      order.blankWeight != null && order.blankQty != null
+        ? {
+            code: null,
+            cutAt: order.cutAt?.toISOString() ?? null,
+            qty: order.blankQty,
+            weight: decStr(order.blankWeight),
+            ...blankLeftOf(order),
+          }
+        : null,
     debtStatus: order.debtStatus,
     parentCode: order.parent?.code ?? null,
     split,
@@ -934,7 +949,11 @@ export function toDetail(order: OrderDetail) {
       height: image.height,
     })),
     stages: order.stages.map((entry) => {
-      const limit = handoverSilverLimit(order, entry.subTicketId ?? null, entry.id);
+      const limit = handoverSilverLimit(
+        order,
+        entry.subTicketId ?? null,
+        entry.id,
+      );
       return {
         ...toStage(
           entry,
@@ -999,8 +1018,9 @@ export function toDetail(order: OrderDetail) {
       qty: rework.qty,
       entryId: rework.reworkOfEntryId,
       ticketNo:
-        order.subTickets.find((ticket) => ticket.id === rework.reworkOfSubTicketId)
-          ?.no ?? null,
+        order.subTickets.find(
+          (ticket) => ticket.id === rework.reworkOfSubTicketId,
+        )?.no ?? null,
     })),
     /** NVL xuất thêm + hao hụt của cả đơn, cộng mọi phiếu. */
     materials: ticketMaterials(
@@ -1039,14 +1059,15 @@ function toSubTicket(order: OrderDetail, ticket: SubTicket) {
         entries,
         orderEntries(order).slice(-1)[0]?.stage ?? null,
         order.stoneCount === 0,
-      ) ??
-      outcomeStatus(ticket),
+      ) ?? outcomeStatus(ticket),
     /** Đá thủ kho đã cấp (giữ chỗ) cho khâu Vào đá đang chờ thợ nhận. */
     heldStoneCount: (ticket.stoneHolds ?? []).reduce(
       (sum, hold) => sum + (hold.stoneCount ?? 0),
       0,
     ),
-    heldStoneWeight: (ticket.stoneHolds ?? []).some((hold) => hold.weight != null)
+    heldStoneWeight: (ticket.stoneHolds ?? []).some(
+      (hold) => hold.weight != null,
+    )
       ? decStr(
           (ticket.stoneHolds ?? []).reduce(
             (sum, hold) => sum.add(hold.weight ?? 0),
@@ -1287,6 +1308,7 @@ export function toStage(
     silverRecoveredWeight: dec(entry.silverRecoveredWeight),
     /** Nguội / Vào đá: KCS tách hàng lỗi (SL), S999 thừa; thủ kho xác nhận rồi mới nhập kho. */
     defectQty: entry.defectQty,
+    defectReason: entry.defectReason,
     scrapS999Weight: dec(entry.scrapS999Weight),
     confirmedAt: entry.confirmedAt?.toISOString() ?? null,
     confirmedByName: entry.confirmedByName,

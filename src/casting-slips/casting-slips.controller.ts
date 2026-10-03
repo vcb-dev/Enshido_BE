@@ -8,7 +8,11 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
-import { BlockWorker, CurrentUser, RequirePermissions } from '../auth/decorators';
+import {
+  BlockWorker,
+  CurrentUser,
+  RequirePermissions,
+} from '../auth/decorators';
 import { Permission } from '../auth/permissions';
 import type { AuthUserPayload } from '../auth/types';
 import { CastingSlipsService } from './casting-slips.service';
@@ -91,7 +95,10 @@ export class CastingSlipsController {
   @Post(':id/issue')
   @BlockWorker()
   @RequirePermissions(Permission.WAREHOUSE_KEEPER)
-  issue(@Param('id', ParseUUIDPipe) id: string, @Body() dto: IssueCastingSlipDto) {
+  issue(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: IssueCastingSlipDto,
+  ) {
     return this.slips.issue(id, dto);
   }
 
@@ -132,7 +139,7 @@ export class CastingSlipsController {
     return this.slips.submitResult(id, dto, user);
   }
 
-  /** Thủ kho xác nhận đúc, chia phôi vào lệnh sản xuất và chuyển sang Nguội. */
+  /** Thủ kho cắt cây thông: chia phôi vào lệnh sản xuất và chuyển sang Nguội. */
   @Post(':id/confirm')
   @BlockWorker()
   @RequirePermissions(Permission.WAREHOUSE_KEEPER)

@@ -79,7 +79,7 @@ export class ProductionCostingService {
       select: { id: true },
     });
     if (!order) throw new NotFoundException('Không tìm thấy đơn sản xuất');
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+
     const { unitCostDecimal, ...result } = await this.costing(order.id);
     return result;
   }

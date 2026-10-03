@@ -102,7 +102,7 @@ export class ListProductionOrdersQuery {
 
   /** false = danh sách không tính badge tab (FE gọi /status-counts riêng). */
   @IsOptional()
-  @Transform(({ value }) => {
+  @Transform(({ value }: { value: unknown }) => {
     if (value === undefined || value === null || value === '') return undefined;
     if (value === 'false' || value === '0' || value === false) return false;
     return true;
@@ -568,6 +568,12 @@ export class ReturnStageDto {
   @Min(0)
   defectQty?: number | null;
 
+  /** Lý do hàng lỗi (tuỳ chọn) — hiện ở cột Lỗi của phiếu. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  defectReason?: string | null;
+
   /** Nguội / Vào đá: TL nguyên liệu thừa S999 (g). */
   @IsOptional()
   @Transform(emptyToNull)
@@ -705,7 +711,9 @@ export class AssignSubTicketDto {
 
 /** Báo lỗi ở khâu đang làm của phiếu con — lý do bắt buộc. */
 export class StageDefectDto {
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
   @IsNotEmpty({ message: 'Ghi lý do lỗi' })
   @MaxLength(500)
