@@ -795,6 +795,7 @@ model ProductionStageEntry {
   order            ProductionOrder             @relation(fields: [orderId], references: [id], onDelete: Cascade)
   subTicket        ProductionSubTicket?        @relation(fields: [subTicketId], references: [id], onDelete: Restrict)
   materialRequests ProductionMaterialRequest[]
+  images           ProductionStageImage[]
 
   // Không lặp khâu + lần trong cùng phiếu. Trên DB index này có thêm NULLS NOT DISTINCT
   // (xem prisma/migrations/0_init/migration.sql) — Prisma 6 chưa khai báo được phần đó.
@@ -803,6 +804,24 @@ model ProductionStageEntry {
   @@index([subTicketId])
   @@index([craftsmanUserId, returnedAt])
   @@map("production_stage_entries")
+}
+
+/// Ảnh làm chứng KCS chụp lúc nhận lại khâu (Nguội → Xi) — bắt buộc ít nhất một ảnh.
+/// KCS sửa lại kết quả thì thay cả bộ ảnh; gỡ nhận lại thì xoá.
+model ProductionStageImage {
+  id           String   @id @default(uuid()) @db.Uuid
+  stageEntryId String   @map("stage_entry_id") @db.Uuid
+  url          String
+  publicId     String   @map("public_id")
+  width        Int?
+  height       Int?
+  sortOrder    Int      @default(0) @map("sort_order")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  stageEntry ProductionStageEntry @relation(fields: [stageEntryId], references: [id], onDelete: Cascade)
+
+  @@index([stageEntryId, sortOrder])
+  @@map("production_stage_images")
 }
 
 /// Phiếu con chia từ đơn cho thợ: mỗi phiếu một phần số lượng, đi cùng các khâu của đơn.

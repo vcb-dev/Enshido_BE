@@ -379,7 +379,7 @@ async function seedWarehouses() {
     update: {
       name: 'Kho thành phẩm',
       shortName: 'Kho thành phẩm',
-      description: 'Nhập khi KCS nhận lại khâu Ngoại Quan. Xuất hàng cho khách.',
+      description: 'Nhập khi QC nhận lại khâu Ngoại Quan. Xuất hàng cho khách.',
       sortOrder: 4,
       isActive: true,
     },
@@ -387,7 +387,7 @@ async function seedWarehouses() {
       code: 'thanh-pham',
       name: 'Kho thành phẩm',
       shortName: 'Kho thành phẩm',
-      description: 'Nhập khi KCS nhận lại khâu Ngoại Quan. Xuất hàng cho khách.',
+      description: 'Nhập khi QC nhận lại khâu Ngoại Quan. Xuất hàng cho khách.',
       sortOrder: 4,
     },
   });

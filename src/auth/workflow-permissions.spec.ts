@@ -124,19 +124,19 @@ const MATRIX: [string, object, string, PermissionCode[]][] = [
     [P.WAREHOUSE_KEEPER],
   ],
   [
-    'B13 KCS nhận lại khâu',
+    'B13 QC nhận lại khâu',
     ProductionOrdersController.prototype,
     'returnStage',
     [P.PRODUCTION_QC],
   ],
   [
-    'B14–15 KCS hoàn thiện phiếu con',
+    'B14–15 QC hoàn thiện phiếu con',
     ProductionOrdersController.prototype,
     'finishSubTicket',
     [P.PRODUCTION_QC],
   ],
   [
-    'KCS hoàn thiện đơn',
+    'QC hoàn thiện đơn',
     ProductionOrdersController.prototype,
     'finish',
     [P.PRODUCTION_QC],
@@ -212,7 +212,7 @@ describe('quyền theo việc trên từng endpoint', () => {
   });
 });
 
-describe('tài khoản chỉ làm thợ không gọi được việc của KCS / thủ kho / văn phòng', () => {
+describe('tài khoản chỉ làm thợ không gọi được việc của QC / thủ kho / văn phòng', () => {
   const guard = new WorkerRestrictedGuard(new Reflector());
   const worker = user(RoleCode.WORKER, [P.PRODUCTION_QC, P.WAREHOUSE_KEEPER]);
 

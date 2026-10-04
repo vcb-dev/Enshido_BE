@@ -5,6 +5,11 @@ export function decStr(value: Prisma.Decimal | null | undefined): string {
   return value.toString();
 }
 
+/** TL đá lưu theo g, hiện cho người dùng theo ct (1 ct = 0,2 g): "1.25 ct". */
+export function ctStr(gram: Prisma.Decimal | null | undefined): string {
+  return `${decStr(gram?.mul(5).toDecimalPlaces(4))} ct`;
+}
+
 export type AvailabilityCode = 'IN_STOCK' | 'LOW' | 'OUT_OF_STOCK';
 
 export function availabilityOf(

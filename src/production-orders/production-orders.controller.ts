@@ -27,7 +27,6 @@ import {
   AssignSubTicketDto,
   StageDefectDto,
   HandoverInfoDto,
-  HandoverStageDto,
   ListProductionOrdersQuery,
   OpenOrderStageDto,
   OrderCostDto,
@@ -162,6 +161,14 @@ export class ProductionOrdersController {
   @RequirePermissions(Permission.PRODUCTION_WORKER, Permission.PRODUCTION_CAST)
   myTickets(@CurrentUser() user: AuthUserPayload) {
     return this.subTickets.myTickets(user);
+  }
+
+  /** Màn "Phiếu QC": chờ QC cân lại, chờ thủ kho xác nhận, chờ hoàn thiện, gần đây. */
+  @Get('qc-tickets')
+  @BlockWorker()
+  @RequirePermissions(Permission.PRODUCTION_QC)
+  qcTickets(@CurrentUser() user: AuthUserPayload) {
+    return this.subTickets.qcTickets(user);
   }
 
   @Get(':code/costing')
@@ -301,17 +308,6 @@ export class ProductionOrdersController {
     return this.orders.undoFinish(code, user);
   }
 
-  @Patch(':code/stages/:stageId')
-  @BlockWorker()
-  updateHandover(
-    @Param('code') code: string,
-    @Param('stageId', ParseUUIDPipe) stageId: string,
-    @Body() dto: HandoverStageDto,
-    @CurrentUser() user: AuthUserPayload,
-  ) {
-    return this.orders.updateHandover(code, stageId, dto, user);
-  }
-
   @Post(':code/stages/:stageId/return')
   @BlockWorker()
   @RequirePermissions(Permission.PRODUCTION_QC)
@@ -337,7 +333,7 @@ export class ProductionOrdersController {
     return this.subTickets.returnStoneEarly(code, stageId, dto, user);
   }
 
-  /** Thủ kho xác nhận sau KCS (Nguội / Vào đá): nhập kho BTP hàng đạt, NVL hàng lỗi + thừa. */
+  /** Thủ kho xác nhận sau QC (Nguội / Vào đá): nhập kho BTP hàng đạt, NVL hàng lỗi + thừa. */
   @Post(':code/stages/:stageId/confirm')
   @BlockWorker()
   @RequirePermissions(Permission.WAREHOUSE_KEEPER)
@@ -349,7 +345,7 @@ export class ProductionOrdersController {
     return this.subTickets.confirmStage(code, stageId, user);
   }
 
-  /** KCS sửa lại kết quả đã nhận ở Nguội / Vào đá — tối đa 3 lần, trước khi thủ kho xác nhận. */
+  /** QC sửa lại kết quả đã nhận ở Nguội / Vào đá — tối đa 3 lần, trước khi thủ kho xác nhận. */
   @Put(':code/stages/:stageId/return')
   @BlockWorker()
   @RequirePermissions(Permission.PRODUCTION_QC)
@@ -362,7 +358,7 @@ export class ProductionOrdersController {
     return this.orders.returnStage(code, stageId, dto, user, true);
   }
 
-  /** Thủ kho tạo phiếu bù cho hàng lỗi KCS đã tách (Nguội / Vào đá) — đi lại từ bước sáp. */
+  /** Thủ kho tạo phiếu bù cho hàng lỗi QC đã tách (Nguội / Vào đá) — đi lại từ bước sáp. */
   @Post(':code/stages/:stageId/rework')
   @BlockWorker()
   @RequirePermissions(Permission.WAREHOUSE_KEEPER)
@@ -546,7 +542,7 @@ export class ProductionOrdersController {
     return this.subTickets.unclaim(code, no, user);
   }
 
-  /** Thợ báo đã làm xong khâu đang giữ, nộp hàng cho KCS. */
+  /** Thợ báo đã làm xong khâu đang giữ, nộp hàng cho QC. */
   @Post(':code/sub-tickets/:no/submit')
   submitSubTicket(
     @Param('code') code: string,
@@ -565,7 +561,7 @@ export class ProductionOrdersController {
     return this.subTickets.unsubmit(code, no, user);
   }
 
-  /** Báo lỗi ở khâu đang làm: thợ giữ khâu, KCS hoặc admin (lý do bắt buộc). */
+  /** Báo lỗi ở khâu đang làm: thợ giữ khâu, QC hoặc admin (lý do bắt buộc). */
   @Post(':code/sub-tickets/:no/stage-defect')
   reportStageDefect(
     @Param('code') code: string,
