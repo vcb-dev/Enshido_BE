@@ -81,17 +81,48 @@ const intakeListImageKinds: ProductionImageKind[] = [
   ProductionImageKind.CASTING_TREE,
 ];
 
-const intakeListInclude = {
+const intakeListSelect = {
+  id: true,
+  code: true,
+  sxCode: true,
+  status: true,
+  requestType: true,
+  productName: true,
+  qty: true,
+  trackingCode: true,
+  placedBy: true,
+  description: true,
+  createdDate: true,
+  dueDate: true,
+  hasMold: true,
+  model3dUrl: true,
+  productWeightGram: true,
+  castingTreeWeightGram: true,
+  waxCheckedWeightGram: true,
+  waxCheckedByName: true,
+  rejectReason: true,
+  rejectedByName: true,
+  rejectedAt: true,
+  stoneCount3d: true,
+  stoneWeight3dGram: true,
+  createdAt: true,
   castingSlipLine: {
     select: { slip: { select: { code: true, status: true } } },
   },
   productionOrder: { select: { code: true } },
   images: {
     where: { kind: { in: intakeListImageKinds } },
-    orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }],
-    take: 6,
+    orderBy: [{ kind: 'asc' as const }, { sortOrder: 'asc' as const }],
+    take: 4,
+    select: {
+      kind: true,
+      url: true,
+      publicId: true,
+      width: true,
+      height: true,
+    },
   },
-} satisfies Prisma.IntakeOrderInclude;
+} satisfies Prisma.IntakeOrderSelect;
 
 function intakeListWhere(
   query: Pick<ListIntakeOrdersQuery, 'search' | 'requestType' | 'status'>,
@@ -133,7 +164,7 @@ export class IntakeOrdersService {
         orderBy: [{ createdAt: 'desc' }, { seq: 'desc' }],
         skip: (page - 1) * pageSize,
         take: pageSize,
-        include: intakeListInclude,
+        select: intakeListSelect,
       }),
     ]);
     return { items: rows.map(toRow), total, page, pageSize };
@@ -178,7 +209,7 @@ export class IntakeOrdersService {
         where,
         orderBy: [{ createdAt: 'desc' }, { seq: 'desc' }],
         take: pageSize,
-        include: intakeListInclude,
+        select: intakeListSelect,
       }),
     ]);
     const counts = Object.fromEntries(

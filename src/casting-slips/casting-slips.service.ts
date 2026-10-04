@@ -113,7 +113,7 @@ export class CastingSlipsService {
       ],
     };
 
-    const [total, rows] = await this.prisma.$transaction([
+    const [total, rows] = await Promise.all([
       this.prisma.castingSlip.count({ where: rootWhere }),
       this.prisma.castingSlip.findMany({
         where: rootWhere,
@@ -1381,9 +1381,9 @@ export class CastingSlipsService {
   }
 }
 
-const slipInclude = {
+const slipOrderInclude = {
   orders: {
-    orderBy: { sortOrder: 'asc' },
+    orderBy: { sortOrder: 'asc' as const },
     include: {
       intake: {
         select: {
@@ -1399,14 +1399,20 @@ const slipInclude = {
       },
     },
   },
-  images: { orderBy: { sortOrder: 'asc' } },
+} as const;
+
+const slipInclude = {
+  ...slipOrderInclude,
+  images: { orderBy: { sortOrder: 'asc' as const } },
 } satisfies Prisma.CastingSlipInclude;
 
+/** Danh sách: ảnh phiếu gốc (xem nhanh), phiếu làm lại không kéo ảnh. */
 const slipListInclude = {
-  ...slipInclude,
+  ...slipOrderInclude,
+  images: { orderBy: { sortOrder: 'asc' as const } },
   redos: {
     orderBy: { createdAt: 'asc' as const },
-    include: slipInclude,
+    include: slipOrderInclude,
   },
 } satisfies Prisma.CastingSlipInclude;
 
@@ -1414,6 +1420,11 @@ type SlipRow = Prisma.CastingSlipGetPayload<{ include: typeof slipInclude }>;
 type SlipListRow = Prisma.CastingSlipGetPayload<{
   include: typeof slipListInclude;
 }>;
+type SlipRowBaseInput = SlipRow | SlipListRow | SlipListRow['redos'][number];
+
+function slipImagesOf(row: SlipRowBaseInput) {
+  return 'images' in row && Array.isArray(row.images) ? row.images : [];
+}
 
 /**
  * TL sáp (cây thông) giao, "lấy từ trạng thái E": số thủ kho cân kiểm nếu có, không thì
@@ -1550,7 +1561,8 @@ function toImage(image: {
   };
 }
 
-function slipRowBase(row: SlipRow) {
+function slipRowBase(row: SlipRowBaseInput) {
+  const images = slipImagesOf(row);
   return {
     id: row.id,
     code: row.code,
@@ -1607,13 +1619,13 @@ function slipRowBase(row: SlipRow) {
     rejectedAt: row.rejectedAt?.toISOString() ?? null,
     rejectedByName: row.rejectedByName,
     redoOfSlipId: row.redoOfSlipId,
-    images: row.images
+    images: images
       .filter((image) => image.kind === CastingSlipImageKind.ISSUE)
       .map(toImage),
-    resultImages: row.images
+    resultImages: images
       .filter((image) => image.kind === CastingSlipImageKind.RESULT)
       .map(toImage),
-    restImages: row.images
+    restImages: images
       .filter((image) => image.kind === CastingSlipImageKind.REST)
       .map(toImage),
   };

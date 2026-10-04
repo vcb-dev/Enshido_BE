@@ -171,26 +171,32 @@ export class ProductionOrdersService {
 
   /** Badge tab — cache vài giây, cùng bộ lọc với danh sách (trừ tab status / phân trang). */
   async listStatusCounts(query: ListProductionOrdersQuery) {
-    const base = this.buildListBase(query);
-    const cacheKey = `status-counts:${JSON.stringify({
+    const { statusCounts } = await this.getStatusCountsAndSplitIndex(query);
+    return { statusCounts };
+  }
+
+  private statusCountsCacheKey(query: ListProductionOrdersQuery) {
+    return `status-counts:${JSON.stringify({
       requestType: query.requestType ?? '',
       source: query.source ?? '',
       receivedDate: query.receivedDate ?? '',
       dueDate: query.dueDate ?? '',
       search: query.search?.trim() ?? '',
     })}`;
-    const hit = this.cache.get<{
-      statusCounts: Record<ProductionStatus | 'ALL', number>;
-    }>(cacheKey);
+  }
+
+  private async getStatusCountsAndSplitIndex(query: ListProductionOrdersQuery) {
+    const base = this.buildListBase(query);
+    const cacheKey = this.statusCountsCacheKey(query);
+    type Cached = Awaited<
+      ReturnType<ProductionOrdersService['computeStatusCountsAndSplitIndex']>
+    >;
+    const hit = this.cache.get<Cached>(cacheKey);
     if (hit) return hit;
     return this.inflight.run(cacheKey, async () => {
-      const again = this.cache.get<{
-        statusCounts: Record<ProductionStatus | 'ALL', number>;
-      }>(cacheKey);
+      const again = this.cache.get<Cached>(cacheKey);
       if (again) return again;
-      const { statusCounts } =
-        await this.computeStatusCountsAndSplitIndex(base);
-      const value = { statusCounts };
+      const value = await this.computeStatusCountsAndSplitIndex(base);
       this.cache.set(cacheKey, value, STATUS_COUNTS_TTL_MS);
       return value;
     });
@@ -308,13 +314,10 @@ export class ProductionOrdersService {
     let statusCounts: Record<ProductionStatus | 'ALL', number> | undefined;
     let splitIdsByStatus = new Map<ProductionStatus, string[]>();
 
-    if (includeCounts) {
-      const computed = await this.computeStatusCountsAndSplitIndex(base);
-      statusCounts = computed.statusCounts;
-      splitIdsByStatus = computed.splitIdsByStatus;
-    } else if (needsSplitIndex) {
-      const splitRows = await this.fetchSplitRowsForList(base);
-      splitIdsByStatus = this.splitIdsFromRows(splitRows);
+    if (includeCounts || needsSplitIndex) {
+      const computed = await this.getStatusCountsAndSplitIndex(query);
+      if (includeCounts) statusCounts = computed.statusCounts;
+      if (needsSplitIndex) splitIdsByStatus = computed.splitIdsByStatus;
     }
 
     const where: Prisma.ProductionOrderWhereInput = query.status
@@ -372,7 +375,7 @@ export class ProductionOrdersService {
           updatedAt: true,
           pendingStage: true,
           claimedByUserId: true,
-          receipt: true,
+          receipt: { select: { id: true } },
           btpMaterial: { select: { sku: true } },
           intakeOrder: { select: { code: true } },
           // Phiếu con kèm các khâu của chúng — vừa đủ để tính trạng thái từng phiếu cho cột
