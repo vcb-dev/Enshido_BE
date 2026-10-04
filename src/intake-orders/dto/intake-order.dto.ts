@@ -273,6 +273,11 @@ export class IntakePipelineListsQuery {
 
 export class ListIntakeOrdersQuery {
   @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true')
+  @IsBoolean()
+  unlinkedOnly?: boolean;
+
+  @IsOptional()
   @IsEnum(IntakeOrderStatus)
   status?: IntakeOrderStatus;
 

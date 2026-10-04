@@ -125,11 +125,12 @@ const intakeListSelect = {
 } satisfies Prisma.IntakeOrderSelect;
 
 function intakeListWhere(
-  query: Pick<ListIntakeOrdersQuery, 'search' | 'requestType' | 'status'>,
+  query: Pick<ListIntakeOrdersQuery, 'search' | 'requestType' | 'status' | 'unlinkedOnly'>,
 ): Prisma.IntakeOrderWhereInput {
   const keyword = query.search?.trim();
   return {
     ...(query.status ? { status: query.status } : {}),
+    ...(query.unlinkedOnly ? { productionOrder: { is: null } } : {}),
     ...(query.requestType ? { requestType: query.requestType } : {}),
     ...(keyword
       ? {
@@ -174,7 +175,7 @@ export class IntakeOrdersService {
   async pipelineStatusCounts() {
     const rows = await this.prisma.intakeOrder.groupBy({
       by: ['status'],
-      where: { status: { in: INTAKE_PIPELINE_STATUSES } },
+      where: { status: { in: INTAKE_PIPELINE_STATUSES }, productionOrder: { is: null } },
       _count: { _all: true },
     });
     const counts = Object.fromEntries(
@@ -195,7 +196,7 @@ export class IntakeOrdersService {
     const pageSize = Math.min(query.pageSize ?? 200, 400);
     const where: Prisma.IntakeOrderWhereInput = {
       AND: [
-        intakeListWhere({ ...query, status: undefined }),
+        intakeListWhere({ ...query, status: undefined, unlinkedOnly: true }),
         { status: { in: INTAKE_PIPELINE_STATUSES } },
       ],
     };
