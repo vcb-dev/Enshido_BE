@@ -80,6 +80,7 @@ export const IN_STAGE_STATUSES: ProductionStatus[] = [
 ];
 
 export const detailInclude = {
+  intakeOrder: { select: { code: true, sxCode: true } },
   images: { orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }] },
   stages: {
     orderBy: { createdAt: 'asc' },
@@ -849,6 +850,8 @@ export function toDetail(order: OrderDetail) {
   return {
     id: order.id,
     code: order.code,
+    intakeOrderCode: order.intakeOrder?.code ?? null,
+    intakeSxCode: order.intakeOrder?.sxCode ?? null,
     status: order.status,
     source: order.source,
     btp: order.btpMaterial,
