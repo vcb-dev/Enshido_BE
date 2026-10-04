@@ -6,9 +6,9 @@ import {
 } from '@nestjs/common';
 import {
   CastingSlipStatus,
-  IntakeOrderStatus,
   MaterialRequestStatus,
   Prisma,
+  ProductionSource,
   ProductionStage,
   ProductionStatus,
   RoleCode,
@@ -20,8 +20,11 @@ import { dbTable } from '../prisma/database-url';
 import { InventoryService } from '../inventory/inventory.service';
 import {
   intakeCode,
+  nextIntakeSeq,
+  nextOrderSeq,
+  orderCode,
   randomSxCode,
-} from '../intake-orders/intake-orders.service';
+} from './intake-order';
 import { PrismaService } from '../prisma/prisma.service';
 import { decStr } from '../util/money';
 import {
@@ -820,11 +823,6 @@ export class ProductionSubTicketsService {
       if (order.subTickets.length === 0) {
         throw new BadRequestException('Đơn chưa chia phiếu con');
       }
-      if (order.intakeOrderId && order.subTickets.length === 1) {
-        throw new BadRequestException(
-          'Đơn chỉ có một phiếu, không có gì để hủy chia',
-        );
-      }
       const started = order.subTickets.find(
         (ticket) =>
           entriesOf(order, ticket.id).length > 0 ||
@@ -843,27 +841,14 @@ export class ProductionSubTicketsService {
       });
       // Số phiếu chỉ đánh lại từ đầu khi chưa phiếu nào bị xoá từng được in — phiếu giấy đã in
       // mang mã cũ, dùng lại số thì QR đó sẽ trỏ sang phiếu khác.
-      const [keep, ...rest] = order.subTickets;
-      const removed = order.intakeOrderId ? rest : order.subTickets;
-      const printed = removed.some((ticket) => ticket.lastPrintedAt);
-      if (order.intakeOrderId) {
-        // Đơn từ đúc luôn có ít nhất một phiếu: gộp lại thành phiếu số nhỏ nhất, đủ số lượng đơn.
-        await tx.productionSubTicket.deleteMany({
-          where: { id: { in: rest.map((ticket) => ticket.id) } },
-        });
-        await tx.productionSubTicket.update({
-          where: { id: keep.id },
-          data: { qty: order.qty, note: null },
-        });
-      } else {
-        await tx.productionSubTicket.deleteMany({
-          where: { orderId: order.id },
-        });
-      }
+      const printed = order.subTickets.some((ticket) => ticket.lastPrintedAt);
+      await tx.productionSubTicket.deleteMany({
+        where: { orderId: order.id },
+      });
       if (!printed) {
         await tx.productionOrder.update({
           where: { id: order.id },
-          data: { subTicketSeq: order.intakeOrderId ? keep.no : 0 },
+          data: { subTicketSeq: 0 },
         });
       }
       await touch(tx, order.id);
@@ -877,7 +862,7 @@ export class ProductionSubTicketsService {
       if (order.subTickets.length === 1) {
         throw new BadRequestException('Đơn phải còn ít nhất một phiếu');
       }
-      if (order.subTickets.length === 2 && !order.intakeOrderId) {
+      if (order.subTickets.length === 2) {
         throw new BadRequestException(
           'Không thể để lại đúng 1 phiếu con; hãy giữ cả hai hoặc hủy chia phiếu',
         );
@@ -1841,76 +1826,69 @@ export class ProductionSubTicketsService {
       if (defectQty <= 0) {
         throw new BadRequestException('Khâu này không có hàng lỗi để bù');
       }
-      if (!order.intakeOrderId) {
+      if (order.intakeSeq == null) {
         throw new BadRequestException(
           `Đơn ${order.code} không sinh từ đơn tạo nên không tạo phiếu bù tự động được`,
         );
       }
-      const existing = await tx.intakeOrder.findUnique({
+      const existing = await tx.productionOrder.findUnique({
         where: { reworkOfEntryId: entry.id },
-        select: { code: true },
+        select: { code: true, intakeCode: true },
       });
       if (existing) {
         throw new BadRequestException(
-          `Đã có phiếu bù ${existing.code} cho lần QC nhận lại này`,
+          `Đã có phiếu bù ${existing.intakeCode ?? existing.code} cho lần QC nhận lại này`,
         );
       }
-      const source = await tx.intakeOrder.findUnique({
-        where: { id: order.intakeOrderId },
-      });
-      if (!source) throw new NotFoundException('Không tìm thấy đơn tạo gốc');
 
-      await tx.$queryRaw`
-        WITH intake_lock AS MATERIALIZED (
-          SELECT pg_advisory_xact_lock(hashtext('enshido_intake_order_seq'))
-        )
-        SELECT 1::int AS locked FROM intake_lock
-      `;
-      const last = await tx.intakeOrder.findFirst({
-        orderBy: { seq: 'desc' },
-        select: { seq: true },
-      });
-      const seq = (last?.seq ?? 0) + 1;
+      const seq = await nextOrderSeq(tx);
+      const intakeSeq = await nextIntakeSeq(tx);
       const label = ticketCode(order, ticket);
       // Đá theo 3D chia theo tỷ lệ số lượng bù trên số lượng đơn gốc.
-      const ratio = source.qty > 0 ? defectQty / source.qty : 1;
-      const rework = await tx.intakeOrder.create({
+      const ratio = order.qty > 0 ? defectQty / order.qty : 1;
+      const rework = await tx.productionOrder.create({
         data: {
           seq,
-          code: intakeCode(seq),
+          code: orderCode(seq),
+          intakeSeq,
+          intakeCode: intakeCode(intakeSeq),
           sxCode: randomSxCode(),
           // Đã có khuôn / 3D: bỏ qua duyệt và vẽ 3D, vào thẳng bước sáp.
-          status: IntakeOrderStatus.READY_FOR_PRODUCTION,
-          requestType: source.requestType,
-          productName: source.productName,
+          status: ProductionStatus.READY_FOR_PRODUCTION,
+          source: ProductionSource.NVL,
+          requestType: order.requestType,
+          productName: order.productName,
           qty: defectQty,
-          trackingCode: source.trackingCode,
-          placedBy: actorName(actor),
-          description: `[Bù cho ${label}] ${source.description}`.trim(),
-          createdDate: todayVn(),
-          dueDate: source.dueDate,
-          hasMold: source.hasMold,
-          model3dUrl: source.model3dUrl,
-          productWeightGram: source.productWeightGram,
-          stoneCount3d:
-            source.stoneCount3d != null
-              ? Math.round(source.stoneCount3d * ratio)
+          trackingCode: order.trackingCode,
+          model3dCode: order.model3dCode,
+          closedBy: actorName(actor),
+          createdBy: actorName(actor),
+          createdByUserId: actor.id,
+          description: `[Bù cho ${label}] ${order.description}`.trim(),
+          receivedDate: todayVn(),
+          dueDate: order.dueDate,
+          hasMold: order.hasMold,
+          model3dUrl: order.model3dUrl,
+          productWeightGram: order.productWeightGram,
+          stoneCount:
+            order.stoneCount != null
+              ? Math.round(order.stoneCount * ratio)
               : null,
-          stoneWeight3dGram: source.stoneWeight3dGram
-            ? source.stoneWeight3dGram.mul(ratio).toDecimalPlaces(4)
+          stoneWeight: order.stoneWeight
+            ? order.stoneWeight.mul(ratio).toDecimalPlaces(4)
             : null,
           reworkOfOrderId: order.id,
           reworkOfSubTicketId: ticket.id,
           reworkOfEntryId: entry.id,
         },
-        select: { code: true },
+        select: { code: true, intakeCode: true },
       });
       await logActivity(tx, order.id, actor, ACTIVITY.TICKET_REWORK, {
         orderCode: order.code,
         subTicketNo: ticket.no,
         stage: entry.stage,
-        after: { qty: defectQty, intakeCode: rework.code },
-        note: `Tạo phiếu bù ${rework.code} cho ${defectQty} sp lỗi — đi lại từ bước sáp`,
+        after: { qty: defectQty, intakeCode: rework.intakeCode },
+        note: `Tạo phiếu bù ${rework.intakeCode} cho ${defectQty} sp lỗi — đi lại từ bước sáp`,
       });
       await touch(tx, order.id);
     });

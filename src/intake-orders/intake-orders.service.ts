@@ -10,6 +10,8 @@ import {
   Prisma,
   ProductionImageKind,
   ProductionRequestType,
+  ProductionSource,
+  ProductionStatus,
 } from '@prisma/client';
 import type { AuthUserPayload } from '../auth/types';
 import { recordEditLog } from '../edit-logs/edit-log';
@@ -30,21 +32,20 @@ import {
 } from './dto/intake-order.dto';
 import { Permission, userCan } from '../auth/permissions';
 import { canConfirmIntakeWarehouse } from './intake-warehouse-access';
+import {
+  INTAKE_ORDER_WHERE,
+  intakeCode,
+  intakeStatusWhere,
+  nextIntakeSeq,
+  nextOrderSeq,
+  orderCode,
+  randomSxCode,
+  toIntakeStatus,
+} from '../production-orders/intake-order';
+
+export { intakeCode, randomSxCode };
 
 const CREATE_RETRIES = 5;
-const SX_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-
-export function intakeCode(seq: number) {
-  return `DH${String(seq).padStart(3, '0')}`;
-}
-
-export function randomSxCode() {
-  let suffix = '';
-  for (let i = 0; i < 4; i++) {
-    suffix += SX_CODE_CHARS[Math.floor(Math.random() * SX_CODE_CHARS.length)];
-  }
-  return `S${suffix}`;
-}
 
 function parseDate(value: string, label: string) {
   const date = new Date(value);
@@ -84,15 +85,17 @@ const intakeListImageKinds: ProductionImageKind[] = [
 const intakeListSelect = {
   id: true,
   code: true,
+  intakeCode: true,
   sxCode: true,
   status: true,
+  cutAt: true,
   requestType: true,
   productName: true,
   qty: true,
   trackingCode: true,
-  placedBy: true,
+  closedBy: true,
   description: true,
-  createdDate: true,
+  receivedDate: true,
   dueDate: true,
   hasMold: true,
   model3dUrl: true,
@@ -103,13 +106,12 @@ const intakeListSelect = {
   rejectReason: true,
   rejectedByName: true,
   rejectedAt: true,
-  stoneCount3d: true,
-  stoneWeight3dGram: true,
+  stoneCount: true,
+  stoneWeight: true,
   createdAt: true,
   castingSlipLine: {
     select: { slip: { select: { code: true, status: true } } },
   },
-  productionOrder: { select: { code: true } },
   images: {
     where: { kind: { in: intakeListImageKinds } },
     orderBy: [{ kind: 'asc' as const }, { sortOrder: 'asc' as const }],
@@ -122,29 +124,78 @@ const intakeListSelect = {
       height: true,
     },
   },
-} satisfies Prisma.IntakeOrderSelect;
+} satisfies Prisma.ProductionOrderSelect;
 
 function intakeListWhere(
-  query: Pick<ListIntakeOrdersQuery, 'search' | 'requestType' | 'status' | 'unlinkedOnly'>,
-): Prisma.IntakeOrderWhereInput {
+  query: Pick<
+    ListIntakeOrdersQuery,
+    'search' | 'requestType' | 'status' | 'unlinkedOnly'
+  >,
+): Prisma.ProductionOrderWhereInput {
   const keyword = query.search?.trim();
   return {
-    ...(query.status ? { status: query.status } : {}),
-    ...(query.unlinkedOnly ? { productionOrder: { is: null } } : {}),
-    ...(query.requestType ? { requestType: query.requestType } : {}),
-    ...(keyword
-      ? {
-          OR: [
-            { code: { contains: keyword, mode: 'insensitive' } },
-            { sxCode: { contains: keyword, mode: 'insensitive' } },
-            { trackingCode: { contains: keyword, mode: 'insensitive' } },
-            { placedBy: { contains: keyword, mode: 'insensitive' } },
-            { description: { contains: keyword, mode: 'insensitive' } },
-            { productName: { contains: keyword, mode: 'insensitive' } },
-          ],
-        }
-      : {}),
+    AND: [
+      INTAKE_ORDER_WHERE,
+      ...(query.status ? [intakeStatusWhere(query.status)] : []),
+      // Chưa cắt cây = chưa sang lệnh sản xuất (Nguội).
+      ...(query.unlinkedOnly ? [{ cutAt: null }] : []),
+      ...(query.requestType ? [{ requestType: query.requestType }] : []),
+      ...(keyword
+        ? [
+            {
+              OR: [
+                {
+                  intakeCode: {
+                    contains: keyword,
+                    mode: 'insensitive' as const,
+                  },
+                },
+                { sxCode: { contains: keyword, mode: 'insensitive' as const } },
+                {
+                  trackingCode: {
+                    contains: keyword,
+                    mode: 'insensitive' as const,
+                  },
+                },
+                {
+                  closedBy: { contains: keyword, mode: 'insensitive' as const },
+                },
+                {
+                  description: {
+                    contains: keyword,
+                    mode: 'insensitive' as const,
+                  },
+                },
+                {
+                  productName: {
+                    contains: keyword,
+                    mode: 'insensitive' as const,
+                  },
+                },
+              ],
+            },
+          ]
+        : []),
+    ],
   };
+}
+
+/** Gom đếm theo trạng thái kiểu đơn tạo (đơn đã cắt cây gộp vào WAIT_COOLING). */
+function countByIntakeStatus(
+  rows: {
+    status: ProductionStatus;
+    cutAt: Date | null;
+    _count: { _all: number };
+  }[],
+) {
+  const counts = Object.fromEntries(
+    INTAKE_PIPELINE_STATUSES.map((status) => [status, 0]),
+  ) as Record<IntakeOrderStatus, number>;
+  for (const row of rows) {
+    const status = toIntakeStatus(row);
+    if (status in counts) counts[status] += row._count._all;
+  }
+  return counts;
 }
 
 @Injectable()
@@ -159,8 +210,8 @@ export class IntakeOrdersService {
     const pageSize = query.pageSize ?? 25;
     const where = intakeListWhere(query);
     const [total, rows] = await Promise.all([
-      this.prisma.intakeOrder.count({ where }),
-      this.prisma.intakeOrder.findMany({
+      this.prisma.productionOrder.count({ where }),
+      this.prisma.productionOrder.findMany({
         where,
         orderBy: [{ createdAt: 'desc' }, { seq: 'desc' }],
         skip: (page - 1) * pageSize,
@@ -173,18 +224,12 @@ export class IntakeOrdersService {
 
   /** Một lần đếm cho badge tab Lệnh sản xuất — tránh N request count riêng lẻ trên FE. */
   async pipelineStatusCounts() {
-    const rows = await this.prisma.intakeOrder.groupBy({
-      by: ['status'],
-      where: { status: { in: INTAKE_PIPELINE_STATUSES }, productionOrder: { is: null } },
+    const rows = await this.prisma.productionOrder.groupBy({
+      by: ['status', 'cutAt'],
+      where: intakeListWhere({ unlinkedOnly: true }),
       _count: { _all: true },
     });
-    const counts = Object.fromEntries(
-      INTAKE_PIPELINE_STATUSES.map((status) => [status, 0]),
-    ) as Record<IntakeOrderStatus, number>;
-    for (const row of rows) {
-      if (row.status in counts) counts[row.status] = row._count._all;
-    }
-    return counts;
+    return countByIntakeStatus(rows);
   }
 
   /**
@@ -194,36 +239,33 @@ export class IntakeOrdersService {
     query: Pick<ListIntakeOrdersQuery, 'search' | 'requestType' | 'pageSize'>,
   ) {
     const pageSize = Math.min(query.pageSize ?? 200, 400);
-    const where: Prisma.IntakeOrderWhereInput = {
-      AND: [
-        intakeListWhere({ ...query, status: undefined, unlinkedOnly: true }),
-        { status: { in: INTAKE_PIPELINE_STATUSES } },
-      ],
-    };
+    const where = intakeListWhere({
+      ...query,
+      status: undefined,
+      unlinkedOnly: true,
+    });
     const [countRows, rows] = await Promise.all([
-      this.prisma.intakeOrder.groupBy({
-        by: ['status'],
+      this.prisma.productionOrder.groupBy({
+        by: ['status', 'cutAt'],
         where,
         _count: { _all: true },
       }),
-      this.prisma.intakeOrder.findMany({
+      this.prisma.productionOrder.findMany({
         where,
         orderBy: [{ createdAt: 'desc' }, { seq: 'desc' }],
         take: pageSize,
         select: intakeListSelect,
       }),
     ]);
-    const counts = Object.fromEntries(
-      INTAKE_PIPELINE_STATUSES.map((status) => [status, 0]),
-    ) as Record<IntakeOrderStatus, number>;
-    for (const row of countRows) {
-      if (row.status in counts) counts[row.status] = row._count._all;
-    }
+    const counts = countByIntakeStatus(countRows);
     const itemsByStatus = Object.fromEntries(
-      INTAKE_PIPELINE_STATUSES.map((status) => [status, [] as ReturnType<typeof toRow>[]]),
+      INTAKE_PIPELINE_STATUSES.map((status) => [
+        status,
+        [] as ReturnType<typeof toRow>[],
+      ]),
     ) as Record<IntakeOrderStatus, ReturnType<typeof toRow>[]>;
     for (const row of rows) {
-      itemsByStatus[row.status]?.push(toRow(row));
+      itemsByStatus[toIntakeStatus(row)]?.push(toRow(row));
     }
     return Object.fromEntries(
       INTAKE_PIPELINE_STATUSES.map((status) => [
@@ -242,27 +284,29 @@ export class IntakeOrdersService {
   }
 
   async create(dto: UpsertIntakeOrderDto, actor: AuthUserPayload) {
-    const data = {
-      ...this.fields(dto),
-      placedBy: actor.fullName?.trim() || actor.username,
-    };
+    const data = this.fields(dto);
+    const placedBy = actor.fullName?.trim() || actor.username;
     const images = this.newImages(dto.images, new Set());
 
     for (let attempt = 1; ; attempt += 1) {
       try {
         const created = await this.prisma.runTx(async (tx) => {
-          const last = await tx.intakeOrder.findFirst({
-            orderBy: { seq: 'desc' },
-            select: { seq: true },
-          });
-          const seq = (last?.seq ?? 0) + 1;
-          return tx.intakeOrder.create({
+          // Mã A… (lệnh sản xuất) và DH… (đơn hàng) cùng cấp ngay lúc tạo đơn.
+          const seq = await nextOrderSeq(tx);
+          const intakeSeq = await nextIntakeSeq(tx);
+          return tx.productionOrder.create({
             data: {
               ...data,
               seq,
-              code: intakeCode(seq),
+              code: orderCode(seq),
+              intakeSeq,
+              intakeCode: intakeCode(intakeSeq),
               sxCode: randomSxCode(),
-              status: IntakeOrderStatus.PENDING_APPROVAL,
+              source: ProductionSource.NVL,
+              closedBy: placedBy,
+              createdBy: placedBy,
+              createdByUserId: actor.id,
+              status: ProductionStatus.PENDING_APPROVAL,
               images: { create: images },
             },
             include: {
@@ -279,24 +323,20 @@ export class IntakeOrdersService {
   }
 
   async update(id: string, dto: UpsertIntakeOrderDto, actor: AuthUserPayload) {
-    const order = await this.prisma.intakeOrder.findUnique({
+    const order = await this.prisma.productionOrder.findUnique({
       where: { id },
       include: { images: true },
     });
     if (!order) throw new NotFoundException('Không tìm thấy đơn');
     // Trạng thái chỉ đổi qua đúng thao tác của từng bước (duyệt, gắn 3D, cân sáp, thủ kho
     // xác nhận, phiếu đúc). Sửa đơn chỉ sửa thông tin, không nhảy bước được.
-    if (dto.status !== undefined && dto.status !== order.status) {
+    if (dto.status !== undefined && dto.status !== toIntakeStatus(order)) {
       throw new BadRequestException(
         'Không đổi trạng thái ở form sửa đơn — dùng nút thao tác của bước tương ứng',
       );
     }
 
-    const {
-      placedBy: _ignored,
-      createdDate: _created,
-      ...data
-    } = this.fields(dto);
+    const { receivedDate: _created, ...data } = this.fields(dto);
     const existing = new Set(order.images.map((image) => image.publicId));
     const images = this.newImages(dto.images, existing);
     const kept = new Set(images.map((image) => image.publicId));
@@ -305,11 +345,10 @@ export class IntakeOrdersService {
       .filter((publicId) => !kept.has(publicId));
 
     const updated = await this.prisma.runTx(async (tx) => {
-      await tx.intakeOrder.update({
+      await tx.productionOrder.update({
         where: { id },
         data: {
           ...data,
-          createdDate: order.createdDate,
           images: { deleteMany: {}, create: images },
         },
       });
@@ -319,7 +358,7 @@ export class IntakeOrdersService {
         reason: dto.editReason,
         changedBy: actor.fullName?.trim() || actor.username,
       });
-      return tx.intakeOrder.findUniqueOrThrow({
+      return tx.productionOrder.findUniqueOrThrow({
         where: { id },
         include: {
           images: { orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }] },
@@ -336,23 +375,25 @@ export class IntakeOrdersService {
     dto: ApproveIntakeOrderDto,
     _actor: AuthUserPayload,
   ) {
-    const order = await this.prisma.intakeOrder.findUnique({ where: { id } });
+    const order = await this.prisma.productionOrder.findUnique({
+      where: { id },
+    });
     if (!order) throw new NotFoundException('Không tìm thấy đơn');
-    if (order.status !== IntakeOrderStatus.PENDING_APPROVAL) {
+    if (order.status !== ProductionStatus.PENDING_APPROVAL) {
       throw new BadRequestException('Chỉ duyệt được đơn đang chờ duyệt');
     }
 
     const updated = await this.prisma.runTx(async (tx) => {
-      await tx.intakeOrder.update({
+      await tx.productionOrder.update({
         where: { id },
         data: {
           hasMold: dto.hasMold,
           status: dto.hasMold
-            ? IntakeOrderStatus.READY_FOR_PRODUCTION
-            : IntakeOrderStatus.APPROVED,
+            ? ProductionStatus.READY_FOR_PRODUCTION
+            : ProductionStatus.APPROVED,
         },
       });
-      return tx.intakeOrder.findUniqueOrThrow({
+      return tx.productionOrder.findUniqueOrThrow({
         where: { id },
         include: {
           images: { orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }] },
@@ -364,24 +405,26 @@ export class IntakeOrdersService {
   }
 
   async reject(id: string, dto: RejectIntakeOrderDto, actor: AuthUserPayload) {
-    const order = await this.prisma.intakeOrder.findUnique({ where: { id } });
+    const order = await this.prisma.productionOrder.findUnique({
+      where: { id },
+    });
     if (!order) throw new NotFoundException('Không tìm thấy đơn');
-    if (order.status !== IntakeOrderStatus.PENDING_APPROVAL) {
+    if (order.status !== ProductionStatus.PENDING_APPROVAL) {
       throw new BadRequestException('Chỉ từ chối được đơn đang chờ duyệt');
     }
 
     const updated = await this.prisma.runTx(async (tx) => {
-      await tx.intakeOrder.update({
+      await tx.productionOrder.update({
         where: { id },
         data: {
-          status: IntakeOrderStatus.REJECTED,
+          status: ProductionStatus.REJECTED,
           hasMold: null,
           rejectReason: dto.reason?.trim() || null,
           rejectedByName: actor.fullName?.trim() || actor.username,
           rejectedAt: new Date(),
         },
       });
-      return tx.intakeOrder.findUniqueOrThrow({
+      return tx.productionOrder.findUniqueOrThrow({
         where: { id },
         include: {
           images: { orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }] },
@@ -397,9 +440,11 @@ export class IntakeOrdersService {
     dto: IntakeModel3dDto,
     _actor: AuthUserPayload,
   ) {
-    const order = await this.prisma.intakeOrder.findUnique({ where: { id } });
+    const order = await this.prisma.productionOrder.findUnique({
+      where: { id },
+    });
     if (!order) throw new NotFoundException('Không tìm thấy đơn');
-    if (order.status !== IntakeOrderStatus.APPROVED) {
+    if (order.status !== ProductionStatus.APPROVED) {
       throw new BadRequestException(
         'Chỉ cập nhật link 3D cho đơn đã duyệt, chưa có file 3D',
       );
@@ -407,15 +452,15 @@ export class IntakeOrdersService {
 
     const model3dUrl = dto.model3dUrl.trim();
     const updated = await this.prisma.runTx(async (tx) => {
-      await tx.intakeOrder.update({
+      await tx.productionOrder.update({
         where: { id },
         data: {
           model3dUrl,
           ...stoneData(dto),
-          status: IntakeOrderStatus.READY_FOR_PRODUCTION,
+          status: ProductionStatus.READY_FOR_PRODUCTION,
         },
       });
-      return tx.intakeOrder.findUniqueOrThrow({
+      return tx.productionOrder.findUniqueOrThrow({
         where: { id },
         include: {
           images: { orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }] },
@@ -431,12 +476,12 @@ export class IntakeOrdersService {
     dto: IntakeProductSpecsDto,
     actor: AuthUserPayload,
   ) {
-    const order = await this.prisma.intakeOrder.findUnique({
+    const order = await this.prisma.productionOrder.findUnique({
       where: { id },
       include: { images: true },
     });
     if (!order) throw new NotFoundException('Không tìm thấy đơn');
-    if (order.status !== IntakeOrderStatus.READY_FOR_PRODUCTION) {
+    if (order.status !== ProductionStatus.READY_FOR_PRODUCTION) {
       throw new BadRequestException(
         'Chỉ cập nhật số liệu khi đơn ở bước Chờ SX · Đã có 3D (C)',
       );
@@ -455,9 +500,12 @@ export class IntakeOrdersService {
       );
     }
     const nextStatus = moldPath
-      ? IntakeOrderStatus.PENDING_WAREHOUSE_CONFIRMATION
-      : IntakeOrderStatus.WAX_PRINTED;
-    if (moldPath && !(dto.castingTreeWeightGram != null && dto.castingTreeWeightGram > 0)) {
+      ? ProductionStatus.PENDING_WAREHOUSE_CONFIRMATION
+      : ProductionStatus.WAX_PRINTED;
+    if (
+      moldPath &&
+      !(dto.castingTreeWeightGram != null && dto.castingTreeWeightGram > 0)
+    ) {
       throw new BadRequestException('Nhập trọng lượng cây thông (gram)');
     }
     const existing = new Set(order.images.map((image) => image.publicId));
@@ -475,7 +523,7 @@ export class IntakeOrdersService {
     ].map((image, index) => ({ ...image, sortOrder: index }));
 
     const updated = await this.prisma.runTx(async (tx) => {
-      await tx.intakeOrder.update({
+      await tx.productionOrder.update({
         where: { id },
         data: {
           status: nextStatus,
@@ -487,7 +535,7 @@ export class IntakeOrdersService {
           images: { deleteMany: {}, create: merged },
         },
       });
-      return tx.intakeOrder.findUniqueOrThrow({
+      return tx.productionOrder.findUniqueOrThrow({
         where: { id },
         include: {
           images: { orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }] },
@@ -507,7 +555,7 @@ export class IntakeOrdersService {
     if (new Set(ids).size !== ids.length) {
       throw new BadRequestException('Một đơn chỉ nhập một lần trong lượt in');
     }
-    const orders = await this.prisma.intakeOrder.findMany({
+    const orders = await this.prisma.productionOrder.findMany({
       where: { id: { in: ids } },
       include: { images: true },
     });
@@ -516,11 +564,11 @@ export class IntakeOrdersService {
       const order = byId.get(id);
       if (!order) throw new NotFoundException('Không tìm thấy đơn');
       if (
-        order.status !== IntakeOrderStatus.READY_FOR_PRODUCTION ||
+        order.status !== ProductionStatus.READY_FOR_PRODUCTION ||
         order.hasMold !== false
       ) {
         throw new BadRequestException(
-          `Đơn ${order.code} không ở bước chờ in sáp resin (C, không khuôn)`,
+          `Đơn ${order.intakeCode ?? order.code} không ở bước chờ in sáp resin (C, không khuôn)`,
         );
       }
     }
@@ -528,25 +576,25 @@ export class IntakeOrdersService {
     await this.prisma.runTx(async (tx) => {
       for (const item of dto.items) {
         const order = byId.get(item.id)!;
-        const moved = await tx.intakeOrder.updateMany({
+        const moved = await tx.productionOrder.updateMany({
           where: {
             id: order.id,
-            status: IntakeOrderStatus.READY_FOR_PRODUCTION,
+            status: ProductionStatus.READY_FOR_PRODUCTION,
           },
           data: {
-            status: IntakeOrderStatus.WAX_PRINTED,
+            status: ProductionStatus.WAX_PRINTED,
             productWeightGram: item.productWeightGram,
           },
         });
         if (moved.count !== 1) {
           throw new ConflictException(
-            `Đơn ${order.code} vừa được cập nhật — tải lại danh sách`,
+            `Đơn ${order.intakeCode ?? order.code} vừa được cập nhật — tải lại danh sách`,
           );
         }
         const start = order.images.filter(
           (image) => image.kind === ProductionImageKind.PRODUCT,
         ).length;
-        await tx.intakeOrderImage.createMany({
+        await tx.productionOrderImage.createMany({
           data: tray.map((image, index) => ({
             ...image,
             kind: ProductionImageKind.PRODUCT,
@@ -568,7 +616,7 @@ export class IntakeOrdersService {
     if (new Set(ids).size !== ids.length) {
       throw new BadRequestException('Một đơn chỉ nhập một lần trong lượt in');
     }
-    const orders = await this.prisma.intakeOrder.findMany({
+    const orders = await this.prisma.productionOrder.findMany({
       where: { id: { in: ids } },
       include: { images: true },
     });
@@ -576,14 +624,14 @@ export class IntakeOrdersService {
     for (const id of ids) {
       const order = byId.get(id);
       if (!order) throw new NotFoundException('Không tìm thấy đơn');
-      if (order.status !== IntakeOrderStatus.READY_FOR_PRODUCTION) {
+      if (order.status !== ProductionStatus.READY_FOR_PRODUCTION) {
         throw new BadRequestException(
-          `Đơn ${order.code} không ở bước Chờ SX · Đã có 3D (C)`,
+          `Đơn ${order.intakeCode ?? order.code} không ở bước Chờ SX · Đã có 3D (C)`,
         );
       }
       if (order.hasMold === true) {
         throw new BadRequestException(
-          `Đơn ${order.code} đã có khuôn — đi bước Bơm sáp, không in sáp resin`,
+          `Đơn ${order.intakeCode ?? order.code} đã có khuôn — đi bước Bơm sáp, không in sáp resin`,
         );
       }
     }
@@ -595,23 +643,23 @@ export class IntakeOrdersService {
         const added = this.newImages(dto.images, existing);
         const base = order.images.length;
         // Chặn hai người cùng nhập một đơn: chỉ đơn còn ở C mới chuyển được.
-        const moved = await tx.intakeOrder.updateMany({
+        const moved = await tx.productionOrder.updateMany({
           where: {
             id: order.id,
-            status: IntakeOrderStatus.READY_FOR_PRODUCTION,
+            status: ProductionStatus.READY_FOR_PRODUCTION,
           },
           data: {
-            status: IntakeOrderStatus.WAX_PRINTED,
+            status: ProductionStatus.WAX_PRINTED,
             productWeightGram: item.productWeightGram,
           },
         });
         if (moved.count !== 1) {
           throw new BadRequestException(
-            `Đơn ${order.code} vừa được cập nhật — tải lại danh sách`,
+            `Đơn ${order.intakeCode ?? order.code} vừa được cập nhật — tải lại danh sách`,
           );
         }
         if (added.length) {
-          await tx.intakeOrderImage.createMany({
+          await tx.productionOrderImage.createMany({
             data: added.map((image, index) => ({
               ...image,
               orderId: order.id,
@@ -622,7 +670,7 @@ export class IntakeOrdersService {
       }
     });
 
-    const rows = await this.prisma.intakeOrder.findMany({
+    const rows = await this.prisma.productionOrder.findMany({
       where: { id: { in: ids } },
       include: {
         images: { orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }] },
@@ -642,9 +690,11 @@ export class IntakeOrdersService {
         'Chỉ thủ kho được xác nhận số liệu sản phẩm',
       );
     }
-    const order = await this.prisma.intakeOrder.findUnique({ where: { id } });
+    const order = await this.prisma.productionOrder.findUnique({
+      where: { id },
+    });
     if (!order) throw new NotFoundException('Không tìm thấy đơn');
-    if (order.status !== IntakeOrderStatus.PENDING_WAREHOUSE_CONFIRMATION) {
+    if (order.status !== ProductionStatus.PENDING_WAREHOUSE_CONFIRMATION) {
       throw new BadRequestException(
         'Chỉ xác nhận được đơn đang chờ thủ kho xác nhận',
       );
@@ -652,17 +702,17 @@ export class IntakeOrdersService {
 
     const confirmedBy = actor.fullName?.trim() || actor.username;
     const updated = await this.prisma.runTx(async (tx) => {
-      await tx.intakeOrder.update({
+      await tx.productionOrder.update({
         where: { id },
         data: {
-          status: IntakeOrderStatus.WAX_CONFIRMED,
+          status: ProductionStatus.WAX_CONFIRMED,
           waxCheckedByName: confirmedBy,
           ...(dto.checkedWeightGram != null
             ? { waxCheckedWeightGram: dto.checkedWeightGram }
             : {}),
         },
       });
-      return tx.intakeOrder.findUniqueOrThrow({
+      return tx.productionOrder.findUniqueOrThrow({
         where: { id },
         include: {
           images: { orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }] },
@@ -678,12 +728,12 @@ export class IntakeOrdersService {
     dto: IntakeCastingTreeSpecsDto,
     _actor: AuthUserPayload,
   ) {
-    const order = await this.prisma.intakeOrder.findUnique({
+    const order = await this.prisma.productionOrder.findUnique({
       where: { id },
       include: { images: true },
     });
     if (!order) throw new NotFoundException('Không tìm thấy đơn');
-    if (order.status !== IntakeOrderStatus.WAX_PRINTED) {
+    if (order.status !== ProductionStatus.WAX_PRINTED) {
       throw new BadRequestException(
         'Chỉ cập nhật số liệu cây thông khi đơn ở bước Chờ SX · Đã in sáp',
       );
@@ -704,15 +754,15 @@ export class IntakeOrdersService {
     ].map((image, index) => ({ ...image, sortOrder: index }));
 
     const updated = await this.prisma.runTx(async (tx) => {
-      await tx.intakeOrder.update({
+      await tx.productionOrder.update({
         where: { id },
         data: {
-          status: IntakeOrderStatus.PENDING_WAREHOUSE_CONFIRMATION,
+          status: ProductionStatus.PENDING_WAREHOUSE_CONFIRMATION,
           castingTreeWeightGram: dto.castingTreeWeightGram,
           images: { deleteMany: {}, create: merged },
         },
       });
-      return tx.intakeOrder.findUniqueOrThrow({
+      return tx.productionOrder.findUniqueOrThrow({
         where: { id },
         include: {
           images: { orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }] },
@@ -724,15 +774,15 @@ export class IntakeOrdersService {
   }
 
   async remove(id: string) {
-    const order = await this.prisma.intakeOrder.findUnique({
+    const order = await this.prisma.productionOrder.findUnique({
       where: { id },
       include: { images: true },
     });
     if (!order) throw new NotFoundException('Không tìm thấy đơn');
-    if (order.status !== IntakeOrderStatus.PENDING_APPROVAL) {
+    if (order.status !== ProductionStatus.PENDING_APPROVAL) {
       throw new BadRequestException('Chỉ xóa được đơn đang chờ duyệt');
     }
-    await this.prisma.intakeOrder.delete({ where: { id } });
+    await this.prisma.productionOrder.delete({ where: { id } });
     await this.cloudinary.destroy(order.images.map((image) => image.publicId));
     return { success: true };
   }
@@ -750,9 +800,8 @@ export class IntakeOrdersService {
       productName: dto.productName.trim(),
       qty: dto.qty,
       trackingCode: dto.trackingCode?.trim() || null,
-      placedBy: dto.placedBy.trim(),
       description: dto.description.trim(),
-      createdDate,
+      receivedDate: createdDate,
       dueDate,
     };
   }
@@ -799,15 +848,17 @@ export class IntakeOrdersService {
 type IntakeRow = {
   id: string;
   code: string;
-  sxCode: string;
-  status: IntakeOrderStatus;
+  intakeCode: string | null;
+  sxCode: string | null;
+  status: ProductionStatus;
+  cutAt: Date | null;
   requestType: ProductionRequestType;
   productName: string | null;
   qty: number;
   trackingCode: string | null;
-  placedBy: string | null;
+  closedBy: string | null;
   description: string | null;
-  createdDate: Date;
+  receivedDate: Date;
   dueDate: Date | null;
   hasMold: boolean | null;
   model3dUrl: string | null;
@@ -819,8 +870,8 @@ type IntakeRow = {
   rejectedByName: string | null;
   rejectedAt: Date | null;
   /** Đá theo 3D (khai ở bước 3D / bơm sáp) — mốc hao hụt Vào đá. */
-  stoneCount3d: number | null;
-  stoneWeight3dGram: Prisma.Decimal | null;
+  stoneCount: number | null;
+  stoneWeight: Prisma.Decimal | null;
   createdAt: Date;
   images: {
     kind: ProductionImageKind;
@@ -830,7 +881,6 @@ type IntakeRow = {
     height: number | null;
   }[];
   castingSlipLine?: { slip?: { code: string; status: string } | null } | null;
-  productionOrder?: { code: string } | null;
 };
 
 /** Đá theo 3D: chỉ ghi khi người dùng có nhập, để bước sau không xoá mất số đã khai. */
@@ -839,11 +889,9 @@ function stoneData(dto: {
   stoneWeight3dGram?: number | null;
 }) {
   return {
-    ...(dto.stoneCount3d !== undefined
-      ? { stoneCount3d: dto.stoneCount3d }
-      : {}),
+    ...(dto.stoneCount3d !== undefined ? { stoneCount: dto.stoneCount3d } : {}),
     ...(dto.stoneWeight3dGram !== undefined
-      ? { stoneWeight3dGram: dto.stoneWeight3dGram }
+      ? { stoneWeight: dto.stoneWeight3dGram }
       : {}),
   };
 }
@@ -851,16 +899,16 @@ function stoneData(dto: {
 function toRow(row: IntakeRow) {
   return {
     id: row.id,
-    code: row.code,
-    sxCode: row.sxCode,
-    status: row.status,
+    code: row.intakeCode ?? row.code,
+    sxCode: row.sxCode ?? row.code,
+    status: toIntakeStatus(row),
     requestType: row.requestType,
     productName: row.productName,
     qty: row.qty,
     trackingCode: row.trackingCode,
-    placedBy: row.placedBy,
+    placedBy: row.closedBy,
     description: row.description,
-    createdDate: row.createdDate.toISOString().slice(0, 10),
+    createdDate: row.receivedDate.toISOString().slice(0, 10),
     dueDate: row.dueDate?.toISOString().slice(0, 10) ?? null,
     hasMold: row.hasMold,
     model3dUrl: row.model3dUrl,
@@ -878,9 +926,9 @@ function toRow(row: IntakeRow) {
     rejectReason: row.rejectReason,
     rejectedByName: row.rejectedByName,
     rejectedAt: row.rejectedAt?.toISOString() ?? null,
-    stoneCount3d: row.stoneCount3d,
+    stoneCount3d: row.stoneCount,
     stoneWeight3dGram:
-      row.stoneWeight3dGram != null ? row.stoneWeight3dGram.toString() : null,
+      row.stoneWeight != null ? row.stoneWeight.toString() : null,
     /** Phiếu đúc đang giữ đơn (kể cả phiếu chưa cấp vật tư). */
     castingSlip: row.castingSlipLine?.slip
       ? {
@@ -888,7 +936,8 @@ function toRow(row: IntakeRow) {
           status: row.castingSlipLine.slip.status,
         }
       : null,
-    productionOrderCode: row.productionOrder?.code ?? null,
+    /** Đã cắt cây = đã vào lệnh sản xuất (Nguội); cùng bản ghi nên mã A… có từ lúc tạo. */
+    productionOrderCode: row.cutAt ? row.code : null,
     createdAt: row.createdAt.toISOString(),
     images: row.images.map((image) => ({
       kind: image.kind,
