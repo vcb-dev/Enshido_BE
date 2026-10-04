@@ -57,15 +57,19 @@ function setup(treeWeight: number) {
       update: jest.fn(),
     },
     intakeOrder: {
-      updateMany: jest.fn().mockImplementation(
-        async (args: { where?: { id?: string | { in?: string[] } } }) => ({
-          count: Array.isArray(args.where?.id)
-            ? 1
-            : args.where?.id && typeof args.where.id === 'object' && args.where.id.in
-              ? args.where.id.in.length
-              : 1,
-        }),
-      ),
+      updateMany: jest
+        .fn()
+        .mockImplementation(
+          async (args: { where?: { id?: string | { in?: string[] } } }) => ({
+            count: Array.isArray(args.where?.id)
+              ? 1
+              : args.where?.id &&
+                  typeof args.where.id === 'object' &&
+                  args.where.id.in
+                ? args.where.id.in.length
+                : 1,
+          }),
+        ),
     },
     castingSlipOrder: { update: jest.fn().mockResolvedValue({}) },
     productionOrder: {
@@ -79,10 +83,14 @@ function setup(treeWeight: number) {
     productionActivityLog: { create: jest.fn() },
     castingSlipImage: { createMany: jest.fn() },
     warehouse: {
-      findUnique: jest.fn().mockResolvedValue({ id: 'wh-btp', code: 'btp-cho-vao-da' }),
+      findUnique: jest
+        .fn()
+        .mockResolvedValue({ id: 'wh-btp', code: 'btp-cho-vao-da' }),
     },
     unit: {
-      findUnique: jest.fn().mockResolvedValue({ id: 'unit-chiec', name: 'Chiếc' }),
+      findUnique: jest
+        .fn()
+        .mockResolvedValue({ id: 'unit-chiec', name: 'Chiếc' }),
     },
     stockInbound: {
       aggregate: jest.fn().mockResolvedValue({ _max: { sortOrder: 3 } }),
@@ -113,10 +121,10 @@ function setup(treeWeight: number) {
     restWeightGram: 1,
     restImages: [image],
   };
-  return { service, dto, tx, inventory };
+  return { service, dto, tx, inventory, prisma };
 }
 
-describe('xác nhận đúc → Nguội', () => {
+describe('cắt cây thông sau Đúc xong → Chờ nguội', () => {
   it('tạo đúng một lệnh và một phiếu nhập phôi cho mỗi đơn, không tạo phiếu cắt', async () => {
     const { service, dto, tx, inventory } = setup(10);
     await service.confirm('slip', dto, actor);
@@ -167,5 +175,109 @@ describe('xác nhận đúc → Nguội', () => {
     expect(tx.castingSlip.updateMany).not.toHaveBeenCalled();
     expect(tx.productionOrder.create).not.toHaveBeenCalled();
     expect(inventory.createAutoInbound).not.toHaveBeenCalled();
+  });
+  it.each(['WAIT_CASTING', 'CASTING', 'PENDING_CONFIRMATION', 'CAST_FAILED'])(
+    'chặn cắt khi phiếu ở trạng thái %s dù các đơn có số liệu đúc',
+    async (status) => {
+      const { service, dto, tx, inventory } = setup(10);
+      const slip = await tx.castingSlip.findUnique();
+      tx.castingSlip.findUnique.mockResolvedValue({ ...slip, status });
+      await expect(service.confirm('slip', dto, actor)).rejects.toThrow(
+        'Chỉ cắt cây thông sau khi Đúc xong',
+      );
+      expect(tx.castingSlip.updateMany).not.toHaveBeenCalled();
+      expect(inventory.createAutoInbound).not.toHaveBeenCalled();
+    },
+  );
+
+  it('cắt nhiều phiếu trong một giao dịch và đưa toàn bộ đơn sang Chờ nguội', async () => {
+    const { service, dto, tx, prisma } = setup(10);
+    const firstSlip = await tx.castingSlip.findUnique();
+    tx.castingSlip.findUnique
+      .mockResolvedValueOnce(firstSlip)
+      .mockResolvedValueOnce({
+        ...firstSlip,
+        orders: [{ intake: intake('3') }, { intake: intake('4') }],
+      });
+    tx.productionOrder.findFirst
+      .mockResolvedValueOnce({ seq: 42 })
+      .mockResolvedValueOnce({ seq: 44 });
+    tx.productionOrder.create.mockResolvedValue({ id: 'created-order' });
+    await service.cutMany(
+      [
+        { slipId: 'slip-1', ...dto },
+        {
+          slipId: 'slip-2',
+          ...dto,
+          blanks: dto.blanks.map((line, index) => ({
+            ...line,
+            intakeOrderId: String(index + 3),
+          })),
+        },
+      ],
+      actor,
+    );
+    expect(prisma.runTx).toHaveBeenCalledTimes(1);
+    expect(tx.productionOrder.create).toHaveBeenCalledTimes(4);
+    expect(tx.intakeOrder.updateMany).toHaveBeenCalledTimes(2);
+    expect(tx.intakeOrder.updateMany).toHaveBeenNthCalledWith(2, {
+      where: { id: { in: ['3', '4'] }, status: 'CAST_DONE' },
+      data: { status: 'WAIT_COOLING' },
+    });
+    expect(tx.productionOrder.create).toHaveBeenNthCalledWith(
+      4,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          code: 'A046',
+          intakeOrderId: '4',
+          status: 'WAIT_FILING',
+        }),
+      }),
+    );
+    expect(service.getById).toHaveBeenCalledTimes(2);
+  });
+
+  it('trả lỗi từ giao dịch chung nếu một phiếu chưa đúc xong, không báo thành công một phần', async () => {
+    const { service, dto, tx, inventory, prisma } = setup(10);
+    const slip = await tx.castingSlip.findUnique();
+    tx.castingSlip.findUnique
+      .mockResolvedValueOnce(slip)
+      .mockResolvedValueOnce({ ...slip, status: 'CASTING' });
+    await expect(
+      service.cutMany(
+        [
+          { slipId: 'slip-1', ...dto },
+          { slipId: 'slip-2', ...dto },
+        ],
+        actor,
+      ),
+    ).rejects.toThrow('Chỉ cắt cây thông sau khi Đúc xong');
+    expect(prisma.runTx).toHaveBeenCalledTimes(1);
+    expect(inventory.bustBtpStock).not.toHaveBeenCalled();
+    expect(service.getById).not.toHaveBeenCalled();
+  });
+
+  it('chặn chọn trùng phiếu trước khi mở giao dịch', async () => {
+    const { service, dto, prisma } = setup(10);
+    await expect(
+      service.cutMany(
+        [
+          { slipId: 'slip', ...dto },
+          { slipId: 'slip', ...dto },
+        ],
+        actor,
+      ),
+    ).rejects.toThrow('Mỗi phiếu đúc chỉ được chọn một lần');
+    expect(prisma.runTx).not.toHaveBeenCalled();
+  });
+
+  it('chặn phiếu đã cắt khi một thao tác khác đã chốt số liệu trước', async () => {
+    const { service, dto, tx } = setup(10);
+    tx.castingSlip.updateMany.mockResolvedValue({ count: 0 });
+    await expect(service.confirm('slip', dto, actor)).rejects.toThrow(
+      'Phiếu đúc chưa Đúc xong hoặc đã cắt cây thông',
+    );
+    expect(tx.intakeOrder.updateMany).not.toHaveBeenCalled();
+    expect(tx.productionOrder.create).not.toHaveBeenCalled();
   });
 });

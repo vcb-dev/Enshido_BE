@@ -21,6 +21,7 @@ import {
   CastingSlipCandidatesQuery,
   CastingSlipResultDto,
   ConfirmCastingSlipDto,
+  CutCastingSlipsDto,
   CreateCastingSlipDto,
   IssueCastingSlipDto,
   ListCastingSlipsQuery,
@@ -151,6 +152,16 @@ export class CastingSlipsController {
   }
 
   /** Cắt cây thông: chia phôi, sinh lệnh SX Chờ nguội. */
+  @Post('cut-many')
+  @BlockWorker()
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
+  cutMany(
+    @Body() dto: CutCastingSlipsDto,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.slips.cutMany(dto.items, user);
+  }
+
   @Post(':id/cut')
   @BlockWorker()
   @RequirePermissions(Permission.WAREHOUSE_KEEPER)
