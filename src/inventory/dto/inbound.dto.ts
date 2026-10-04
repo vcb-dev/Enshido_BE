@@ -23,12 +23,12 @@ export class CreateInboundDto {
   sku?: string;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   materialId?: string | null;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   unitId?: string | null;
 
@@ -38,6 +38,14 @@ export class CreateInboundDto {
 
   @Matches(DECIMAL, { message: 'Số lượng không hợp lệ' })
   qty!: string;
+
+  /** Trọng lượng nhập (g) — kho NVL ghi nhận TL tồn cho mã không tính theo gram (đá tính viên…). */
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    value === '' || value == null ? null : value,
+  )
+  @Matches(DECIMAL, { message: 'Số gram không hợp lệ' })
+  gramQty?: string | null;
 
   @IsOptional()
   @Matches(DECIMAL, { message: 'Đơn giá tồn không hợp lệ' })
@@ -60,7 +68,7 @@ export class CreateInboundDto {
   supplierSku?: string;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   supplierId?: string | null;
 
@@ -78,7 +86,7 @@ export class CreateInboundDto {
   locationCode?: string | null;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   otherClassId?: string | null;
 

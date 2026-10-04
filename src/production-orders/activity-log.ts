@@ -12,7 +12,7 @@ export const ACTIVITY = {
   ORDER_DELETE: 'ORDER_DELETE',
   ORDER_STATUS: 'ORDER_STATUS',
   ORDER_CASTING: 'ORDER_CASTING',
-  /** Thủ kho cắt cây thông, chia phôi cho đơn (bước 10). */
+  /** Cắt cây thông: cân phôi, nhập kho BTP, đơn sang Chờ nguội. */
   ORDER_CUT: 'ORDER_CUT',
   ORDER_UNDO_CUT: 'ORDER_UNDO_CUT',
   ORDER_FINISH: 'ORDER_FINISH',
@@ -31,6 +31,9 @@ export const ACTIVITY = {
   STAGE_UNSUBMIT: 'STAGE_UNSUBMIT',
   STAGE_RETURN: 'STAGE_RETURN',
   STAGE_UNDO_RETURN: 'STAGE_UNDO_RETURN',
+  STAGE_CONFIRM: 'STAGE_CONFIRM',
+  STAGE_DEFECT: 'STAGE_DEFECT',
+  STAGE_CLEAR_DEFECT: 'STAGE_CLEAR_DEFECT',
   STAGE_LABOR: 'STAGE_LABOR',
   TICKET_SPLIT: 'TICKET_SPLIT',
   TICKET_CREATE: 'TICKET_CREATE',
@@ -43,9 +46,12 @@ export const ACTIVITY = {
   MATERIAL_CANCEL: 'MATERIAL_CANCEL',
   MATERIAL_ISSUE: 'MATERIAL_ISSUE',
   MATERIAL_REJECT: 'MATERIAL_REJECT',
+  /** Thủ kho nhận lại túi đá thợ trả giữa khâu Vào đá (đổi size). */
+  STONE_RETURN_EARLY: 'STONE_RETURN_EARLY',
   TICKET_OUTCOME: 'TICKET_OUTCOME',
   TICKET_CLEAR_OUTCOME: 'TICKET_CLEAR_OUTCOME',
   TICKET_PRINT: 'TICKET_PRINT',
+  TICKET_REWORK: 'TICKET_REWORK',
 } as const;
 
 export type ActivityAction = (typeof ACTIVITY)[keyof typeof ACTIVITY];
@@ -116,6 +122,8 @@ export function entrySnapshot(entry: StageEntry) {
     returnedStoneCount: entry.returnedStoneCount,
     btpRecoveredWeight: entry.btpRecoveredWeight,
     silverRecoveredWeight: entry.silverRecoveredWeight,
+    defectQty: entry.defectQty,
+    scrapS999Weight: entry.scrapS999Weight,
     laborCost: entry.laborCost,
     note: entry.note,
   };

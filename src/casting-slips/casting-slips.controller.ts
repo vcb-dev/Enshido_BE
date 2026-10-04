@@ -8,12 +8,17 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
-import { BlockWorker, CurrentUser, RequirePermissions } from '../auth/decorators';
+import {
+  BlockWorker,
+  CurrentUser,
+  RequirePermissions,
+} from '../auth/decorators';
 import { Permission } from '../auth/permissions';
 import type { AuthUserPayload } from '../auth/types';
 import { CastingSlipsService } from './casting-slips.service';
 import {
   CastingLossQuery,
+  ConfirmCastingSlipDto,
   CastingSlipCandidatesQuery,
   CastingSlipResultDto,
   CreateCastingSlipDto,
@@ -55,6 +60,14 @@ export class CastingSlipsController {
   }
 
   /** Mở phiếu từ QR in trên phiếu giấy. */
+  /** Mã NVL (gram, kho NVL chính) nhận phần cây còn lại lúc xác nhận đúc. */
+  @Get('rest-material-options')
+  @BlockWorker()
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
+  restMaterialOptions() {
+    return this.slips.restMaterialOptions();
+  }
+
   @Get('by-code/:code')
   @BlockWorker()
   byCode(@Param('code') code: string) {
@@ -82,7 +95,10 @@ export class CastingSlipsController {
   @Post(':id/issue')
   @BlockWorker()
   @RequirePermissions(Permission.WAREHOUSE_KEEPER)
-  issue(@Param('id', ParseUUIDPipe) id: string, @Body() dto: IssueCastingSlipDto) {
+  issue(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: IssueCastingSlipDto,
+  ) {
     return this.slips.issue(id, dto);
   }
 
@@ -123,15 +139,16 @@ export class CastingSlipsController {
     return this.slips.submitResult(id, dto, user);
   }
 
-  /** Bước 9: thủ kho kiểm và xác nhận → Đúc xong (H). */
+  /** Thủ kho cắt cây thông: chia phôi vào lệnh sản xuất và chuyển sang Nguội. */
   @Post(':id/confirm')
   @BlockWorker()
   @RequirePermissions(Permission.WAREHOUSE_KEEPER)
   confirm(
     @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ConfirmCastingSlipDto,
     @CurrentUser() user: AuthUserPayload,
   ) {
-    return this.slips.confirm(id, user);
+    return this.slips.confirm(id, dto, user);
   }
 
   /** Thủ kho báo lỗi đúc → phiếu mới Chờ đúc, thợ làm lại. */

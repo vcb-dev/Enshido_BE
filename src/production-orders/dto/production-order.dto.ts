@@ -102,7 +102,7 @@ export class ListProductionOrdersQuery {
 
   /** false = danh sách không tính badge tab (FE gọi /status-counts riêng). */
   @IsOptional()
-  @Transform(({ value }) => {
+  @Transform(({ value }: { value: unknown }) => {
     if (value === undefined || value === null || value === '') return undefined;
     if (value === 'false' || value === '0' || value === false) return false;
     return true;
@@ -419,7 +419,7 @@ export class HandoverMaterialDto {
   @Matches(DECIMAL, { message: 'Trọng lượng xuất không hợp lệ' })
   weight?: string | null;
 
-  /** Đá: số viên — đơn vị không phải viên thì bắt buộc nhập. */
+  /** Đá: số viên theo nhãn gói — không bắt buộc (đá tấm / nhỏ chỉ cân TL). */
   @IsOptional()
   @Transform(emptyToNull)
   @Type(() => Number)
@@ -485,6 +485,31 @@ export class HandoverStageDto extends HandoverInfoDto {
   craftsmanUserId!: string;
 }
 
+/** Thủ kho nhận lại túi đá thợ trả giữa khâu Vào đá (đổi size) — cân cả túi. */
+export class EarlyStoneReturnDto {
+  @IsUUID('all', { message: 'Chọn mã đá thợ trả lại' })
+  materialId!: string;
+
+  @Transform(emptyToNull)
+  @Matches(DECIMAL, { message: 'TL túi đá trả lại không hợp lệ' })
+  weight!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
+}
+
+/** Khâu Vào đá: KCS cân gói đá thừa của một mã (đá rất nhỏ — cân cả gói, không đếm viên). */
+export class ReturnedStoneDto {
+  @IsUUID('all', { message: 'Chọn mã đá thừa' })
+  materialId!: string;
+
+  @Transform(emptyToNull)
+  @Matches(DECIMAL, { message: 'TL đá thừa không hợp lệ' })
+  weight!: string;
+}
+
 /** KCS nhận lại hàng từ thợ và cân lại bạc — người KCS là tài khoản đăng nhập. */
 export class ReturnStageDto {
   @IsDateString()
@@ -516,7 +541,10 @@ export class ReturnStageDto {
   @Matches(DECIMAL, { message: 'Trọng lượng đá không hợp lệ' })
   stoneWeight?: string | null;
 
-  /** Khâu Vào đá: số viên đá thợ trả lại (không gắn hết). */
+  /**
+   * Khâu Vào đá: số viên đá thợ trả lại (không gắn hết). Phiếu con có đá giữ chỗ thì chỉ dùng cho
+   * dòng cấp cũ không cân gói — dòng có cân gói thì gửi `returnedStones`.
+   */
   @IsOptional()
   @Transform(emptyToNull)
   @Type(() => Number)
@@ -524,6 +552,35 @@ export class ReturnStageDto {
   @Min(0)
   returnedStoneCount?: number | null;
 
+  /** Khâu Vào đá của phiếu con: TL gói đá thừa theo từng mã đã cấp; mã không gửi = không thừa. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
+  @Type(() => ReturnedStoneDto)
+  returnedStones?: ReturnedStoneDto[];
+
+  /** Nguội / Vào đá: số lượng hàng lỗi KCS tách ra (hàng đạt = số nhận lại). */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  defectQty?: number | null;
+
+  /** Lý do hàng lỗi (tuỳ chọn) — hiện ở cột Lỗi của phiếu. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  defectReason?: string | null;
+
+  /** Nguội / Vào đá: TL nguyên liệu thừa S999 (g). */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Matches(DECIMAL, { message: 'Trọng lượng S999 thừa không hợp lệ' })
+  scrapS999Weight?: string | null;
+
+  /** TL BTP thu hồi; khâu Nguội / Vào đá là TL hàng lỗi. */
   @IsOptional()
   @Transform(emptyToNull)
   @Matches(DECIMAL, { message: 'BTP thu hồi không hợp lệ' })
@@ -608,18 +665,59 @@ export class SplitSubTicketsDto {
   tickets!: SubTicketDto[];
 }
 
-/** Mở một khâu cho thợ tự nhận trên các phiếu con. Bỏ trống `nos` = mọi phiếu con đang rảnh. */
-export class OpenSubTicketStageDto {
-  @IsEnum(ProductionStage)
-  stage!: ProductionStage;
+/** Một dòng đá cấp cho phiếu con ở khâu Vào đá. */
+export class StoneHoldLineDto {
+  @IsUUID('all', { message: 'Chọn mã đá cần cấp' })
+  materialId!: string;
 
+  /**
+   * Số viên theo nhãn gói — chỉ bắt buộc với mã tính theo viên (tồn trừ theo viên). Mã tính theo
+   * ct / g để trống được: số lượng suy từ TL gói.
+   */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  stoneCount?: number | null;
+
+  /** TL cả gói đá (g) — bắt buộc, KCS cân gói thừa theo tỷ lệ TL này. */
+  @Transform(emptyToNull)
+  @Matches(DECIMAL, { message: 'Cân cả gói đá và nhập TL gói (g)' })
+  weight!: string;
+}
+
+/**
+ * Thủ kho chỉ định thợ cho một khâu của phiếu con (bước 11). Bỏ trống `stage` = khâu kế tiếp
+ * sau khâu phiếu vừa xong. Thợ quét QR và bấm nhận thì hàng mới được giao.
+ */
+export class AssignSubTicketDto {
+  @IsOptional()
+  @IsEnum(ProductionStage)
+  stage?: ProductionStage;
+
+  @Transform(emptyToNull)
+  @IsUUID()
+  craftsmanUserId!: string;
+
+  /** Khâu Vào đá: đá thủ kho cấp cho thợ — chỉ giữ chỗ trong tồn, xuất kho khi xác nhận sau KCS. */
   @IsOptional()
   @IsArray()
-  @ArrayMaxSize(200)
-  @Type(() => Number)
-  @IsInt({ each: true })
-  @Min(1, { each: true })
-  nos?: number[];
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => StoneHoldLineDto)
+  stones?: StoneHoldLineDto[];
+}
+
+/** Báo lỗi ở khâu đang làm của phiếu con — lý do bắt buộc. */
+export class StageDefectDto {
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
+  @IsString()
+  @IsNotEmpty({ message: 'Ghi lý do lỗi' })
+  @MaxLength(500)
+  note!: string;
 }
 
 /** Mở khâu trên phiếu mẹ để thợ tự nhận; chỉ dùng khi đơn không chia phiếu con. */

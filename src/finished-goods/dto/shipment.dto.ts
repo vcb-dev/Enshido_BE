@@ -108,7 +108,9 @@ export class ReceiveReceiptDto {
 export class UpsertReceiptDto {
   /** Bỏ trống khi nhập mới trên Tồn — hệ thống tự cấp mã. */
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? undefined : value))
+  @Transform(({ value }: { value: unknown }) =>
+    value === '' ? undefined : value,
+  )
   @IsString()
   @MaxLength(20)
   orderCode?: string;
@@ -152,14 +154,16 @@ export class UpsertReceiptDto {
 
   /** Mã sản xuất — nhập trên Tồn; đơn SX lấy từ lệnh sản xuất. */
   @IsOptional()
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
   @MaxLength(120)
   model3dCode?: string;
 
   /** NVL cấu thành — chỉ gửi khi tạo / sửa trên tab Tồn. */
   @IsOptional()
-  @Transform(({ value }) =>
+  @Transform(({ value }: { value: unknown }) =>
     Array.isArray(value)
       ? value.filter((line: { materialId?: string }) =>
           Boolean(line?.materialId?.trim()),

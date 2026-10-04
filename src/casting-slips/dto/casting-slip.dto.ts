@@ -122,6 +122,53 @@ export class CastingSlipResultDto {
   images!: CastingSlipImageDto[];
 }
 
+export class ConfirmCastingBlankDto {
+  @IsUUID()
+  intakeOrderId!: string;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  qty!: number;
+
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0.0001)
+  weightGram!: number;
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => CastingSlipImageDto)
+  images!: CastingSlipImageDto[];
+}
+
+/** Xác nhận đúc và chia phôi thẳng vào lệnh sản xuất, không lập phiếu cắt. */
+export class ConfirmCastingSlipDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(100)
+  @ValidateNested({ each: true })
+  @Type(() => ConfirmCastingBlankDto)
+  blanks!: ConfirmCastingBlankDto[];
+
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  restWeightGram!: number;
+
+  @IsOptional()
+  @IsUUID()
+  restMaterialId?: string | null;
+
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => CastingSlipImageDto)
+  restImages!: CastingSlipImageDto[];
+}
+
 export class ListCastingSlipsQuery {
   @IsOptional()
   @IsIn([
@@ -150,25 +197,33 @@ export class ListCastingSlipsQuery {
   slipDate?: string;
 
   @IsOptional()
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
   @MaxLength(100)
   intakeCode?: string;
 
   @IsOptional()
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
   @MaxLength(200)
   batchOrderCodes?: string;
 
   @IsOptional()
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
   @MaxLength(50)
   waxWeight?: string;
 
   @IsOptional()
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
   @MaxLength(50)
   issueTotal?: string;
