@@ -26,6 +26,7 @@ import { CastingOrdersModule } from './casting-orders/casting-orders.module';
 import { CastingSlipsModule } from './casting-slips/casting-slips.module';
 import { IntakeOrdersModule } from './intake-orders/intake-orders.module';
 import { CastingCutsModule } from './casting-cuts/casting-cuts.module';
+import { WorkflowModule } from './workflow/workflow.module';
 
 @Module({
   imports: [
@@ -56,6 +57,7 @@ import { CastingCutsModule } from './casting-cuts/casting-cuts.module';
     CastingSlipsModule,
     IntakeOrdersModule,
     CastingCutsModule,
+    WorkflowModule,
   ],
   controllers: [AppController],
   providers: [
