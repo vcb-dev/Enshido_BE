@@ -205,6 +205,21 @@ export class ConfirmCastingSlipDto {
   restImages!: CastingSlipImageDto[];
 }
 
+/** Cắt nhiều phiếu cùng lần, giữ số cân riêng theo từng cây thông. */
+export class CutCastingSlipItemDto extends ConfirmCastingSlipDto {
+  @IsUUID()
+  slipId!: string;
+}
+
+export class CutCastingSlipsDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(25)
+  @ValidateNested({ each: true })
+  @Type(() => CutCastingSlipItemDto)
+  items!: CutCastingSlipItemDto[];
+}
+
 export class ListCastingSlipsQuery {
   @IsOptional()
   @IsIn([
