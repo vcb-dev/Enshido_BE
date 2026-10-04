@@ -2240,12 +2240,20 @@ export class InventoryService {
    */
   async ensureNamedMaterial(
     tx: Prisma.TransactionClient,
-    params: { warehouseCode: string; name: string; unitCode: string },
+    params: {
+      warehouseCode: string;
+      name: string;
+      unitCode: string;
+      warehouse?: { id: string; code: string };
+      unit?: { id: string; name: string };
+    },
   ) {
-    const warehouse = await tx.warehouse.findUnique({
-      where: { code: params.warehouseCode },
-      select: { id: true, code: true },
-    });
+    const warehouse =
+      params.warehouse ??
+      (await tx.warehouse.findUnique({
+        where: { code: params.warehouseCode },
+        select: { id: true, code: true },
+      }));
     if (!warehouse) {
       throw new NotFoundException(`Không tìm thấy kho ${params.warehouseCode}`);
     }
@@ -2254,10 +2262,12 @@ export class InventoryService {
       select: { id: true },
     });
     if (found) return found.id;
-    const unit = await tx.unit.findUnique({
-      where: { code: params.unitCode },
-      select: { id: true, name: true },
-    });
+    const unit =
+      params.unit ??
+      (await tx.unit.findUnique({
+        where: { code: params.unitCode },
+        select: { id: true, name: true },
+      }));
     if (!unit) {
       throw new BadRequestException(
         `Thiếu đơn vị tính "${params.unitCode}" để tạo mã ${params.name}`,
@@ -2283,34 +2293,51 @@ export class InventoryService {
       note: string;
       enteredBy: string;
       productionOrderId?: string | null;
+      /** Truyền sẵn để khỏi đọc lại material khi gọi liên tiếp trong một giao dịch. */
+      material?: {
+        name: string;
+        sku: string | null;
+        warehouseId: string;
+        unit: { id: string; name: string };
+      };
+      /** Con trỏ sortOrder dùng chung cho nhiều phiếu nhập trong cùng kho. */
+      sortCursor?: { next: number };
     },
   ) {
     if (params.qty.lte(0)) {
       throw new BadRequestException('Số lượng nhập phải lớn hơn 0');
     }
-    const material = await tx.material.findUnique({
-      where: { id: params.materialId },
-      select: {
-        id: true,
-        name: true,
-        sku: true,
-        warehouseId: true,
-        isActive: true,
-        unit: { select: { id: true, name: true } },
-      },
-    });
-    if (!material || !material.isActive) {
+    const material =
+      params.material ??
+      (await tx.material.findUnique({
+        where: { id: params.materialId },
+        select: {
+          name: true,
+          sku: true,
+          warehouseId: true,
+          isActive: true,
+          unit: { select: { id: true, name: true } },
+        },
+      }));
+    if (!material || ('isActive' in material && !material.isActive)) {
       throw new BadRequestException('Mã hàng nhập kho không còn hoạt động');
     }
-    const last = await tx.stockInbound.aggregate({
-      where: { warehouseId: material.warehouseId },
-      _max: { sortOrder: true },
-    });
+    let sortOrder: number;
+    if (params.sortCursor) {
+      sortOrder = params.sortCursor.next;
+      params.sortCursor.next += 1;
+    } else {
+      const last = await tx.stockInbound.aggregate({
+        where: { warehouseId: material.warehouseId },
+        _max: { sortOrder: true },
+      });
+      sortOrder = (last._max.sortOrder ?? 0) + 1;
+    }
     const row = await tx.stockInbound.create({
       data: {
         warehouseId: material.warehouseId,
-        materialId: material.id,
-        sortOrder: (last._max.sortOrder ?? 0) + 1,
+        materialId: params.materialId,
+        sortOrder,
         receivedAt: params.receivedAt,
         name: material.name,
         sku: material.sku,
@@ -2326,8 +2353,33 @@ export class InventoryService {
       },
       select: { id: true },
     });
-    await this.recomputeStockBalance(tx, material.warehouseId, material.id);
+    await this.addStockIn(tx, material.warehouseId, params.materialId, params.qty);
     return row.id;
+  }
+
+  /** Cộng tồn khi vừa tạo một phiếu nhập `applyToStock` — không SUM lại cả sổ. */
+  private async addStockIn(
+    tx: Prisma.TransactionClient,
+    warehouseId: string,
+    materialId: string,
+    qty: Prisma.Decimal,
+  ) {
+    const updated = await tx.stockBalance.updateMany({
+      where: { materialId },
+      data: {
+        inQty: { increment: qty },
+        qty: { increment: qty },
+      },
+    });
+    if (updated.count === 1) return;
+    await tx.stockBalance.create({
+      data: {
+        warehouseId,
+        materialId,
+        inQty: qty,
+        qty,
+      },
+    });
   }
 
   /** Xoá phiếu nhập tự tạo; chặn khi hàng của lô đã bị xuất đi (tồn sẽ âm). */

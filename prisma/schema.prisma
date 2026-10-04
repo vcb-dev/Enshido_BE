@@ -1271,6 +1271,10 @@ model CastingSlip {
   waxWeightGram        Decimal           @map("wax_weight_gram") @db.Decimal(18, 4)
   /// Mã các đơn trong lô (DH001, DH002…) — sinh tự động từ `orders`, giữ để tìm kiếm / in.
   batchOrderCodes      String            @map("batch_order_codes")
+  /// Định mức / trọng lượng ước tính (g) — tách với số thực xuất.
+  estimateS999Gram        Decimal?          @map("estimate_s999_gram") @db.Decimal(18, 4)
+  estimateMasterAlloyGram Decimal?          @map("estimate_master_alloy_gram") @db.Decimal(18, 4)
+  estimateS925Gram        Decimal?          @map("estimate_s925_gram") @db.Decimal(18, 4)
   issueS999Gram        Decimal?          @map("issue_s999_gram") @db.Decimal(18, 4)
   issueMasterAlloyGram Decimal?          @map("issue_master_alloy_gram") @db.Decimal(18, 4)
   issueS925Gram        Decimal?          @map("issue_s925_gram") @db.Decimal(18, 4)

@@ -18,9 +18,9 @@ import type { AuthUserPayload } from '../auth/types';
 import { CastingSlipsService } from './casting-slips.service';
 import {
   CastingLossQuery,
-  ConfirmCastingSlipDto,
   CastingSlipCandidatesQuery,
   CastingSlipResultDto,
+  ConfirmCastingSlipDto,
   CreateCastingSlipDto,
   IssueCastingSlipDto,
   ListCastingSlipsQuery,
@@ -139,11 +139,22 @@ export class CastingSlipsController {
     return this.slips.submitResult(id, dto, user);
   }
 
-  /** Thủ kho cắt cây thông: chia phôi vào lệnh sản xuất và chuyển sang Nguội. */
+  /** Thủ kho xác nhận số liệu thợ đúc → Đúc xong. */
   @Post(':id/confirm')
   @BlockWorker()
   @RequirePermissions(Permission.WAREHOUSE_KEEPER)
   confirm(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.slips.approveResult(id, user);
+  }
+
+  /** Cắt cây thông: chia phôi, sinh lệnh SX Chờ nguội. */
+  @Post(':id/cut')
+  @BlockWorker()
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
+  cut(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: ConfirmCastingSlipDto,
     @CurrentUser() user: AuthUserPayload,

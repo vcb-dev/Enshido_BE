@@ -374,6 +374,7 @@ export class ProductionOrdersService {
           claimedByUserId: true,
           receipt: true,
           btpMaterial: { select: { sku: true } },
+          intakeOrder: { select: { code: true } },
           // Phiếu con kèm các khâu của chúng — vừa đủ để tính trạng thái từng phiếu cho cột
           // "Phiếu con" ở danh sách, không kéo cả chi tiết đơn.
           subTickets: {
@@ -435,6 +436,7 @@ export class ProductionOrdersService {
           model3dUrl: row.model3dUrl,
           leadTime: row.leadTime,
           trackingCode: row.trackingCode,
+          intakeOrderCode: row.intakeOrder?.code ?? null,
           closedBy: row.closedBy,
           customerName: row.customerName,
           description: row.description,

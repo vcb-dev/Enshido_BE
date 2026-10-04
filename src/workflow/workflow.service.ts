@@ -13,6 +13,7 @@ const PIPELINE: IntakeOrderStatus[] = [
   IntakeOrderStatus.CASTING,
   IntakeOrderStatus.CAST_PENDING_CONFIRMATION,
   IntakeOrderStatus.CAST_DONE,
+  IntakeOrderStatus.WAIT_COOLING,
 ];
 
 function iso(value: Date | null | undefined) {
@@ -41,7 +42,7 @@ export class WorkflowService {
   async intakeLive() {
     const rows = await this.prisma.intakeOrder.findMany({
       where: { status: { in: PIPELINE } },
-      orderBy: [{ createdDate: 'desc' }, { seq: 'desc' }],
+      orderBy: [{ createdAt: 'desc' }, { seq: 'desc' }],
       select: {
         id: true,
         code: true,

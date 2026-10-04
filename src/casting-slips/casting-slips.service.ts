@@ -12,7 +12,9 @@ import {
   Prisma,
   ProductionSource,
   ProductionStatus,
+  RoleCode,
 } from '@prisma/client';
+import { userHasRole } from '../auth/permissions';
 import { isCastWorkerAssignee } from '../auth/staff-job-presets';
 import type { AuthUserPayload } from '../auth/types';
 import { canConfirmIntakeWarehouse } from '../intake-orders/intake-warehouse-access';
@@ -77,16 +79,9 @@ function isUniqueViolation(error: unknown) {
 /** Mã mặc định nhận phần cây còn lại sau đúc (và hàng lỗi / S925 thừa ở Nguội, Vào đá). */
 const REST_MATERIAL_NAME = 'Bạc thu hồi / đầu cây S925';
 
-/**
- * Đơn tạo được thủ kho xác nhận đúc + chia phôi (vào Nguội): thợ đã nộp kết quả (chờ xác nhận),
- * hoặc phiếu cũ còn ở Chờ đúc / Đang đúc / Đúc xong chưa chia phôi.
- */
-const CONFIRMABLE_INTAKE_STATUSES: IntakeOrderStatus[] = [
-  IntakeOrderStatus.CAST_PENDING_CONFIRMATION,
-  IntakeOrderStatus.CASTING,
-  IntakeOrderStatus.WAIT_CASTING,
-  IntakeOrderStatus.CAST_DONE,
-];
+function isAdmin(actor: AuthUserPayload) {
+  return userHasRole(actor.roleCode, actor.extraRoles ?? [], RoleCode.ADMIN);
+}
 
 @Injectable()
 export class CastingSlipsService {
@@ -208,16 +203,6 @@ export class CastingSlipsService {
     if (ids.length !== dto.intakeOrderIds.length) {
       throw new BadRequestException('Một đơn chỉ chọn một lần trên phiếu');
     }
-    const issued =
-      (dto.issueS999Gram ?? 0) +
-      (dto.issueMasterAlloyGram ?? 0) +
-      (dto.issueS925Gram ?? 0);
-    // Bước 9 so TL cây sau đúc và bạc đã dùng với số giao, nên phiếu phải ghi vật tư giao.
-    if (!(issued > 0)) {
-      throw new BadRequestException(
-        'Nhập số gram bạc / hội / S925 cấp cho lần đúc',
-      );
-    }
     const slipDate = parseDate(dto.slipDate, 'Ngày phiếu');
     const orders = await this.prisma.intakeOrder.findMany({
       where: { id: { in: ids } },
@@ -274,9 +259,12 @@ export class CastingSlipsService {
               slipDate,
               waxWeightGram,
               batchOrderCodes: lines.map((line) => line.code).join(', '),
-              issueS999Gram: dto.issueS999Gram ?? null,
-              issueMasterAlloyGram: dto.issueMasterAlloyGram ?? null,
-              issueS925Gram: dto.issueS925Gram ?? null,
+              estimateS999Gram: silverEstimateFromWax(waxWeightGram),
+              estimateMasterAlloyGram: silverEstimateFromWax(waxWeightGram),
+              estimateS925Gram: silverEstimateFromWax(waxWeightGram),
+              issueS999Gram: null,
+              issueMasterAlloyGram: null,
+              issueS925Gram: null,
               createdByName,
               startedByUserId: assignee.id,
               startedByName: assignee.name,
@@ -325,12 +313,22 @@ export class CastingSlipsService {
     await this.prisma.runTx(async (tx) => {
       const slip = await tx.castingSlip.findUnique({
         where: { id },
-        select: { orders: { select: { intakeOrderId: true } } },
+        select: {
+          waxWeightGram: true,
+          estimateS999Gram: true,
+          estimateMasterAlloyGram: true,
+          estimateS925Gram: true,
+          orders: { select: { intakeOrderId: true } },
+        },
       });
       if (!slip) throw new NotFoundException('Không tìm thấy phiếu đúc');
+      const issued = resolveIssuedGrams(slip, dto);
       const claimed = await tx.castingSlip.updateMany({
         where: { id, status: CastingSlipStatus.PENDING_ISSUE },
-        data: { status: CastingSlipStatus.WAIT_CASTING },
+        data: {
+          status: CastingSlipStatus.WAIT_CASTING,
+          ...issued,
+        },
       });
       if (claimed.count !== 1) {
         throw new BadRequestException('Phiếu đúc đã cấp vật tư rồi');
@@ -510,13 +508,19 @@ export class CastingSlipsService {
   async start(id: string, actor: AuthUserPayload) {
     const slipBefore = await this.prisma.castingSlip.findUnique({
       where: { id },
-      select: { startedByUserId: true },
+      select: { startedByUserId: true, startedByName: true },
     });
     if (!slipBefore) throw new NotFoundException('Không tìm thấy phiếu đúc');
-    if (slipBefore.startedByUserId && slipBefore.startedByUserId !== actor.id) {
+    // Admin thao tác thay được; phiếu vẫn giữ thợ đã giao để báo hao hụt đúng người.
+    if (
+      slipBefore.startedByUserId &&
+      slipBefore.startedByUserId !== actor.id &&
+      !isAdmin(actor)
+    ) {
       throw new ForbiddenException('Phiếu đúc giao cho thợ khác');
     }
-    const startedByName = actorName(actor);
+    const startedByName = slipBefore.startedByName ?? actorName(actor);
+    const startedByUserId = slipBefore.startedByUserId ?? actor.id;
     await this.prisma.runTx(async (tx) => {
       const slip = await tx.castingSlip.findUnique({
         where: { id },
@@ -529,7 +533,7 @@ export class CastingSlipsService {
           status: CastingSlipStatus.CASTING,
           startedAt: new Date(),
           startedByName,
-          startedByUserId: actor.id,
+          startedByUserId,
         },
       });
       if (claimed.count !== 1) {
@@ -625,6 +629,55 @@ export class CastingSlipsService {
     return this.getById(id);
   }
 
+  /** Thủ kho xác nhận số liệu thợ vừa nhập → Đúc xong. Cắt cây thông là bước sau. */
+  async approveResult(id: string, actor: AuthUserPayload) {
+    if (!canConfirmIntakeWarehouse(actor)) {
+      throw new ForbiddenException('Chỉ thủ kho được xác nhận phiếu đúc');
+    }
+    const confirmedByName = actorName(actor);
+    await this.prisma.runTx(async (tx) => {
+      const slip = await tx.castingSlip.findUnique({
+        where: { id },
+        select: {
+          status: true,
+          castTreeWeightGram: true,
+          orders: { select: { intakeOrderId: true } },
+        },
+      });
+      if (!slip) throw new NotFoundException('Không tìm thấy phiếu đúc');
+      if (slip.status !== CastingSlipStatus.PENDING_CONFIRMATION) {
+        throw new BadRequestException('Phiếu đúc chưa chờ thủ kho xác nhận');
+      }
+      if (!slip.castTreeWeightGram || slip.castTreeWeightGram.lte(0)) {
+        throw new BadRequestException('Chưa có số liệu thợ đúc nhập');
+      }
+      const claimed = await tx.castingSlip.updateMany({
+        where: { id, status: CastingSlipStatus.PENDING_CONFIRMATION },
+        data: {
+          status: CastingSlipStatus.DONE,
+          confirmedAt: new Date(),
+          confirmedByName,
+        },
+      });
+      if (claimed.count !== 1) {
+        throw new BadRequestException('Phiếu đúc chưa chờ thủ kho xác nhận');
+      }
+      await tx.intakeOrder.updateMany({
+        where: {
+          id: { in: slip.orders.map((line) => line.intakeOrderId) },
+          status: {
+            in: [
+              IntakeOrderStatus.CAST_PENDING_CONFIRMATION,
+              IntakeOrderStatus.CASTING,
+            ],
+          },
+        },
+        data: { status: IntakeOrderStatus.CAST_DONE },
+      });
+    });
+    return this.getById(id);
+  }
+
   /** Cắt cây thông: nhập phôi theo từng lệnh và cho toàn bộ lô vào Nguội trong một giao dịch. */
   async confirm(
     id: string,
@@ -704,10 +757,10 @@ export class CastingSlipsService {
         const blank = blanks.get(intake.id)!;
         if (
           intake.productionOrder ||
-          !CONFIRMABLE_INTAKE_STATUSES.includes(intake.status)
+          intake.status !== IntakeOrderStatus.CAST_DONE
         ) {
           throw new ConflictException(
-            `Đơn ${intake.code} đã chuyển bước, tải lại phiếu đúc`,
+            `Đơn ${intake.code} chưa Đúc xong hoặc đã cắt cây thông`,
           );
         }
         if (blank.qty > intake.qty) {
@@ -725,22 +778,27 @@ export class CastingSlipsService {
       const claimed = await tx.castingSlip.updateMany({
         where: {
           id,
-          status: {
-            in: [
-              CastingSlipStatus.PENDING_CONFIRMATION,
-              CastingSlipStatus.DONE,
-            ],
-          },
+          status: CastingSlipStatus.DONE,
+          restWeightGram: null,
         },
         data: {
-          status: CastingSlipStatus.DONE,
-          confirmedAt: slip.confirmedAt ?? new Date(),
           confirmedByName,
           restWeightGram: restWeight,
         },
       });
       if (claimed.count !== 1) {
-        throw new BadRequestException('Phiếu đúc chưa chờ thủ kho xác nhận');
+        throw new BadRequestException('Phiếu đúc chưa Đúc xong hoặc đã cắt cây thông');
+      }
+      const intakeIds = slip.orders.map(({ intake }) => intake.id);
+      const moved = await tx.intakeOrder.updateMany({
+        where: {
+          id: { in: intakeIds },
+          status: IntakeOrderStatus.CAST_DONE,
+        },
+        data: { status: IntakeOrderStatus.WAIT_COOLING },
+      });
+      if (moved.count !== intakeIds.length) {
+        throw new ConflictException('Một đơn trên phiếu vừa đổi trạng thái');
       }
       // Keep the sequence lock transaction-scoped, but return a Prisma-decodable
       // value instead of PostgreSQL's `void` lock-function result.
@@ -750,20 +808,33 @@ export class CastingSlipsService {
         )
         SELECT 1::int AS locked FROM sequence_lock
       `;
-      const last = await tx.productionOrder.findFirst({
-        orderBy: { seq: 'desc' },
-        select: { seq: true },
-      });
+      const [last, btpWarehouse, pieceUnit, lastInbound] = await Promise.all([
+        tx.productionOrder.findFirst({
+          orderBy: { seq: 'desc' },
+          select: { seq: true },
+        }),
+        tx.warehouse.findUnique({
+          where: { code: 'btp-cho-vao-da' },
+          select: { id: true, code: true },
+        }),
+        tx.unit.findUnique({
+          where: { code: 'chiec' },
+          select: { id: true, name: true },
+        }),
+        tx.stockInbound.aggregate({
+          where: { warehouse: { code: 'btp-cho-vao-da' } },
+          _max: { sortOrder: true },
+        }),
+      ]);
+      if (!btpWarehouse) throw new NotFoundException('Không tìm thấy kho BTP');
+      if (!pieceUnit) {
+        throw new BadRequestException('Thiếu đơn vị tính "chiec" để nhập phôi');
+      }
       let seq = last?.seq ?? 0;
+      const inboundSort = { next: (lastInbound._max.sortOrder ?? 0) + 1 };
       const cutAt = new Date();
       for (const { intake } of slip.orders) {
         const blank = blanks.get(intake.id)!;
-        const moved = await tx.intakeOrder.updateMany({
-          where: { id: intake.id, status: { in: CONFIRMABLE_INTAKE_STATUSES } },
-          data: { status: IntakeOrderStatus.WAIT_COOLING },
-        });
-        if (moved.count !== 1)
-          throw new ConflictException(`Đơn ${intake.code} vừa đổi trạng thái`);
         // Phôi cắt cho đơn ở phiếu đúc này — mốc hao hụt cắt, không lẫn với phôi phiếu bù.
         await tx.castingSlipOrder.update({
           where: { intakeOrderId: intake.id },
@@ -781,11 +852,13 @@ export class CastingSlipsService {
             cutAt,
             confirmedByName,
             actor,
+            inboundSort,
           );
           continue;
         }
         seq += 1;
         const code = orderCode(seq);
+        const cutImages = blankImages.get(intake.id) ?? [];
         const order = await tx.productionOrder.create({
           data: {
             seq,
@@ -832,11 +905,16 @@ export class CastingSlipsService {
                 note: `Đúc xong, nhận ${blank.qty} phôi từ đơn tạo ${intake.code}`,
               },
             },
-            images: {
-              create: blankImages
-                .get(intake.id)!
-                .map((image) => ({ ...image, kind: 'CUT_BLANK' as const })),
-            },
+            ...(cutImages.length
+              ? {
+                  images: {
+                    create: cutImages.map((image) => ({
+                      ...image,
+                      kind: 'CUT_BLANK' as const,
+                    })),
+                  },
+                }
+              : {}),
           },
           select: { id: true },
         });
@@ -844,6 +922,8 @@ export class CastingSlipsService {
           warehouseCode: 'btp-cho-vao-da',
           name: `Phôi ${intake.trackingCode?.trim() || code}`,
           unitCode: 'chiec',
+          warehouse: btpWarehouse,
+          unit: pieceUnit,
         });
         const inboundId = await this.inventory.createAutoInbound(tx, {
           materialId,
@@ -853,6 +933,7 @@ export class CastingSlipsService {
           note: `Phôi đơn ${code} — đúc xong`,
           enteredBy: confirmedByName,
           productionOrderId: order.id,
+          sortCursor: inboundSort,
         });
         await tx.productionOrder.update({
           where: { id: order.id },
@@ -914,7 +995,7 @@ export class CastingSlipsService {
       }
     });
     this.inventory.bustBtpStock();
-    this.inventory.bustNvlStock();
+    if (restWeight.gt(0)) this.inventory.bustNvlStock();
     return this.getById(id);
   }
 
@@ -936,6 +1017,7 @@ export class CastingSlipsService {
     cutAt: Date,
     by: string,
     actor: AuthUserPayload,
+    inboundSort?: { next: number },
   ) {
     const orderId = intake.reworkOfOrderId!;
     await tx.$queryRaw`SELECT id FROM ${dbTable('production_orders')} WHERE id = ${orderId}::uuid FOR UPDATE`;
@@ -973,6 +1055,7 @@ export class CastingSlipsService {
       note: `Phôi bù ${intake.code} — đúc xong, cho đơn ${order.code}`,
       enteredBy: by,
       productionOrderId: order.id,
+      sortCursor: inboundSort,
     });
     const no = order.subTicketSeq + 1;
     const origin = order.subTickets.find(
@@ -1072,6 +1155,9 @@ export class CastingSlipsService {
           slipDate: true,
           waxWeightGram: true,
           batchOrderCodes: true,
+          estimateS999Gram: true,
+          estimateMasterAlloyGram: true,
+          estimateS925Gram: true,
           issueS999Gram: true,
           issueMasterAlloyGram: true,
           issueS925Gram: true,
@@ -1128,6 +1214,9 @@ export class CastingSlipsService {
               slipDate: rootRow.slipDate,
               waxWeightGram: rootRow.waxWeightGram,
               batchOrderCodes: rootRow.batchOrderCodes,
+              estimateS999Gram: rootRow.estimateS999Gram,
+              estimateMasterAlloyGram: rootRow.estimateMasterAlloyGram,
+              estimateS925Gram: rootRow.estimateS925Gram,
               issueS999Gram: rootRow.issueS999Gram,
               issueMasterAlloyGram: rootRow.issueMasterAlloyGram,
               issueS925Gram: rootRow.issueS925Gram,
@@ -1346,20 +1435,71 @@ function dec(value: Prisma.Decimal | null | undefined) {
   return value != null ? value.toString() : null;
 }
 
+/** 1 g sáp = 24 g bạc — ước tính S999 / Hội / S925. */
+const WAX_TO_SILVER = 24;
+
+function silverEstimateFromWax(wax: Prisma.Decimal) {
+  return wax.mul(WAX_TO_SILVER);
+}
+
+function optionalIssued(value?: number) {
+  return value != null && value > 0 ? new Prisma.Decimal(value) : null;
+}
+
+/** Không nhập thực xuất lúc xác nhận cấp vật tư → lấy đúng số ước tính (sáp × 24). */
+function resolveIssuedGrams(
+  slip: {
+    waxWeightGram: Prisma.Decimal;
+    estimateS999Gram: Prisma.Decimal | null;
+    estimateMasterAlloyGram: Prisma.Decimal | null;
+    estimateS925Gram: Prisma.Decimal | null;
+  },
+  dto: {
+    issueS999Gram?: number;
+    issueMasterAlloyGram?: number;
+    issueS925Gram?: number;
+  },
+) {
+  const entered = {
+    issueS999Gram: optionalIssued(dto.issueS999Gram),
+    issueMasterAlloyGram: optionalIssued(dto.issueMasterAlloyGram),
+    issueS925Gram: optionalIssued(dto.issueS925Gram),
+  };
+  const enteredTotal =
+    Number(entered.issueS999Gram ?? 0) +
+    Number(entered.issueMasterAlloyGram ?? 0) +
+    Number(entered.issueS925Gram ?? 0);
+  if (enteredTotal > 0) return entered;
+  const fallback =
+    slip.estimateS999Gram ?? silverEstimateFromWax(slip.waxWeightGram);
+  return {
+    issueS999Gram: slip.estimateS999Gram ?? fallback,
+    issueMasterAlloyGram: slip.estimateMasterAlloyGram ?? fallback,
+    issueS925Gram: slip.estimateS925Gram ?? fallback,
+  };
+}
+
 function issueTotal(row: {
   issueS999Gram: Prisma.Decimal | null;
   issueMasterAlloyGram: Prisma.Decimal | null;
   issueS925Gram: Prisma.Decimal | null;
 }) {
-  let sum = 0;
-  for (const part of [
+  const parts = [
     row.issueS999Gram,
     row.issueMasterAlloyGram,
     row.issueS925Gram,
-  ]) {
-    if (part != null) sum += Number(part.toString());
+  ]
+    .filter((part): part is Prisma.Decimal => part != null)
+    .map((part) => Number(part.toString()));
+  if (
+    parts.length === 3 &&
+    parts[0] === parts[1] &&
+    parts[1] === parts[2]
+  ) {
+    // Ba cột cùng số ước tính (sáp × 24) — tổng thực xuất là số đó, không nhân 3.
+    return String(parts[0]);
   }
-  return String(sum);
+  return String(parts.reduce((sum, n) => sum + n, 0));
 }
 
 /**
@@ -1428,6 +1568,10 @@ function slipRowBase(row: SlipRow) {
       productionOrderCode: line.intake.productionOrder?.code ?? null,
       waxWeightGram: line.waxWeightGram.toString(),
     })),
+    estimateS999Gram: dec(silverEstimateFromWax(row.waxWeightGram)),
+    estimateMasterAlloyGram: dec(silverEstimateFromWax(row.waxWeightGram)),
+    estimateS925Gram: dec(silverEstimateFromWax(row.waxWeightGram)),
+    estimateTotalGram: silverEstimateFromWax(row.waxWeightGram).toString(),
     issueS999Gram: dec(row.issueS999Gram),
     issueMasterAlloyGram: dec(row.issueMasterAlloyGram),
     issueS925Gram: dec(row.issueS925Gram),

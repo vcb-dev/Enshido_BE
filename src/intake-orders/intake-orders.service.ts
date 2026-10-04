@@ -72,6 +72,7 @@ const INTAKE_PIPELINE_STATUSES: IntakeOrderStatus[] = [
   IntakeOrderStatus.CASTING,
   IntakeOrderStatus.CAST_PENDING_CONFIRMATION,
   IntakeOrderStatus.CAST_DONE,
+  IntakeOrderStatus.WAIT_COOLING,
 ];
 
 const intakeListImageKinds: ProductionImageKind[] = [
@@ -84,10 +85,11 @@ const intakeListInclude = {
   castingSlipLine: {
     select: { slip: { select: { code: true, status: true } } },
   },
+  productionOrder: { select: { code: true } },
   images: {
     where: { kind: { in: intakeListImageKinds } },
     orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }],
-    take: 24,
+    take: 6,
   },
 } satisfies Prisma.IntakeOrderInclude;
 
@@ -128,7 +130,7 @@ export class IntakeOrdersService {
       this.prisma.intakeOrder.count({ where }),
       this.prisma.intakeOrder.findMany({
         where,
-        orderBy: [{ createdDate: 'desc' }, { seq: 'desc' }],
+        orderBy: [{ createdAt: 'desc' }, { seq: 'desc' }],
         skip: (page - 1) * pageSize,
         take: pageSize,
         include: intakeListInclude,
@@ -154,28 +156,48 @@ export class IntakeOrdersService {
   }
 
   /**
-   * Tab Tất cả — một groupBy + 10 findMany (không count từng bucket), ảnh list gọn.
+   * Tab Tất cả — 1 groupBy + 1 findMany (không N query theo từng trạng thái).
    */
   async pipelineLists(
     query: Pick<ListIntakeOrdersQuery, 'search' | 'requestType' | 'pageSize'>,
   ) {
-    const pageSize = Math.min(query.pageSize ?? 200, 200);
-    const counts = await this.pipelineStatusCounts();
-    const rowsByStatus = await Promise.all(
-      INTAKE_PIPELINE_STATUSES.map((status) =>
-        this.prisma.intakeOrder.findMany({
-          where: intakeListWhere({ ...query, status }),
-          orderBy: [{ createdDate: 'desc' }, { seq: 'desc' }],
-          take: pageSize,
-          include: intakeListInclude,
-        }),
-      ),
-    );
+    const pageSize = Math.min(query.pageSize ?? 200, 400);
+    const where: Prisma.IntakeOrderWhereInput = {
+      AND: [
+        intakeListWhere({ ...query, status: undefined }),
+        { status: { in: INTAKE_PIPELINE_STATUSES } },
+      ],
+    };
+    const [countRows, rows] = await Promise.all([
+      this.prisma.intakeOrder.groupBy({
+        by: ['status'],
+        where,
+        _count: { _all: true },
+      }),
+      this.prisma.intakeOrder.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }, { seq: 'desc' }],
+        take: pageSize,
+        include: intakeListInclude,
+      }),
+    ]);
+    const counts = Object.fromEntries(
+      INTAKE_PIPELINE_STATUSES.map((status) => [status, 0]),
+    ) as Record<IntakeOrderStatus, number>;
+    for (const row of countRows) {
+      if (row.status in counts) counts[row.status] = row._count._all;
+    }
+    const itemsByStatus = Object.fromEntries(
+      INTAKE_PIPELINE_STATUSES.map((status) => [status, [] as ReturnType<typeof toRow>[]]),
+    ) as Record<IntakeOrderStatus, ReturnType<typeof toRow>[]>;
+    for (const row of rows) {
+      itemsByStatus[row.status]?.push(toRow(row));
+    }
     return Object.fromEntries(
-      INTAKE_PIPELINE_STATUSES.map((status, index) => [
+      INTAKE_PIPELINE_STATUSES.map((status) => [
         status,
         {
-          items: rowsByStatus[index].map(toRow),
+          items: itemsByStatus[status],
           total: counts[status] ?? 0,
           page: 1,
           pageSize,
@@ -384,7 +406,7 @@ export class IntakeOrdersService {
     if (!order) throw new NotFoundException('Không tìm thấy đơn');
     if (order.status !== IntakeOrderStatus.READY_FOR_PRODUCTION) {
       throw new BadRequestException(
-        'Chỉ cập nhật số liệu khi đơn ở bước Chờ SX · Đã có 3D / khuôn (C)',
+        'Chỉ cập nhật số liệu khi đơn ở bước Chờ SX · Đã có 3D (C)',
       );
     }
 
@@ -403,6 +425,9 @@ export class IntakeOrdersService {
     const nextStatus = moldPath
       ? IntakeOrderStatus.PENDING_WAREHOUSE_CONFIRMATION
       : IntakeOrderStatus.WAX_PRINTED;
+    if (moldPath && !(dto.castingTreeWeightGram != null && dto.castingTreeWeightGram > 0)) {
+      throw new BadRequestException('Nhập trọng lượng cây thông (gram)');
+    }
     const existing = new Set(order.images.map((image) => image.publicId));
     const added = this.newImages(dto.images, existing);
     const merged = [
@@ -423,6 +448,9 @@ export class IntakeOrdersService {
         data: {
           status: nextStatus,
           productWeightGram: dto.productWeightGram,
+          ...(moldPath && dto.castingTreeWeightGram != null
+            ? { castingTreeWeightGram: dto.castingTreeWeightGram }
+            : {}),
           ...stoneData(dto),
           images: { deleteMany: {}, create: merged },
         },
@@ -518,7 +546,7 @@ export class IntakeOrdersService {
       if (!order) throw new NotFoundException('Không tìm thấy đơn');
       if (order.status !== IntakeOrderStatus.READY_FOR_PRODUCTION) {
         throw new BadRequestException(
-          `Đơn ${order.code} không ở bước Chờ SX · Đã có 3D / khuôn (C)`,
+          `Đơn ${order.code} không ở bước Chờ SX · Đã có 3D (C)`,
         );
       }
       if (order.hasMold === true) {
@@ -770,6 +798,7 @@ type IntakeRow = {
     height: number | null;
   }[];
   castingSlipLine?: { slip?: { code: string; status: string } | null } | null;
+  productionOrder?: { code: string } | null;
 };
 
 /** Đá theo 3D: chỉ ghi khi người dùng có nhập, để bước sau không xoá mất số đã khai. */
@@ -827,6 +856,7 @@ function toRow(row: IntakeRow) {
           status: row.castingSlipLine.slip.status,
         }
       : null,
+    productionOrderCode: row.productionOrder?.code ?? null,
     createdAt: row.createdAt.toISOString(),
     images: row.images.map((image) => ({
       kind: image.kind,

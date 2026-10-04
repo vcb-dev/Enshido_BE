@@ -144,6 +144,13 @@ export class IntakeProductSpecsDto {
   @Min(0.0001)
   productWeightGram!: number;
 
+  /** Đơn đã có khuôn: TL cây thông (g), nhập cùng TL sáp. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0.0001)
+  castingTreeWeightGram?: number;
+
   /** Đá theo file 3D: số viên cả đơn; 0 = đơn không có đá (bỏ qua khâu Vào đá). */
   @IsOptional()
   @Transform(emptyToNull)

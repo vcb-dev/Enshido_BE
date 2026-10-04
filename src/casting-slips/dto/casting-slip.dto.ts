@@ -51,6 +51,24 @@ export class CreateCastingSlipDto {
   @Type(() => Number)
   @IsNumber()
   @Min(0)
+  estimateS999Gram?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  estimateMasterAlloyGram?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  estimateS925Gram?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
   issueS999Gram?: number;
 
   @IsOptional()
@@ -70,7 +88,7 @@ export class CreateCastingSlipDto {
   assignedUserId!: string;
 }
 
-/** Bước 7 (sau khi in phiếu và cấp vật tư): chụp ảnh phiếu đúc + vật tư kèm theo rồi Lưu. */
+/** Bước 7 (sau khi in phiếu): nhập thực xuất (không nhập thì lấy ước tính) + ảnh rồi Lưu. */
 export class IssueCastingSlipDto {
   @IsArray()
   @ArrayMinSize(1, { message: 'Chụp ảnh phiếu đúc và vật tư kèm theo' })
@@ -78,6 +96,24 @@ export class IssueCastingSlipDto {
   @ValidateNested({ each: true })
   @Type(() => CastingSlipImageDto)
   images!: CastingSlipImageDto[];
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  issueS999Gram?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  issueMasterAlloyGram?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  issueS925Gram?: number;
 }
 
 export class CastingLossQuery {

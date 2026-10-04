@@ -28,7 +28,7 @@ function intake(id: string) {
   return {
     id,
     code: `DH${id}`,
-    status: IntakeOrderStatus.CASTING,
+    status: IntakeOrderStatus.CAST_DONE,
     requestType: ProductionRequestType.BULK,
     productName: 'Nhẫn',
     qty: 2,
@@ -47,15 +47,26 @@ function setup(treeWeight: number) {
     castingSlip: {
       findUnique: jest.fn().mockResolvedValue({
         slipDate: new Date('2026-09-29'),
-        status: 'PENDING_CONFIRMATION',
-        confirmedAt: null,
+        status: 'DONE',
+        confirmedAt: new Date('2026-10-04'),
+        restWeightGram: null,
         castTreeWeightGram: new Prisma.Decimal(treeWeight),
         orders: [{ intake: intake('1') }, { intake: intake('2') }],
       }),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       update: jest.fn(),
     },
-    intakeOrder: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+    intakeOrder: {
+      updateMany: jest.fn().mockImplementation(
+        async (args: { where?: { id?: string | { in?: string[] } } }) => ({
+          count: Array.isArray(args.where?.id)
+            ? 1
+            : args.where?.id && typeof args.where.id === 'object' && args.where.id.in
+              ? args.where.id.in.length
+              : 1,
+        }),
+      ),
+    },
     castingSlipOrder: { update: jest.fn().mockResolvedValue({}) },
     productionOrder: {
       findFirst: jest.fn().mockResolvedValue({ seq: 42 }),
@@ -67,6 +78,15 @@ function setup(treeWeight: number) {
     },
     productionActivityLog: { create: jest.fn() },
     castingSlipImage: { createMany: jest.fn() },
+    warehouse: {
+      findUnique: jest.fn().mockResolvedValue({ id: 'wh-btp', code: 'btp-cho-vao-da' }),
+    },
+    unit: {
+      findUnique: jest.fn().mockResolvedValue({ id: 'unit-chiec', name: 'Chiếc' }),
+    },
+    stockInbound: {
+      aggregate: jest.fn().mockResolvedValue({ _max: { sortOrder: 3 } }),
+    },
     $queryRaw: jest.fn(),
   };
   const prisma = {
