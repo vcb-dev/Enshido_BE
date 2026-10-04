@@ -2,7 +2,6 @@ import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
-  IsDateString,
   IsEnum,
   IsInt,
   IsNotEmpty,
@@ -61,12 +60,12 @@ export class UpdateStockDto {
   unitId?: string;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   shapeId?: string | null;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   colorId?: string | null;
 
@@ -76,7 +75,7 @@ export class UpdateStockDto {
   colorName?: string | null;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   materialTypeId?: string | null;
 
@@ -85,7 +84,7 @@ export class UpdateStockDto {
   classification?: MaterialClass;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsEnum(MetalKind)
   metalKind?: MetalKind | null;
 
@@ -94,27 +93,27 @@ export class UpdateStockDto {
   otherClassName?: string | null;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   otherClassId?: string | null;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   bodyMetalId?: string | null;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   productKindId?: string | null;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   btpCategoryId?: string | null;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   platingColorId?: string | null;
 
@@ -124,12 +123,12 @@ export class UpdateStockDto {
   sizeLabel?: string | null;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @Matches(DECIMAL, { message: 'Trọng lượng đá không hợp lệ' })
   stoneWeight?: string | null;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @Matches(DECIMAL, { message: 'Trọng lượng không hợp lệ' })
   weight?: string | null;
 
@@ -147,6 +146,15 @@ export class UpdateStockDto {
   @IsOptional()
   @Matches(DECIMAL, { message: 'Tồn đầu kỳ SL không hợp lệ' })
   openingQty?: string;
+
+  /**
+   * TL tồn kho vừa cân (g) — mã không tính theo gram (đá tính viên…). Gửi lên thì lấy làm mốc TL
+   * tồn từ lúc này; chuỗi rỗng = xoá mốc (chưa cân).
+   */
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
+  @Matches(DECIMAL, { message: 'TL tồn (g) không hợp lệ' })
+  gramBase?: string | null;
 
   @IsOptional()
   @Matches(DECIMAL, { message: 'Đơn giá tồn không hợp lệ' })
@@ -202,12 +210,12 @@ export class CreateStockDto {
   unitId!: string;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   shapeId?: string | null;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   colorId?: string | null;
 
@@ -217,12 +225,12 @@ export class CreateStockDto {
   colorName?: string | null;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   materialTypeId?: string | null;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsEnum(MetalKind)
   metalKind?: MetalKind | null;
 
@@ -231,27 +239,27 @@ export class CreateStockDto {
   otherClassName?: string | null;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   otherClassId?: string | null;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   bodyMetalId?: string | null;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   productKindId?: string | null;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   btpCategoryId?: string | null;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   platingColorId?: string | null;
 
@@ -261,12 +269,12 @@ export class CreateStockDto {
   sizeLabel?: string | null;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @Matches(DECIMAL, { message: 'Trọng lượng đá không hợp lệ' })
   stoneWeight?: string | null;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @Matches(DECIMAL, { message: 'Trọng lượng không hợp lệ' })
   weight?: string | null;
 

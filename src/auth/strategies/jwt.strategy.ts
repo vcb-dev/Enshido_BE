@@ -8,7 +8,7 @@ import { COOKIE_ACCESS } from '../../cookie/cookie.constants';
 import type { JwtPayload } from '../types';
 
 function fromCookieOrBearer(req: Request): string | null {
-  const cookieToken = req?.cookies?.[COOKIE_ACCESS];
+  const cookieToken: unknown = req?.cookies?.[COOKIE_ACCESS];
   if (typeof cookieToken === 'string' && cookieToken.length > 0) {
     return cookieToken;
   }

@@ -23,19 +23,17 @@ function iso(value: Date | null | undefined) {
 export class WorkflowService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** 4 MAX — FE poll để biết tab/chip cần làm mới, không kéo cả danh sách. */
+  /** 3 MAX — FE poll để biết tab/chip cần làm mới, không kéo cả danh sách. */
   async revision() {
-    const [intake, production, casting, cut] = await Promise.all([
+    const [intake, production, casting] = await Promise.all([
       this.prisma.intakeOrder.aggregate({ _max: { updatedAt: true } }),
       this.prisma.productionOrder.aggregate({ _max: { dataChangedAt: true } }),
       this.prisma.castingSlip.aggregate({ _max: { updatedAt: true } }),
-      this.prisma.castingCut.aggregate({ _max: { updatedAt: true } }),
     ]);
     return {
       intake: iso(intake._max.updatedAt),
       production: iso(production._max.dataChangedAt),
       casting: iso(casting._max.updatedAt),
-      cut: iso(cut._max.updatedAt),
     };
   }
 

@@ -27,9 +27,9 @@ describe('allocateMaterialSku', () => {
   it('lấy max của đúng tiền tố rồi + 1', async () => {
     const seen: Prisma.Sql[] = [];
     const db = {
-      $queryRaw: async <T>(query: Prisma.Sql) => {
+      $queryRaw: <T>(query: Prisma.Sql) => {
         seen.push(query);
-        return [{ max: 5 }] as T;
+        return Promise.resolve([{ max: 5 }] as T);
       },
     };
     await expect(allocateMaterialSku(db, 'nvl-chinh')).resolves.toBe('A00006');
@@ -42,7 +42,7 @@ describe('allocateMaterialSku', () => {
 
   it('kho trống bắt đầu từ 00001', async () => {
     const db = {
-      $queryRaw: async <T>() => [{ max: null }] as T,
+      $queryRaw: <T>() => Promise.resolve([{ max: null }] as T),
     };
     await expect(allocateMaterialSku(db, 'nvl-tieu-hao')).resolves.toBe(
       'D00001',

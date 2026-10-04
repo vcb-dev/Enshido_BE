@@ -36,8 +36,11 @@ async function seedUsers() {
         'screen.warehouse.nvl-tieu-hao',
         'screen.warehouse.thanh-pham',
         'screen.locations',
-        // Quản lý xưởng: kiêm quản lý SX + thủ kho + KCS.
-        'production.manager',
+        'screen.production-orders',
+        // Thủ kho: tạo / duyệt đơn, xác nhận sáp / đúc, lên phiếu đúc, duyệt xuất NVL.
+        'warehouse.keeper',
+        'intake.create',
+        'intake.approve',
       ],
     },
     {

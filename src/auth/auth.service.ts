@@ -206,9 +206,9 @@ export class AuthService {
   }
 
   expiresAtFromRequest(req: Request) {
-    const token = req.cookies?.[COOKIE_ACCESS];
+    const token: unknown = req.cookies?.[COOKIE_ACCESS];
     if (typeof token === 'string' && token.length > 0) {
-      const decoded = this.jwt.decode(token) as { exp?: number } | null;
+      const decoded = this.jwt.decode<{ exp?: number } | null>(token);
       if (decoded?.exp) return new Date(decoded.exp * 1000).toISOString();
     }
     return new Date(

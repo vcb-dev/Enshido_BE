@@ -81,7 +81,12 @@ export class BtpService {
     return this.toRow(row);
   }
 
-  async update(code: string, id: string, dto: UpsertBtpWaitingDto, actor: AuthUserPayload) {
+  async update(
+    code: string,
+    id: string,
+    dto: UpsertBtpWaitingDto,
+    actor: AuthUserPayload,
+  ) {
     const warehouse = await this.requireWarehouse(code);
     const existing = await this.prisma.btpWaitingItem.findFirst({
       where: { id, warehouseId: warehouse.id },

@@ -13,7 +13,7 @@ export class UpsertBtpWaitingDto {
   @IsDateString()
   receivedAt!: string;
 
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   craftsmanUserId!: string;
 
@@ -21,7 +21,7 @@ export class UpsertBtpWaitingDto {
   name!: string;
 
   @IsOptional()
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @IsUUID()
   unitId?: string | null;
 

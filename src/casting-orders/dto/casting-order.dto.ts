@@ -51,13 +51,15 @@ export class CastingOrderLineDto {
   @IsUUID()
   materialId!: string;
 
-  @Transform(({ value }) => (value === '' ? null : value))
+  @Transform(({ value }: { value: unknown }) => (value === '' ? null : value))
   @Matches(DECIMAL, { message: 'Số gram không hợp lệ' })
   gramQty!: string;
 }
 
 export class CreateCastingOrderDto {
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
   @IsNotEmpty({ message: 'Nhập mã đúc' })
   @MaxLength(60)

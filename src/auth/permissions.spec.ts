@@ -140,35 +140,25 @@ describe('userCan — quyền theo việc', () => {
     const keeper = staff([Permission.WAREHOUSE_KEEPER]);
     const qc = staff([Permission.PRODUCTION_QC]);
     const nobody = staff([]);
-    const cut = [Permission.WAREHOUSE_KEEPER, Permission.PRODUCTION_QC] as const;
+    const cut = [
+      Permission.WAREHOUSE_KEEPER,
+      Permission.PRODUCTION_QC,
+    ] as const;
     expect(userCan(keeper, ...cut)).toBe(true);
     expect(userCan(qc, ...cut)).toBe(true);
     expect(userCan(nobody, ...cut)).toBe(false);
   });
 
   it('admin có mọi quyền việc, kể cả khi ADMIN chỉ ở extraRoles', () => {
-    expect(userCan({ roleCode: RoleCode.ADMIN }, Permission.PRODUCTION_QC)).toBe(true);
+    expect(
+      userCan({ roleCode: RoleCode.ADMIN }, Permission.PRODUCTION_QC),
+    ).toBe(true);
     expect(
       userCan(
         { roleCode: RoleCode.USER, extraRoles: [RoleCode.ADMIN] },
         Permission.WAREHOUSE_KEEPER,
       ),
     ).toBe(true);
-  });
-
-  it('Quản lý xưởng kiêm quản lý SX + thủ kho + KCS, không kèm việc của thợ', () => {
-    const manager = staff([Permission.PRODUCTION_MANAGER]);
-    for (const permission of [
-      Permission.INTAKE_CREATE,
-      Permission.INTAKE_APPROVE,
-      Permission.WAREHOUSE_KEEPER,
-      Permission.PRODUCTION_QC,
-    ]) {
-      expect(userCan(manager, permission)).toBe(true);
-    }
-    expect(userCan(manager, Permission.PRODUCTION_MODEL3D)).toBe(false);
-    expect(userCan(manager, Permission.PRODUCTION_WAX)).toBe(false);
-    expect(userCan(manager, Permission.PRODUCTION_CAST)).toBe(false);
   });
 
   it('role Thợ không tự có quyền việc nào ngoài nhận phiếu con', () => {
