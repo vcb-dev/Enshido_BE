@@ -478,13 +478,6 @@ export class HandoverInfoDto {
   materials?: HandoverMaterialDto[];
 }
 
-/** Giao khâu cho thợ (đơn chưa chia phiếu con). */
-export class HandoverStageDto extends HandoverInfoDto {
-  @Transform(emptyToNull)
-  @IsUUID()
-  craftsmanUserId!: string;
-}
-
 /** Thủ kho nhận lại túi đá thợ trả giữa khâu Vào đá (đổi size) — cân cả túi. */
 export class EarlyStoneReturnDto {
   @IsUUID('all', { message: 'Chọn mã đá thợ trả lại' })
@@ -500,7 +493,7 @@ export class EarlyStoneReturnDto {
   note?: string;
 }
 
-/** Khâu Vào đá: KCS cân gói đá thừa của một mã (đá rất nhỏ — cân cả gói, không đếm viên). */
+/** Khâu Vào đá: QC cân gói đá thừa của một mã (đá rất nhỏ — cân cả gói, không đếm viên). */
 export class ReturnedStoneDto {
   @IsUUID('all', { message: 'Chọn mã đá thừa' })
   materialId!: string;
@@ -510,12 +503,30 @@ export class ReturnedStoneDto {
   weight!: string;
 }
 
-/** KCS nhận lại hàng từ thợ và cân lại bạc — người KCS là tài khoản đăng nhập. */
+/** Một ảnh QC chụp lúc nhận lại khâu (đã tải lên Cloudinary). */
+export class StageImageDto {
+  @IsUrl({ protocols: ['https'], require_protocol: true })
+  url!: string;
+
+  @IsString()
+  @MaxLength(300)
+  publicId!: string;
+
+  @IsOptional()
+  @IsInt()
+  width?: number | null;
+
+  @IsOptional()
+  @IsInt()
+  height?: number | null;
+}
+
+/** QC nhận lại hàng từ thợ và cân lại bạc — người QC là tài khoản đăng nhập. */
 export class ReturnStageDto {
   @IsDateString()
   returnedAt!: string;
 
-  /** Số lượng nhận lại; bỏ trống thì hiểu là nhận lại đủ số đã giao. */
+  /** Số lượng sản phẩm đạt; bỏ trống thì hiểu là đạt đủ số đã giao. */
   @IsOptional()
   @Transform(emptyToNull)
   @Type(() => Number)
@@ -524,7 +535,7 @@ export class ReturnStageDto {
   returnedQty?: number | null;
 
   @Transform(emptyToNull)
-  @Matches(DECIMAL, { message: 'Trọng lượng nhận lại (bạc) không hợp lệ' })
+  @Matches(DECIMAL, { message: 'Trọng lượng sản phẩm đạt không hợp lệ' })
   returnedSilverWeight!: string;
 
   /** Khâu Vào đá: số viên đá gắn lên. Khâu khác không nhận hai trường đá này. */
@@ -560,7 +571,7 @@ export class ReturnStageDto {
   @Type(() => ReturnedStoneDto)
   returnedStones?: ReturnedStoneDto[];
 
-  /** Nguội / Vào đá: số lượng hàng lỗi KCS tách ra (hàng đạt = số nhận lại). */
+  /** Nguội / Vào đá: số lượng hàng lỗi QC tách ra (hàng đạt = số nhận lại). */
   @IsOptional()
   @Transform(emptyToNull)
   @Type(() => Number)
@@ -600,9 +611,17 @@ export class ReturnStageDto {
   @IsString()
   @MaxLength(1000)
   note?: string;
+
+  /** Ảnh làm chứng QC (Nguội → Xi) — bắt buộc ít nhất một ảnh; sửa lại thì gửi cả bộ mới. */
+  @IsArray()
+  @ArrayMinSize(1, { message: 'QC phải chụp ít nhất một ảnh làm chứng' })
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => StageImageDto)
+  images!: StageImageDto[];
 }
 
-/** Sửa tiền công của một khâu ở phần chi phí (đã nhập lần đầu lúc KCS nhận lại). */
+/** Sửa tiền công của một khâu ở phần chi phí (đã nhập lần đầu lúc QC nhận lại). */
 export class StageLaborDto {
   @IsOptional()
   @Transform(emptyToNull)
@@ -681,7 +700,7 @@ export class StoneHoldLineDto {
   @Min(1)
   stoneCount?: number | null;
 
-  /** TL cả gói đá (g) — bắt buộc, KCS cân gói thừa theo tỷ lệ TL này. */
+  /** TL cả gói đá (g) — bắt buộc, QC cân gói thừa theo tỷ lệ TL này. */
   @Transform(emptyToNull)
   @Matches(DECIMAL, { message: 'Cân cả gói đá và nhập TL gói (g)' })
   weight!: string;
@@ -700,7 +719,7 @@ export class AssignSubTicketDto {
   @IsUUID()
   craftsmanUserId!: string;
 
-  /** Khâu Vào đá: đá thủ kho cấp cho thợ — chỉ giữ chỗ trong tồn, xuất kho khi xác nhận sau KCS. */
+  /** Khâu Vào đá: đá thủ kho cấp cho thợ — chỉ giữ chỗ trong tồn, xuất kho khi xác nhận sau QC. */
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(20)

@@ -1,7 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type { InventoryService } from '../inventory/inventory.service';
-import { decStr } from '../util/money';
+import { ctStr, decStr } from '../util/money';
 import {
   shrinkHold,
   splitReturnedWeight,
@@ -60,7 +60,7 @@ export function planEarlyReturn<
     );
   }
   if (weight.lte(0)) {
-    throw new BadRequestException('Nhập TL túi đá trả lại (g)');
+    throw new BadRequestException('Nhập TL túi đá trả lại (ct)');
   }
   const total = weighed.reduce(
     (sum, hold) => sum.add(hold.weight!),
@@ -68,7 +68,7 @@ export function planEarlyReturn<
   );
   if (weight.gt(total)) {
     throw new BadRequestException(
-      `${weighed[0].material.name}: TL trả ${decStr(weight)} g nhiều hơn TL đang giữ ${decStr(total)} g`,
+      `${weighed[0].material.name}: TL trả ${ctStr(weight)} nhiều hơn TL đang giữ ${ctStr(total)}`,
     );
   }
   const split = splitReturnedWeight(
@@ -89,8 +89,8 @@ export function planEarlyReturn<
 }
 
 /**
- * KCS nhận lại khâu Vào đá: chia TL gói đá thừa theo mã cho từng dòng đã cấp (trừ từ dòng cuối
- * ngược lên), quy ra số viên thừa theo tỷ lệ TL. Dòng cũ không cân gói thì chia số viên KCS đếm.
+ * QC nhận lại khâu Vào đá: chia TL gói đá thừa theo mã cho từng dòng đã cấp (trừ từ dòng cuối
+ * ngược lên), quy ra số viên thừa theo tỷ lệ TL. Dòng cũ không cân gói thì chia số viên QC đếm.
  * Trả về giá trị ghi cho từng dòng và tổng số viên / TL thừa của khâu.
  */
 export function planStoneReturn(
@@ -122,7 +122,7 @@ export function planStoneReturn(
     );
     if (weight.gt(total)) {
       throw new BadRequestException(
-        `${group[0].material.name}: TL gói thừa ${decStr(weight)} g nhiều hơn TL đã cấp ${decStr(total)} g`,
+        `${group[0].material.name}: TL gói thừa ${ctStr(weight)} nhiều hơn TL đã cấp ${ctStr(total)}`,
       );
     }
     const split = splitReturnedWeight(
@@ -179,12 +179,12 @@ export function planStoneReturn(
   };
 }
 
-/** TL gói đá lúc cấp — bắt buộc, là mốc chia tỷ lệ khi KCS cân gói thừa. */
+/** TL gói đá lúc cấp — bắt buộc, là mốc chia tỷ lệ khi QC cân gói thừa. */
 export function packWeightOf(weight: string | null | undefined) {
   const value = weight ? new Prisma.Decimal(weight) : null;
   if (!value || value.lte(0)) {
     throw new BadRequestException(
-      'Cân cả gói đá và nhập TL gói (g) — KCS cân gói thừa để tính đá đã dùng',
+      'Cân cả gói đá và nhập TL gói (ct) — QC cân gói thừa để tính đá đã dùng',
     );
   }
   return value;

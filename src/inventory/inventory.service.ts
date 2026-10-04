@@ -3053,12 +3053,16 @@ export class InventoryService {
     for (const row of rows) {
       const onHand = new Prisma.Decimal(row.on_hand);
       const held = new Prisma.Decimal(row.held);
-      // Mã tính theo gram: SL chính là TL. Mã khác: TL kho cân + TL nhập − TL xuất sau lúc cân.
+      // Mã tính theo gram / ct: TL suy từ SL. Mã khác: TL kho cân + TL nhập − TL xuất sau lúc cân.
       const gramOnHand = isGram(row.unit_name)
         ? onHand
-        : row.gram_base != null
-          ? new Prisma.Decimal(row.gram_base).add(row.gram_in).sub(row.gram_out)
-          : null;
+        : isCarat(row.unit_name)
+          ? onHand.mul(GRAM_PER_CT)
+          : row.gram_base != null
+            ? new Prisma.Decimal(row.gram_base)
+                .add(row.gram_in)
+                .sub(row.gram_out)
+            : null;
       result.set(row.material_id, {
         onHand,
         held,
@@ -3514,7 +3518,7 @@ function isLockTimeout(error: unknown) {
 function assertNvlWarehouse(code: string) {
   if (code === 'thanh-pham') {
     throw new BadRequestException(
-      'Kho thành phẩm không dùng tồn / nhập / xuất NVL. Dùng phiếu KCS và phiếu xuất khách.',
+      'Kho thành phẩm không dùng tồn / nhập / xuất NVL. Dùng phiếu QC và phiếu xuất khách.',
     );
   }
 }
@@ -3534,8 +3538,12 @@ const GRAM_UNITS = new Set(['g', 'gr', 'gram', 'grams', 'gam']);
 const isGram = (unitName: string) =>
   GRAM_UNITS.has(unitName.trim().toLowerCase());
 
+/** 1 ct = 0,2 g. Đá tính theo ct thì TL (g) suy thẳng từ SL. */
+const GRAM_PER_CT = new Prisma.Decimal('0.2');
+const isCarat = (unitName: string) => unitName.trim().toLowerCase() === 'ct';
+
 /**
- * TL nhập (g) của phiếu nhập: mã tính theo gram thì chính là SL; mã khác lấy số kho cân (không
+ * TL nhập (g) của phiếu nhập: mã tính theo gram thì chính là SL, theo ct thì SL × 0,2; mã khác lấy số kho cân (không
  * bắt buộc — để trống thì TL tồn của mã không cộng phần này).
  */
 function inboundGramOf(
@@ -3544,6 +3552,7 @@ function inboundGramOf(
   unitName: string,
 ) {
   if (isGram(unitName)) return qty;
+  if (isCarat(unitName)) return qty.mul(GRAM_PER_CT);
   if (gramQty == null || gramQty === '') return null;
   const gram = new Prisma.Decimal(gramQty);
   if (gram.lt(0))

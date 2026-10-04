@@ -248,6 +248,39 @@ const myOrderEntrySelect = {
   order: { select: myOrderCardSelect },
 } satisfies Prisma.ProductionStageEntrySelect;
 
+/** Phần riêng màn Phiếu QC cần thêm của một lần giao khâu: id để cân, thợ, báo lỗi, lượt sửa. */
+const qcEntrySelect = {
+  id: true,
+  attempt: true,
+  craftsmanName: true,
+  defectReportedAt: true,
+  defectReportedByName: true,
+  defectNote: true,
+  returnedQty: true,
+  defectQty: true,
+  kcsRevisionCount: true,
+  confirmedAt: true,
+} satisfies Prisma.ProductionStageEntrySelect;
+
+function qcExtras(
+  entry: Prisma.ProductionStageEntryGetPayload<{
+    select: typeof qcEntrySelect;
+  }>,
+) {
+  return {
+    entryId: entry.id,
+    attempt: entry.attempt,
+    craftsmanName: entry.craftsmanName,
+    defectReportedAt: entry.defectReportedAt?.toISOString() ?? null,
+    defectReportedByName: entry.defectReportedByName,
+    defectNote: entry.defectNote,
+    returnedQty: entry.returnedQty,
+    defectQty: entry.defectQty,
+    kcsRevisionCount: entry.kcsRevisionCount,
+    confirmedAt: entry.confirmedAt?.toISOString() ?? null,
+  };
+}
+
 type MyOrderCard = Prisma.ProductionOrderGetPayload<{
   select: typeof myOrderCardSelect;
 }>;
@@ -260,7 +293,7 @@ type MyOrderEntry = Prisma.ProductionStageEntryGetPayload<{
 
 /**
  * Phiếu con cho thợ: người lên đơn chia số lượng + gram bạc, mở khâu cho thợ tự nhận,
- * người giao xác nhận giao rồi KCS nhận lại như khâu thường (dùng chung returnStage).
+ * người giao xác nhận giao rồi QC nhận lại như khâu thường (dùng chung returnStage).
  */
 @Injectable()
 export class ProductionSubTicketsService {
@@ -469,14 +502,14 @@ export class ProductionSubTicketsService {
       const previous = lastOf(entries);
       if (previous?.returnedAt && handedAt < previous.returnedAt) {
         throw new BadRequestException(
-          'Thời gian giao không được trước lúc KCS nhận lại khâu trước',
+          'Thời gian giao không được trước lúc QC nhận lại khâu trước',
         );
       }
       const craftsmanName = actorName(craftsman);
       const changedBy = actorName(actor);
       const nextStatus = STAGE_STATUS[stage];
       const handedSilver = handedSilverOf(dto, entries);
-      // TL giao không vượt hàng đang có (KCS nhận lại khâu trước / phôi sau đúc).
+      // TL giao không vượt hàng đang có (QC nhận lại khâu trước / phôi sau đúc).
       assertHandedSilverWithin(order, null, handedSilver);
       const created = await tx.productionStageEntry.create({
         data: {
@@ -630,7 +663,7 @@ export class ProductionSubTicketsService {
       const open = openOrderEntry(order);
       if (open) {
         throw new BadRequestException(
-          `Khâu ${STAGE_LABEL[open.stage]} của cả đơn chưa được KCS nhận lại, chưa chia phiếu con được`,
+          `Khâu ${STAGE_LABEL[open.stage]} của cả đơn chưa được QC nhận lại, chưa chia phiếu con được`,
         );
       }
       // Đơn đã chạy trên phiếu mẹ thì các khâu đã làm thuộc cả đơn, không thuộc phiếu con
@@ -707,7 +740,7 @@ export class ProductionSubTicketsService {
       const open = openOrderEntry(order);
       if (open) {
         throw new BadRequestException(
-          `Khâu ${STAGE_LABEL[open.stage]} của cả đơn chưa được KCS nhận lại, chưa chia phiếu con được`,
+          `Khâu ${STAGE_LABEL[open.stage]} của cả đơn chưa được QC nhận lại, chưa chia phiếu con được`,
         );
       }
       assertWithinTotals(order, dto.qty);
@@ -1019,7 +1052,7 @@ export class ProductionSubTicketsService {
 
   /**
    * Giữ chỗ đá cho phiếu con: kiểm tra tồn trừ phần đã giữ cho phiếu khác, rồi ghi hold. Chưa
-   * xuất kho — hệ thống chỉ xuất khi thủ kho xác nhận sau KCS, theo tỷ lệ TL gói thừa KCS cân.
+   * xuất kho — hệ thống chỉ xuất khi thủ kho xác nhận sau QC, theo tỷ lệ TL gói thừa QC cân.
    */
   private async holdStones(
     tx: Prisma.TransactionClient,
@@ -1102,8 +1135,8 @@ export class ProductionSubTicketsService {
   /**
    * Thợ được chỉ định quét QR, bấm nhận hàng; hệ thống ghi giao khâu và tự xuất BTP khỏi kho:
    * - Nguội: phôi của phiếu (SL = SL phiếu, TL chia theo phôi còn lại của đơn).
-   * - Vào đá: BTP đã nguội thủ kho nhập kho ở bước xác nhận (SL + TL KCS nhận lại); đá cấp ở
-   *   bước chỉ định được gắn vào khâu nhưng CHƯA xuất kho — xuất khi xác nhận sau KCS.
+   * - Vào đá: BTP đã nguội thủ kho nhập kho ở bước xác nhận (SL + TL QC nhận lại); đá cấp ở
+   *   bước chỉ định được gắn vào khâu nhưng CHƯA xuất kho — xuất khi xác nhận sau QC.
    * Khâu khác chưa đi qua kho nên người giao cân bạc và bấm "Xác nhận giao".
    */
   async accept(code: string, no: number, actor: AuthUserPayload) {
@@ -1119,9 +1152,10 @@ export class ProductionSubTicketsService {
           `Phiếu ${ticketCode(order, ticket)} chưa được chỉ định thợ để nhận`,
         );
       }
-      if (ticket.claimedByUserId !== actor.id && !isAdmin(actor)) {
+      // Chỉ chính thợ được chỉ định nhận hàng — không ai nhận thay, kể cả admin.
+      if (ticket.claimedByUserId !== actor.id) {
         throw new ForbiddenException(
-          `Phiếu ${ticketCode(order, ticket)} giao cho ${ticket.claimedByName ?? 'thợ khác'}`,
+          `Phiếu ${ticketCode(order, ticket)} giao cho ${ticket.claimedByName ?? 'thợ khác'} — chỉ thợ đó nhận hàng`,
         );
       }
       if (
@@ -1180,7 +1214,7 @@ export class ProductionSubTicketsService {
         const previous = lastOf(entries);
         if (!previous?.returnedAt || previous.confirmedAt === null) {
           throw new BadRequestException(
-            `Phiếu ${ticketCode(order, ticket)} chưa được KCS nhận và thủ kho xác nhận khâu trước`,
+            `Phiếu ${ticketCode(order, ticket)} chưa được QC nhận và thủ kho xác nhận khâu trước`,
           );
         }
         const available = subTicketAvailable(ticket, entries);
@@ -1310,9 +1344,9 @@ export class ProductionSubTicketsService {
   }
 
   /**
-   * Báo lỗi ngay ở khâu đang làm của phiếu con: thợ đang giữ khâu, KCS hoặc admin. Khâu coi như
-   * đã nộp để KCS cân lại — không ghi đè lên "thợ báo xong". Nguội / Vào đá đạt 0 thì sau khi
-   * thủ kho xác nhận phiếu tự chốt Lỗi tại khâu đó; các khâu khác KCS chốt Lỗi sau khi nhận lại.
+   * Báo lỗi ngay ở khâu đang làm của phiếu con: thợ đang giữ khâu, QC hoặc admin. Khâu coi như
+   * đã nộp để QC cân lại — không ghi đè lên "thợ báo xong". Nguội / Vào đá đạt 0 thì sau khi
+   * thủ kho xác nhận phiếu tự chốt Lỗi tại khâu đó; các khâu khác QC chốt Lỗi sau khi nhận lại.
    */
   async reportStageDefect(
     code: string,
@@ -1337,7 +1371,7 @@ export class ProductionSubTicketsService {
         !userCan(actor, Permission.PRODUCTION_QC)
       ) {
         throw new ForbiddenException(
-          'Chỉ thợ đang giữ khâu, KCS hoặc admin được báo lỗi khâu này',
+          'Chỉ thợ đang giữ khâu, QC hoặc admin được báo lỗi khâu này',
         );
       }
       if (open.defectReportedAt) {
@@ -1362,7 +1396,7 @@ export class ProductionSubTicketsService {
     });
   }
 
-  /** Bỏ báo lỗi (báo nhầm): người đã báo, KCS hoặc admin — chỉ khi KCS chưa nhận lại. */
+  /** Bỏ báo lỗi (báo nhầm): người đã báo, QC hoặc admin — chỉ khi QC chưa nhận lại. */
   async clearStageDefect(code: string, no: number, actor: AuthUserPayload) {
     return this.mutate(code, async (tx, order) => {
       const ticket = requireSubTicket(order, no);
@@ -1378,7 +1412,7 @@ export class ProductionSubTicketsService {
         !userCan(actor, Permission.PRODUCTION_QC)
       ) {
         throw new ForbiddenException(
-          'Chỉ người đã báo lỗi, KCS hoặc admin được bỏ báo lỗi',
+          'Chỉ người đã báo lỗi, QC hoặc admin được bỏ báo lỗi',
         );
       }
       await tx.productionStageEntry.update({
@@ -1400,13 +1434,26 @@ export class ProductionSubTicketsService {
   }
 
   /**
-   * Bước 13–15, 18: thủ kho xác nhận sau khi KCS nhận lại khâu Nguội / Vào đá. Lúc này mới nhập
+   * Bước 13–15, 18: thủ kho xác nhận sau khi QC nhận lại khâu Nguội / Vào đá. Lúc này mới nhập
    * kho: hàng đạt → kho BTP (mã riêng của đơn, khâu sau lấy hàng từ đây), hàng lỗi + nguyên liệu
    * thừa S925 / S999 → kho NVL. Cả phiếu lỗi 100% thì phiếu tự chốt Lỗi (M Lỗi nguội…).
+   *
+   * Thủ kho chỉ kiểm tra khi QC báo có hàng lỗi. QC cân không có hàng lỗi thì `auto`: hệ thống tự
+   * xác nhận ngay sau khi QC lưu (người xác nhận ghi là QC) — các bước nhập kho y như thủ kho bấm.
    */
-  async confirmStage(code: string, stageId: string, actor: AuthUserPayload) {
+  async confirmStage(
+    code: string,
+    stageId: string,
+    actor: AuthUserPayload,
+    auto = false,
+  ) {
     return this.mutate(code, async (tx, order) => {
       const entry = requireStage(order, stageId);
+      if (auto && (entry.defectQty ?? 0) > 0) {
+        throw new BadRequestException(
+          'Có hàng lỗi — chờ thủ kho kiểm tra và xác nhận lỗi',
+        );
+      }
       const ticket = order.subTickets.find(
         (item) => item.id === entry.subTicketId,
       );
@@ -1416,7 +1463,7 @@ export class ProductionSubTicketsService {
         );
       }
       if (!entry.returnedAt) {
-        throw new BadRequestException('KCS chưa nhận lại khâu này');
+        throw new BadRequestException('QC chưa nhận lại khâu này');
       }
       if (entry.confirmedAt) {
         throw new BadRequestException('Thủ kho đã xác nhận khâu này');
@@ -1529,6 +1576,9 @@ export class ProductionSubTicketsService {
           defectQty: entry.defectQty,
           stockInboundCount: inboundIds.length,
         },
+        note: auto
+          ? 'Tự xác nhận — QC không báo hàng lỗi, không cần thủ kho kiểm tra'
+          : undefined,
       });
       await this.syncOrderAfterStage(tx, order.id, actor, allDefect);
     }).then((detail) => {
@@ -1540,8 +1590,8 @@ export class ProductionSubTicketsService {
 
   /**
    * Xuất kho đá lúc thủ kho xác nhận Vào đá — cả đá cấp lúc chỉ định lẫn đá thợ xin thêm. Mỗi
-   * dòng: SL xuất = SL cấp × (TL gói cấp − TL gói thừa KCS cân) / TL gói cấp; phần thừa vẫn nằm
-   * trong kho (chưa từng bị trừ). Dòng cũ không cân gói thì theo số viên thừa KCS đếm.
+   * dòng: SL xuất = SL cấp × (TL gói cấp − TL gói thừa QC cân) / TL gói cấp; phần thừa vẫn nằm
+   * trong kho (chưa từng bị trừ). Dòng cũ không cân gói thì theo số viên thừa QC đếm.
    */
   private async consumeStoneHolds(
     tx: Prisma.TransactionClient,
@@ -1553,7 +1603,7 @@ export class ProductionSubTicketsService {
       where: { stageEntryId: entry.id, status: 'HELD' },
       orderBy: { createdAt: 'asc' },
     });
-    // KCS nhận lại trước khi có cân gói thừa: chia số viên trả tổng như trước.
+    // QC nhận lại trước khi có cân gói thừa: chia số viên trả tổng như trước.
     const legacy = holds.every(
       (hold) => hold.returnedWeight == null && hold.returnedCount == null,
     );
@@ -1612,7 +1662,7 @@ export class ProductionSubTicketsService {
         orderCode: order.code,
         material,
         qty,
-        // TL xuất = TL gói đang giữ − TL gói thừa KCS cân (phần trả giữa khâu đã trừ khỏi gói).
+        // TL xuất = TL gói đang giữ − TL gói thừa QC cân (phần trả giữa khâu đã trừ khỏi gói).
         gramQty:
           hold.weight != null && hold.returnedWeight != null
             ? Prisma.Decimal.max(hold.weight.sub(hold.returnedWeight), 0)
@@ -1651,7 +1701,7 @@ export class ProductionSubTicketsService {
   /**
    * Thủ kho nhận lại túi đá thợ trả giữa khâu Vào đá (đổi size — đá không vừa sản phẩm): cân túi
    * trả, phần trả theo tỷ lệ TL nhả khỏi giữ chỗ ngay để cấp cho việc khác. Thợ xin túi size mới
-   * theo luồng xin thêm. Phần trả không còn tính là đá đã phát cho thợ khi KCS tính hao hụt.
+   * theo luồng xin thêm. Phần trả không còn tính là đá đã phát cho thợ khi QC tính hao hụt.
    */
   async returnStoneEarly(
     code: string,
@@ -1671,7 +1721,7 @@ export class ProductionSubTicketsService {
       }
       if (entry.returnedAt) {
         throw new BadRequestException(
-          'KCS đã nhận lại khâu này — đá thừa cân ở bước KCS',
+          'QC đã nhận lại khâu này — đá thừa cân ở bước QC',
         );
       }
       if (entry.craftsmanUserId === actor.id && !isAdmin(actor)) {
@@ -1765,9 +1815,9 @@ export class ProductionSubTicketsService {
   }
 
   /**
-   * Thủ kho bấm "Tạo phiếu bù" cho hàng lỗi KCS đã tách ở Nguội / Vào đá (đã được xác nhận): sinh
+   * Thủ kho bấm "Tạo phiếu bù" cho hàng lỗi QC đã tách ở Nguội / Vào đá (đã được xác nhận): sinh
    * một đơn tạo bù SL = số lỗi, đi lại từ bước sáp (sao chép khuôn / 3D / đá từ đơn tạo gốc). Đúc
-   * xong thì hệ thống tạo phiếu con mới trên đơn này, không sinh đơn A mới. Mỗi lần KCS nhận lại
+   * xong thì hệ thống tạo phiếu con mới trên đơn này, không sinh đơn A mới. Mỗi lần QC nhận lại
    * chỉ bù một lần.
    */
   async createRework(code: string, stageId: string, actor: AuthUserPayload) {
@@ -1802,7 +1852,7 @@ export class ProductionSubTicketsService {
       });
       if (existing) {
         throw new BadRequestException(
-          `Đã có phiếu bù ${existing.code} cho lần KCS nhận lại này`,
+          `Đã có phiếu bù ${existing.code} cho lần QC nhận lại này`,
         );
       }
       const source = await tx.intakeOrder.findUnique({
@@ -1901,7 +1951,7 @@ export class ProductionSubTicketsService {
           create: {
             fromStatus: fresh.status,
             toStatus: status,
-            note: 'Thủ kho xác nhận sau KCS',
+            note: 'Thủ kho xác nhận sau QC',
             changedBy: actorName(actor),
           },
         },
@@ -1976,7 +2026,7 @@ export class ProductionSubTicketsService {
         stage === ProductionStage.STONE_SETTING
       ) {
         throw new BadRequestException(
-          `Khâu ${STAGE_LABEL[stage]} không xác nhận giao tay — thủ kho chỉ định thợ rồi thợ bấm "Nhận hàng" (admin bấm thay thợ được)`,
+          `Khâu ${STAGE_LABEL[stage]} không xác nhận giao tay — thủ kho chỉ định thợ rồi thợ quét QR bấm "Nhận hàng"`,
         );
       }
       // Cân bạc lúc giao cần hai người: người giao và thợ nhận. Riêng admin được tự xác
@@ -2007,7 +2057,7 @@ export class ProductionSubTicketsService {
       const previous = lastOf(entries);
       if (previous?.returnedAt && handedAt < previous.returnedAt) {
         throw new BadRequestException(
-          'Thời gian giao không được trước lúc KCS nhận lại khâu trước',
+          'Thời gian giao không được trước lúc QC nhận lại khâu trước',
         );
       }
 
@@ -2018,7 +2068,7 @@ export class ProductionSubTicketsService {
         data: CLEAR_PENDING,
       });
       const handedSilver = handedSilverOf(dto, entries);
-      // TL giao không vượt hàng đang có (KCS nhận lại khâu trước / phôi sau đúc).
+      // TL giao không vượt hàng đang có (QC nhận lại khâu trước / phôi sau đúc).
       assertHandedSilverWithin(order, ticket.id, handedSilver);
       const created = await tx.productionStageEntry.create({
         data: {
@@ -2090,7 +2140,7 @@ export class ProductionSubTicketsService {
 
   /**
    * Chốt phiếu con ở một trong hai nhánh cuối phiếu: Lỗi (bắt buộc lý do) hoặc Hoàn thiện.
-   * Chỉ chốt khi phiếu không còn khâu đang chạy — KCS cân lại xong mới phán đạt / lỗi.
+   * Chỉ chốt khi phiếu không còn khâu đang chạy — QC cân lại xong mới phán đạt / lỗi.
    */
   async setOutcome(
     code: string,
@@ -2162,7 +2212,7 @@ export class ProductionSubTicketsService {
   }
 
   /**
-   * KCS nhận lại 0 sản phẩm ở khâu không qua thủ kho: phiếu con chốt Lỗi ngay trong transaction
+   * QC nhận lại 0 sản phẩm ở khâu không qua thủ kho: phiếu con chốt Lỗi ngay trong transaction
    * của lần nhận lại, đơn mẹ tính lại trạng thái (mọi phiếu con lỗi thì Sản xuất lỗi).
    */
   async closeTicketAsDefect(
@@ -2356,8 +2406,8 @@ export class ProductionSubTicketsService {
   }
 
   /**
-   * Thợ báo đã làm xong khâu đang giữ và nộp hàng cho KCS. Chỉ là tín hiệu để KCS biết
-   * phiếu nào tới lượt mình — KCS vẫn nhận lại được cả khi thợ chưa bấm.
+   * Thợ báo đã làm xong khâu đang giữ và nộp hàng cho QC. Chỉ là tín hiệu để QC biết
+   * phiếu nào tới lượt mình — QC vẫn nhận lại được cả khi thợ chưa bấm.
    */
   async submit(code: string, no: number, actor: AuthUserPayload) {
     return this.mutate(code, async (tx, order) => {
@@ -2399,7 +2449,7 @@ export class ProductionSubTicketsService {
     });
   }
 
-  /** Bấm nhầm thì bỏ báo xong — chính thợ đó hoặc admin, khi KCS chưa nhận lại. */
+  /** Bấm nhầm thì bỏ báo xong — chính thợ đó hoặc admin, khi QC chưa nhận lại. */
   async unsubmit(code: string, no: number, actor: AuthUserPayload) {
     return this.mutate(code, async (tx, order) => {
       const ticket = requireSubTicket(order, no);
@@ -2681,6 +2731,184 @@ export class ProductionSubTicketsService {
   }
 
   /**
+   * Màn "Phiếu QC": việc của QC theo nhóm — đang làm (QC báo lỗi được), chờ QC cân lại, chờ thủ kho xác nhận (còn sửa lại
+   * được), chờ hoàn thiện (đã qua Xi) và các lần QC gần đây. Trả mọi khâu, màn tự lọc theo khâu.
+   * QC không thao tác trong chi tiết lệnh nữa nên đây là nơi duy nhất QC làm việc.
+   */
+  async qcTickets(actor: AuthUserPayload) {
+    const notDelivered = { status: { not: S.DELIVERED } };
+    // Thợ đã báo làm xong, hoặc khâu đã bị báo lỗi — khớp điều kiện nhận lại ở returnStage.
+    const waitingQc = {
+      returnedAt: null,
+      OR: [{ submittedAt: { not: null } }, { defectReportedAt: { not: null } }],
+    } satisfies Prisma.ProductionStageEntryWhereInput;
+    const subInclude = {
+      ...entryRequestsSelect,
+      subTicket: { include: myTicketInclude },
+    } satisfies Prisma.ProductionStageEntryInclude;
+    const parentSelect = {
+      ...myOrderEntrySelect,
+      ...qcEntrySelect,
+    } satisfies Prisma.ProductionStageEntrySelect;
+    // Admin xem mọi lần QC gần đây; QC chỉ xem lần mình cân.
+    const mine = isAdmin(actor) ? {} : { returnedByUserId: actor.id };
+    // Đã qua Xi và không còn khâu nào đang chạy.
+    const doneLastStage = {
+      some: { stage: LAST_STAGE, returnedAt: { not: null } },
+      none: { returnedAt: null },
+    } satisfies Prisma.ProductionStageEntryListRelationFilter;
+
+    const [
+      working,
+      subPending,
+      parentPending,
+      confirming,
+      finishTickets,
+      finishOrders,
+      subRecent,
+      parentRecent,
+    ] = await Promise.all([
+      // Thợ còn đang làm ở phiếu con — QC thấy hàng hỏng thì báo lỗi luôn (stage-defect theo phiếu con).
+      this.prisma.productionStageEntry.findMany({
+        where: {
+          returnedAt: null,
+          submittedAt: null,
+          defectReportedAt: null,
+          subTicketId: { not: null },
+          order: notDelivered,
+        },
+        include: subInclude,
+        orderBy: { handedAt: 'asc' },
+        take: AVAILABLE_LIMIT,
+      }),
+      this.prisma.productionStageEntry.findMany({
+        where: {
+          ...waitingQc,
+          subTicketId: { not: null },
+          order: notDelivered,
+        },
+        include: subInclude,
+        orderBy: { handedAt: 'asc' },
+        take: AVAILABLE_LIMIT,
+      }),
+      this.prisma.productionStageEntry.findMany({
+        where: {
+          ...waitingQc,
+          subTicketId: null,
+          order: { ...notDelivered, subTickets: { none: {} } },
+        },
+        select: parentSelect,
+        orderBy: { handedAt: 'asc' },
+        take: AVAILABLE_LIMIT,
+      }),
+      this.prisma.productionStageEntry.findMany({
+        where: {
+          subTicketId: { not: null },
+          stage: { in: KEEPER_CONFIRM_STAGES },
+          returnedAt: { not: null },
+          confirmedAt: null,
+          order: notDelivered,
+        },
+        include: subInclude,
+        orderBy: { returnedAt: 'asc' },
+        take: AVAILABLE_LIMIT,
+      }),
+      this.prisma.productionSubTicket.findMany({
+        where: {
+          outcome: null,
+          pendingStage: null,
+          order: notDelivered,
+          stages: doneLastStage,
+        },
+        include: myTicketInclude,
+        orderBy: { updatedAt: 'asc' },
+        take: AVAILABLE_LIMIT,
+      }),
+      this.prisma.productionOrder.findMany({
+        where: {
+          subTickets: { none: {} },
+          receipt: { is: null },
+          pendingStage: null,
+          status: { notIn: [S.DELIVERED, S.NEW, S.REDO_3D] },
+          stages: doneLastStage,
+        },
+        select: {
+          ...myOrderCardSelect,
+          stages: {
+            where: { subTicketId: null },
+            orderBy: { createdAt: 'asc' },
+            select: { stage: true, returnedAt: true, returnedQty: true },
+          },
+        },
+        orderBy: { updatedAt: 'asc' },
+        take: AVAILABLE_LIMIT,
+      }),
+      this.prisma.productionStageEntry.findMany({
+        where: {
+          ...mine,
+          subTicketId: { not: null },
+          returnedAt: { not: null },
+        },
+        include: subInclude,
+        orderBy: { returnedAt: 'desc' },
+        take: RECENT_LIMIT,
+      }),
+      this.prisma.productionStageEntry.findMany({
+        where: {
+          ...mine,
+          subTicketId: null,
+          returnedAt: { not: null },
+          order: { subTickets: { none: {} } },
+        },
+        select: parentSelect,
+        orderBy: { returnedAt: 'desc' },
+        take: RECENT_LIMIT,
+      }),
+    ]);
+
+    const subItem = (entry: (typeof subPending)[number]) =>
+      entry.subTicket
+        ? [{ ...entryItem(entry.subTicket, entry), ...qcExtras(entry) }]
+        : [];
+    const parentItem = (entry: (typeof parentPending)[number]) => ({
+      ...parentEntryItem(entry),
+      ...qcExtras(entry),
+    });
+
+    return {
+      working: working.flatMap(subItem),
+      pending: [
+        ...parentPending.map(parentItem),
+        ...subPending.flatMap(subItem),
+      ],
+      confirming: confirming.flatMap(subItem),
+      finishable: [
+        ...finishOrders
+          .filter((order) => lastStageDone(order.stages))
+          .map((order) => ({
+            ...parentBaseItem(order),
+            stage: LAST_STAGE,
+            // Vào kho là số QC nhận lại ở khâu cuối — cùng nguồn với finish().
+            qty: lastOf(order.stages)?.returnedQty ?? order.qty,
+            doneAt: lastOf(order.stages)?.returnedAt?.toISOString() ?? null,
+          })),
+        ...finishTickets
+          .filter((row) => lastStageDone(row.stages))
+          .map((row) => ({
+            ...baseItem(row),
+            stage: LAST_STAGE,
+            qty: subTicketAvailable(row, row.stages).qty,
+            doneAt: lastOf(row.stages)?.returnedAt?.toISOString() ?? null,
+          })),
+      ],
+      recent: recentFirst(
+        [...parentRecent.map(parentItem), ...subRecent.flatMap(subItem)],
+        RECENT_LIMIT,
+      ),
+    };
+  }
+
+  /**
    * Khoá dòng đơn trong cả transaction rồi đọc lại đơn: mọi kiểm tra tổng số lượng / gram,
    * trạng thái phiếu con chạy trên dữ liệu mới nhất, hai người thao tác cùng lúc không đè nhau.
    */
@@ -2715,9 +2943,9 @@ const STATE_LABEL = {
   IDLE: 'chờ mở khâu',
   WAITING: 'chờ thợ nhận',
   CLAIMED: 'chờ người giao xác nhận',
-  WORKING: 'được thợ làm, chờ KCS nhận lại',
-  SUBMITTED: 'thợ đã báo xong, chờ KCS cân lại',
-  CONFIRMING: 'chờ thủ kho xác nhận sau KCS',
+  WORKING: 'được thợ làm, chờ QC nhận lại',
+  SUBMITTED: 'thợ đã báo xong, chờ QC cân lại',
+  CONFIRMING: 'chờ thủ kho xác nhận sau QC',
   DEFECT: 'ở nhánh Lỗi',
   FINISH: 'ở nhánh Hoàn thiện',
 } as const;
@@ -2821,7 +3049,7 @@ function stoneQtyOf(
 }
 
 /**
- * Lý do chốt Lỗi tự động khi KCS xác nhận 100% hàng lỗi: ai báo, lý do thợ / KCS đã ghi, và số
+ * Lý do chốt Lỗi tự động khi QC xác nhận 100% hàng lỗi: ai báo, lý do thợ / QC đã ghi, và số
  * liệu cân (số lượng, trọng lượng hàng lỗi, nguyên liệu thừa) để xem phiếu là hiểu ngay.
  */
 function defectNoteOf(
@@ -2845,13 +3073,13 @@ function defectNoteOf(
       `Lý do: ${entry.defectNote}${entry.defectReportedByName ? ` (báo bởi ${entry.defectReportedByName})` : ''}`,
     );
   }
-  if (entry.defectReason) parts.push(`KCS ghi lỗi: ${entry.defectReason}`);
+  if (entry.defectReason) parts.push(`QC ghi lỗi: ${entry.defectReason}`);
   const qty = entry.defectQty ?? entry.handedQty;
   const weight = entry.btpRecoveredWeight
     ? ` · ${decStr(entry.btpRecoveredWeight)} g`
     : '';
   parts.push(
-    `KCS${entry.returnedByName ? ` ${entry.returnedByName}` : ''} cân: toàn bộ ${qty ?? '—'} sp lỗi${weight} (đạt 0 sp)`,
+    `QC${entry.returnedByName ? ` ${entry.returnedByName}` : ''} cân: toàn bộ ${qty ?? '—'} sp lỗi${weight} (đạt 0 sp)`,
   );
   const scraps = [
     entry.silverRecoveredWeight?.gt(0)
@@ -3052,6 +3280,8 @@ function entryMaterials(
         sku: request.material.sku,
         name: request.material.name,
         unit: request.material.unit.name,
+        /** Đá hiện TL theo ct, bạc theo g. */
+        kind: request.kind,
         qty: request.issuedQty != null ? decStr(request.issuedQty) : null,
         weight:
           request.issuedWeight != null ? decStr(request.issuedWeight) : null,

@@ -134,7 +134,7 @@ const STAFF_JOB_LABELS: Record<StaffJobPreset, string> = {
   worker_wax: 'Thợ sáp',
   worker_casting: 'Thợ đúc',
   warehouse: 'Thủ kho',
-  kcs: 'KCS',
+  kcs: 'QC',
 };
 
 export function staffJobLabelFor(user: {

@@ -123,7 +123,7 @@ describe('NVL xuất thêm theo yêu cầu của thợ', () => {
     expect(stone).toEqual({ stonesIn: 150, loss: 5 });
   });
 
-  it('KCS chưa nhận lại thì chưa có đá mất', () => {
+  it('QC chưa nhận lại thì chưa có đá mất', () => {
     expect(
       stoneLossOf(
         {
@@ -239,7 +239,7 @@ describe('đá thừa theo cân gói — không đếm từng viên', () => {
     ).toBe('0');
   });
 
-  it('dòng cũ không cân gói thì xuất theo số viên thừa KCS đếm', () => {
+  it('dòng cũ không cân gói thì xuất theo số viên thừa QC đếm', () => {
     const hold = {
       qty: dec('100'),
       stoneCount: 100,

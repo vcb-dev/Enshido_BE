@@ -23,7 +23,6 @@ import {
   ticketPosition,
   ticketStatus,
   type OrderDetail,
-  type StageEntry,
   type SubTicket,
 } from './order-detail';
 
@@ -53,8 +52,10 @@ describe('phôi ghi trực tiếp trên lệnh sau đúc', () => {
 
 const dec = (value: string) => new Prisma.Decimal(value);
 
+type DetailStage = OrderDetail['stages'][number];
+
 /** Khâu tối giản — chỉ các trường mà hàm đang kiểm đọc tới. */
-function entry(over: Partial<StageEntry> = {}): StageEntry {
+function entry(over: Partial<DetailStage> = {}): DetailStage {
   return {
     id: 'e1',
     subTicketId: 't1',
@@ -66,8 +67,9 @@ function entry(over: Partial<StageEntry> = {}): StageEntry {
     returnedAt: null,
     returnedQty: null,
     returnedSilverWeight: null,
+    images: [],
     ...over,
-  } as StageEntry;
+  } as DetailStage;
 }
 
 function ticket(over: Partial<SubTicket> = {}): SubTicket {
@@ -114,7 +116,7 @@ describe('subTicketState — phiếu con đang ở đâu', () => {
     });
   });
 
-  it('thợ báo xong thì chuyển sang chờ KCS cân lại', () => {
+  it('thợ báo xong thì chuyển sang chờ QC cân lại', () => {
     const open = entry({ submittedAt: new Date('2026-09-19T10:00:00Z') });
     expect(subTicketState(ticket(), [open])).toEqual({
       state: 'SUBMITTED',
@@ -122,7 +124,7 @@ describe('subTicketState — phiếu con đang ở đâu', () => {
     });
   });
 
-  it('KCS nhận lại xong thì phiếu rảnh trở lại', () => {
+  it('QC nhận lại xong thì phiếu rảnh trở lại', () => {
     const closed = entry({ returnedAt: new Date(), submittedAt: new Date() });
     expect(subTicketState(ticket(), [closed])).toEqual({
       state: 'IDLE',
@@ -239,7 +241,7 @@ describe('phiếu mẹ không chia — dùng cùng state machine với phiếu c
     });
   });
 
-  it('sau khi giao, thợ báo xong thì chuyển sang chờ KCS', () => {
+  it('sau khi giao, thợ báo xong thì chuyển sang chờ QC', () => {
     const working = entry({ subTicketId: null });
     expect(orderTicketState(parent(null), [working]).state).toBe('WORKING');
     expect(
@@ -249,7 +251,7 @@ describe('phiếu mẹ không chia — dùng cùng state machine với phiếu c
     ).toBe('SUBMITTED');
   });
 
-  it('chỉ lấy khâu trực tiếp của phiếu mẹ và dùng số KCS trả về cho khâu sau', () => {
+  it('chỉ lấy khâu trực tiếp của phiếu mẹ và dùng số QC trả về cho khâu sau', () => {
     const parentEntry = entry({
       id: 'parent-entry',
       subTicketId: null,
@@ -279,7 +281,7 @@ describe('subTicketAvailable — số lượng / bạc còn lại để giao kh�
     });
   });
 
-  it('lấy đúng số KCS nhận lại ở khâu gần nhất, không phải số đã giao', () => {
+  it('lấy đúng số QC nhận lại ở khâu gần nhất, không phải số đã giao', () => {
     const closed = entry({
       returnedAt: new Date(),
       returnedQty: 5,
@@ -312,7 +314,7 @@ describe('entriesOf', () => {
 
 describe('handedStoneOf — đá phát cho thợ', () => {
   /** Đơn có 600 viên / 480 g đá, chưa giao lần nào. */
-  const order = (stages: StageEntry[] = []) => ({
+  const order = (stages: DetailStage[] = []) => ({
     stoneCount: 600,
     stoneWeight: dec('480'),
     bomLines: [],
@@ -370,7 +372,7 @@ describe('handedStoneOf — đá phát cho thợ', () => {
         { handedStoneWeight: '100' },
         order(stages),
       ),
-    ).toThrow(/chỉ còn 80 g/);
+    ).toThrow(/chỉ còn 400 ct/);
   });
 
   it('phần còn lại vẫn giao được', () => {
@@ -457,7 +459,7 @@ describe('lastStageDone — đã đi hết tới khâu cuối chưa', () => {
     expect(lastStageDone([entry({ stage: 'PLATING' })])).toBe(false);
   });
 
-  it('KCS nhận lại khâu Xi thì tới, dù khâu giữa bị bỏ', () => {
+  it('QC nhận lại khâu Xi thì tới, dù khâu giữa bị bỏ', () => {
     expect(
       lastStageDone([
         entry({ stage: 'FILING', returnedAt: RETURNED }),
@@ -495,7 +497,7 @@ describe('ticketPosition — phiếu con đang đứng ở khâu nào', () => {
   });
 
   it('xong khâu mà chưa mở khâu sau: vẫn tính ở khâu vừa xong', () => {
-    // Đúng cảnh A002-1: KCS nhận lại Nguội, phiếu đang rảnh chờ mở Vào đá.
+    // Đúng cảnh A002-1: QC nhận lại Nguội, phiếu đang rảnh chờ mở Vào đá.
     const done = entry({ stage: 'FILING', returnedAt: RETURNED });
     expect(ticketPosition(ticket(), [done])).toBe('FILING');
   });
@@ -565,7 +567,7 @@ describe('ticketStatus — I/K/L/N/O của phiếu con', () => {
     );
   });
 
-  it('KCS nhận lại xong thì sang Chờ khâu kế: Nguội → L, Vào đá → O', () => {
+  it('QC nhận lại xong thì sang Chờ khâu kế: Nguội → L, Vào đá → O', () => {
     expect(
       ticketStatus(ticket(), [entry({ stage: 'FILING', returnedAt: DONE })]),
     ).toBe('WAIT_STONE');
@@ -594,7 +596,7 @@ describe('ticketStatus — I/K/L/N/O của phiếu con', () => {
     ).toBe('POLISHING');
   });
 
-  it('KCS đã nhận nhưng thủ kho chưa xác nhận: vẫn "Đang" khâu đó, chưa sang L', () => {
+  it('QC đã nhận nhưng thủ kho chưa xác nhận: vẫn "Đang" khâu đó, chưa sang L', () => {
     const waiting = entry({
       stage: 'FILING',
       returnedAt: DONE,
@@ -611,7 +613,7 @@ describe('ticketStatus — I/K/L/N/O của phiếu con', () => {
     expect(ticketStatus(ticket(), [confirmed])).toBe('WAIT_STONE');
   });
 
-  it('báo lỗi ở khâu đang làm: coi như đã nộp cho KCS cân lại', () => {
+  it('báo lỗi ở khâu đang làm: coi như đã nộp cho QC cân lại', () => {
     const flagged = entry({ stage: 'FILING', defectReportedAt: DONE });
     expect(subTicketState(ticket(), [flagged]).state).toBe('SUBMITTED');
     expect(subTicketState(ticket(), [entry({ stage: 'FILING' })]).state).toBe(
@@ -750,7 +752,7 @@ describe('subTicketSummary — cột Phiếu con ở danh sách đơn', () => {
       stage: 'STONE_SETTING',
       workerName: 'Admin Enshido',
     });
-    const submitted = { ...working, submittedAt: RETURNED } as StageEntry;
+    const submitted = { ...working, submittedAt: RETURNED } as DetailStage;
     expect(
       subTicketSummary('A001', ticket(), [nguoiDone, submitted]).state,
     ).toBe('SUBMITTED');

@@ -91,7 +91,7 @@ export function lossPercentOf(
 
 /**
  * Đá mất ở khâu (viên) = đá phát lúc giao + đá xuất thêm − đá gắn lên − đá trả lại. Chỉ tính
- * khi KCS đã nhận lại và khâu có phát đá.
+ * khi QC đã nhận lại và khâu có phát đá.
  */
 export function stoneLossOf(entry: StoneCounts, issuedStones = 0) {
   const stonesIn = (entry.handedStoneCount ?? 0) + issuedStones;
@@ -130,7 +130,7 @@ export function stoneUsedByHold(
 }
 
 /**
- * Chia TL gói đá thừa KCS cân (một mã) cho các dòng cấp cùng mã: trừ từ dòng cấp cuối ngược
+ * Chia TL gói đá thừa QC cân (một mã) cho các dòng cấp cùng mã: trừ từ dòng cấp cuối ngược
  * lên, mỗi dòng không quá TL gói đã cấp. Trả về TL thừa của từng dòng.
  */
 export function splitReturnedWeight(
@@ -149,7 +149,7 @@ export function splitReturnedWeight(
 
 /**
  * Đá thừa của một dòng cấp quy theo tỷ lệ cân gói — không ai đếm từng viên:
- * viên thừa = viên cấp × TL thừa / TL cấp (làm tròn). Dòng cũ không cân thì dùng số viên KCS đếm.
+ * viên thừa = viên cấp × TL thừa / TL cấp (làm tròn). Dòng cũ không cân thì dùng số viên QC đếm.
  */
 export function stoneReturnedCount(
   hold: { stoneCount: number | null; weight: Prisma.Decimal | null },

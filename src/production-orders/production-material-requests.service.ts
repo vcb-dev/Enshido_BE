@@ -282,7 +282,7 @@ export class ProductionMaterialRequestsService {
       );
       if (!entry || entry.returnedAt) {
         throw new BadRequestException(
-          'KCS đã nhận lại khâu này — không xuất thêm vào khâu đã đóng được',
+          'QC đã nhận lại khâu này — không xuất thêm vào khâu đã đóng được',
         );
       }
       const owner = [request.requestedByUserId, entry.craftsmanUserId];
@@ -457,7 +457,7 @@ export class ProductionMaterialRequestsService {
 
   /**
    * Đá thợ xin thêm ở Vào đá của phiếu con: chỉ giữ chỗ trong tồn như đá cấp lúc chỉ định, chưa
-   * xuất kho. KCS cân gói thừa theo mã, thủ kho xác nhận thì mới xuất phần đã dùng.
+   * xuất kho. QC cân gói thừa theo mã, thủ kho xác nhận thì mới xuất phần đã dùng.
    */
   private async holdStone(
     tx: Prisma.TransactionClient,
@@ -518,7 +518,7 @@ export class ProductionMaterialRequestsService {
       entry.stage !== ProductionStage.STONE_SETTING
     ) {
       throw new BadRequestException(
-        `Đá chỉ xuất vào khâu ${STAGE_LABEL[ProductionStage.STONE_SETTING]} — khâu đá gắn và KCS đếm lại`,
+        `Đá chỉ xuất vào khâu ${STAGE_LABEL[ProductionStage.STONE_SETTING]} — khâu đá gắn và QC đếm lại`,
       );
     }
     if (
@@ -743,7 +743,7 @@ function positive(value: string, message: string) {
   return qty;
 }
 
-/** Khâu đang làm (chưa KCS nhận lại) của phiếu con / phiếu mẹ. */
+/** Khâu đang làm (chưa QC nhận lại) của phiếu con / phiếu mẹ. */
 function openEntryOf(order: OrderDetail, no: number | null) {
   if (no == null) {
     if (order.subTickets.length > 0) {

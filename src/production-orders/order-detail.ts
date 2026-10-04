@@ -7,7 +7,7 @@ import {
   ProductionStatus,
   SubTicketOutcome,
 } from '@prisma/client';
-import { decStr } from '../util/money';
+import { ctStr, decStr } from '../util/money';
 import {
   issuedOf,
   lossPercentOf,
@@ -81,7 +81,10 @@ export const IN_STAGE_STATUSES: ProductionStatus[] = [
 
 export const detailInclude = {
   images: { orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }] },
-  stages: { orderBy: { createdAt: 'asc' } },
+  stages: {
+    orderBy: { createdAt: 'asc' },
+    include: { images: { orderBy: { sortOrder: 'asc' } } },
+  },
   subTickets: {
     orderBy: { no: 'asc' },
     include: {
@@ -106,7 +109,7 @@ export const detailInclude = {
     orderBy: { requestedAt: 'asc' },
     include: materialRequestMaterial(),
   },
-  // Đá Vào đá đã gắn vào lần giao (cấp lúc chỉ định + thợ xin thêm) — KCS cân gói thừa theo mã.
+  // Đá Vào đá đã gắn vào lần giao (cấp lúc chỉ định + thợ xin thêm) — QC cân gói thừa theo mã.
   stoneHolds: {
     where: { stageEntryId: { not: null } },
     orderBy: { createdAt: 'asc' },
@@ -157,12 +160,13 @@ export const detailInclude = {
 export type OrderDetail = Prisma.ProductionOrderGetPayload<{
   include: typeof detailInclude;
 }>;
-export type StageEntry = OrderDetail['stages'][number];
+/** Khâu trên phiếu — ảnh QC chỉ đọc kèm ở chi tiết đơn, các phép tính không cần. */
+export type StageEntry = Omit<OrderDetail['stages'][number], 'images'>;
 export type SubTicket = OrderDetail['subTickets'][number];
 
 /**
  * Số lượng phiếu con còn tính vào số lượng đơn: phiếu đã chốt Lỗi không tính nữa, phiếu còn chạy
- * trừ phần hàng lỗi KCS đã tách (phần đó do phiếu bù làm lại).
+ * trừ phần hàng lỗi QC đã tách (phần đó do phiếu bù làm lại).
  */
 export function ticketNetQty(
   order: Pick<OrderDetail, 'stages'>,
@@ -195,8 +199,8 @@ export function materialRequestMaterial() {
 /**
  * Phiếu con đang ở đâu trong khâu hiện tại:
  * IDLE chờ mở khâu · WAITING chờ thợ nhận · CLAIMED thợ đã nhận, chờ người giao xác nhận ·
- * WORKING đã giao, thợ đang làm · SUBMITTED thợ báo xong, chờ KCS cân lại ·
- * CONFIRMING KCS đã nhận lại, chờ thủ kho xác nhận (Nguội / Vào đá) ·
+ * WORKING đã giao, thợ đang làm · SUBMITTED thợ báo xong, chờ QC cân lại ·
+ * CONFIRMING QC đã nhận lại, chờ thủ kho xác nhận (Nguội / Vào đá) ·
  * DEFECT / FINISH là hai nhánh kết thúc phiếu.
  */
 export type SubTicketState =
@@ -280,7 +284,7 @@ export function handedStoneOf(
     const left = stone.weight.sub(used);
     if (handedStoneWeight.gt(left)) {
       throw new BadRequestException(
-        `Đơn chỉ còn ${decStr(left.lt(0) ? new Prisma.Decimal(0) : left)} g đá chưa giao`,
+        `Đơn chỉ còn ${ctStr(left.lt(0) ? new Prisma.Decimal(0) : left)} đá chưa giao`,
       );
     }
   }
@@ -310,7 +314,7 @@ export function orderStoneOf(
 }
 
 /**
- * Phiếu đã đi hết đến khâu cuối chưa: khâu gần nhất phải là Xi và đã được KCS nhận lại. Chưa
+ * Phiếu đã đi hết đến khâu cuối chưa: khâu gần nhất phải là Xi và đã được QC nhận lại. Chưa
  * tới thì không chốt Hoàn thiện được — khâu giữa bỏ qua được, nhưng sửa lại khâu nào sau khi
  * đã xi thì phải xi lại mới chốt.
  */
@@ -323,13 +327,13 @@ export function lastStageDone(
 
 /** Các trường của một lần giao khâu mà việc tính trạng thái phiếu con cần tới. */
 type StateEntry = Pick<StageEntry, 'stage' | 'returnedAt' | 'submittedAt'> & {
-  /** null = KCS đã nhận lại nhưng thủ kho chưa xác nhận; bỏ trống = không có bước này. */
+  /** null = QC đã nhận lại nhưng thủ kho chưa xác nhận; bỏ trống = không có bước này. */
   confirmedAt?: Date | null;
-  /** Đã báo lỗi ở khâu đang làm — khâu coi như đã nộp cho KCS cân lại. */
+  /** Đã báo lỗi ở khâu đang làm — khâu coi như đã nộp cho QC cân lại. */
   defectReportedAt?: Date | null;
 };
 
-/** Khâu của phiếu con phải qua thủ kho xác nhận sau KCS (mô tả luồng bước 13–18). */
+/** Khâu của phiếu con phải qua thủ kho xác nhận sau QC (mô tả luồng bước 13–18). */
 export const KEEPER_CONFIRM_STAGES: ProductionStage[] = [
   G.FILING,
   G.STONE_SETTING,
@@ -535,7 +539,7 @@ export function outcomeStatus(
  * Trạng thái của một phiếu con (hoặc cả đơn chưa chia) suy từ khâu đang chạy:
  * - đang làm / đã báo xong → trạng thái khâu (K Đang nguội, N Đang vào đá…);
  * - đã mở khâu, chờ thợ → "Chờ …";
- * - rảnh sau khi KCS nhận lại → "Chờ" khâu kế (L sau Nguội, O sau Vào đá);
+ * - rảnh sau khi QC nhận lại → "Chờ" khâu kế (L sau Nguội, O sau Vào đá);
  * - chưa làm khâu nào → I Chờ nguội.
  * `skipStone`: đơn không có đá thì sau Nguội đi thẳng sang Chờ khắc (bỏ Vào đá).
  * Trả null khi phiếu đã chốt Lỗi / Hoàn thiện — kết cục do `syncOrder` xử lý.
@@ -623,7 +627,7 @@ export function deriveOrderStatus(
  *
  * - Chưa làm khâu nào: phần đã chia; bạc chưa có — người giao cân lúc giao khâu đầu.
  * - Đang làm dở: số đã giao.
- * - Khâu trước xong rồi: số KCS trả lại.
+ * - Khâu trước xong rồi: số QC trả lại.
  */
 export function subTicketAvailable(
   ticket: Pick<SubTicket, 'qty'>,
@@ -669,7 +673,7 @@ export function orderEntries(order: Pick<OrderDetail, 'stages'>) {
   return order.stages.filter((entry) => !entry.subTicketId);
 }
 
-/** Phiếu mẹ dùng cùng state machine chờ nhận → đã nhận → đang làm → chờ KCS như phiếu con. */
+/** Phiếu mẹ dùng cùng state machine chờ nhận → đã nhận → đang làm → chờ QC như phiếu con. */
 export function orderTicketState(
   order: Pick<OrderDetail, 'pendingStage' | 'claimedByUserId'> & {
     /** Chỉ cần biết đơn đã có phiếu nhập kho hay chưa, nên chỗ gọi được select gọn. */
@@ -704,8 +708,8 @@ export function orderTicketAvailable(
 
 /**
  * TL hàng tối đa được giao vào một khâu (khâu kế tiếp, hoặc khâu `editingEntryId` đang sửa):
- * không vượt số hàng đang có trong tay KCS.
- * - Có khâu trước trên cùng phiếu: = TL KCS nhận lại khâu đó.
+ * không vượt số hàng đang có trong tay QC.
+ * - Có khâu trước trên cùng phiếu: = TL QC nhận lại khâu đó.
  * - Khâu đầu của phiếu: lấy từ nguồn chung — TL phiếu mẹ nhận lại lần cuối (đã chia phiếu sau
  *   khi làm trên phiếu mẹ), không thì TL phôi sau đúc — trừ phần các phiếu con khác đã nhận.
  * `null` = không có mốc (đơn cũ chưa có số liệu) → không chặn.
@@ -819,7 +823,7 @@ export function assertHandedSilverWithin(
   }
 }
 
-/** Khâu cấp đơn (không thuộc phiếu con) đang chờ KCS nhận lại. */
+/** Khâu cấp đơn (không thuộc phiếu con) đang chờ QC nhận lại. */
 export function openOrderEntry(order: Pick<OrderDetail, 'stages'>) {
   return order.stages.find((entry) => !entry.subTicketId && !entry.returnedAt);
 }
@@ -949,11 +953,6 @@ export function toDetail(order: OrderDetail) {
       height: image.height,
     })),
     stages: order.stages.map((entry) => {
-      const limit = handoverSilverLimit(
-        order,
-        entry.subTicketId ?? null,
-        entry.id,
-      );
       return {
         ...toStage(
           entry,
@@ -961,8 +960,13 @@ export function toDetail(order: OrderDetail) {
           requestsOf(order, entry.id),
           order.stoneHolds,
         ),
-        /** Mốc TL giao tối đa khi sửa thông tin giao của khâu này. */
-        handedSilverLimit: limit != null ? decStr(limit) : null,
+        /** Ảnh làm chứng QC chụp lúc nhận lại. */
+        images: entry.images.map((image) => ({
+          url: image.url,
+          publicId: image.publicId,
+          width: image.width,
+          height: image.height,
+        })),
       };
     }),
     materialRequests: order.materialRequests.map((request) => ({
@@ -1122,7 +1126,7 @@ const dec = (value: Prisma.Decimal | null) =>
 export type StoneHold = OrderDetail['stoneHolds'][number];
 
 /**
- * Đá giữ chỗ của một khâu Vào đá, gộp theo mã: SL / viên / TL gói đã cấp, TL gói thừa KCS cân,
+ * Đá giữ chỗ của một khâu Vào đá, gộp theo mã: SL / viên / TL gói đã cấp, TL gói thừa QC cân,
  * viên thừa quy đổi và viên đã xuất (sau khi thủ kho xác nhận).
  */
 function stoneLinesOf(holds: readonly StoneHold[]) {
@@ -1300,19 +1304,19 @@ export function toStage(
     stoneCount: entry.stoneCount,
     stoneWeight: dec(entry.stoneWeight),
     returnedStoneCount: entry.returnedStoneCount,
-    /** Khâu Vào đá của phiếu con: đá giữ chỗ theo mã — KCS cân gói thừa từng mã. */
+    /** Khâu Vào đá của phiếu con: đá giữ chỗ theo mã — QC cân gói thừa từng mã. */
     stoneLines: stoneLinesOf(
       holds.filter((hold) => hold.stageEntryId === entry.id),
     ),
     btpRecoveredWeight: dec(entry.btpRecoveredWeight),
     silverRecoveredWeight: dec(entry.silverRecoveredWeight),
-    /** Nguội / Vào đá: KCS tách hàng lỗi (SL), S999 thừa; thủ kho xác nhận rồi mới nhập kho. */
+    /** Nguội / Vào đá: QC tách hàng lỗi (SL), S999 thừa; thủ kho xác nhận rồi mới nhập kho. */
     defectQty: entry.defectQty,
     defectReason: entry.defectReason,
     scrapS999Weight: dec(entry.scrapS999Weight),
     confirmedAt: entry.confirmedAt?.toISOString() ?? null,
     confirmedByName: entry.confirmedByName,
-    /** Số lần KCS đã sửa lại kết quả (tối đa 3 trước khi thủ kho xác nhận). */
+    /** Số lần QC đã sửa lại kết quả (tối đa 3 trước khi thủ kho xác nhận). */
     kcsRevisionCount: entry.kcsRevisionCount,
     outputMaterialId: entry.outputMaterialId,
     silverLoss: dec(silverLoss),
@@ -1335,7 +1339,7 @@ export function toStage(
 }
 
 /**
- * NVL đã xuất cho một phiếu (con hoặc mẹ) và hao hụt cả phiếu. Chỉ các khâu KCS đã nhận lại
+ * NVL đã xuất cho một phiếu (con hoặc mẹ) và hao hụt cả phiếu. Chỉ các khâu QC đã nhận lại
  * mới vào phần hao hụt: bạc vào = TL giao ở khâu đầu + bạc xuất thêm ở các khâu đó; hao hụt =
  * tổng hao hụt từng khâu. Đá tính theo viên.
  */
@@ -1389,7 +1393,7 @@ export function ticketMaterials(
 
   const zero = new Prisma.Decimal(0);
   // Bạc vào phiếu tính cả khâu đang làm (để thấy ngay phần đã xuất); % hao hụt chỉ so trên
-  // các khâu KCS đã nhận lại, vì khâu dở dang chưa có số cân lại.
+  // các khâu QC đã nhận lại, vì khâu dở dang chưa có số cân lại.
   let silverIn: Prisma.Decimal | null = null;
   let returnedBase: Prisma.Decimal | null = null;
   let silverLoss: Prisma.Decimal | null = null;

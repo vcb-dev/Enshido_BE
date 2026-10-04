@@ -111,7 +111,7 @@ type ShipmentDetail = Prisma.ShipmentGetPayload<{
 
 @Injectable()
 export class FinishedGoodsService {
-  // Không cache sổ tồn / phiếu nhập ở đây: KCS, lên đơn NVL từ thành phẩm và mọi thay đổi
+  // Không cache sổ tồn / phiếu nhập ở đây: QC, lên đơn NVL từ thành phẩm và mọi thay đổi
   // giá vốn (tiền công khâu, chi phí khác, phiếu xuất gắn đơn) đều ghi từ service khác,
   // cache sẽ trả số cũ sau các thao tác đó.
   constructor(
@@ -121,7 +121,7 @@ export class FinishedGoodsService {
 
   /**
    * Sổ tồn thành phẩm:
-   * Tồn đầu kỳ = nhập trên tab Tồn; Nhập = phiếu tab Nhập / KCS; Xuất = phiếu khách.
+   * Tồn đầu kỳ = nhập trên tab Tồn; Nhập = phiếu tab Nhập / QC; Xuất = phiếu khách.
    * Lên đơn trừ cột Tồn (đầu kỳ + nhập − xuất).
    */
   async stock(search?: string) {
@@ -262,7 +262,7 @@ export class FinishedGoodsService {
     };
   }
 
-  /** Phiếu tab Nhập / KCS — không gồm tồn đầu kỳ tạo trên Tồn. */
+  /** Phiếu tab Nhập / QC — không gồm tồn đầu kỳ tạo trên Tồn. */
   async receipts(search?: string) {
     const keyword = search?.trim();
     const receipts = await this.prisma.finishedGoodsReceipt.findMany({

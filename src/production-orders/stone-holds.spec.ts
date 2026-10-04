@@ -4,7 +4,7 @@ import { planEarlyReturn, planStoneReturn } from './stone-holds';
 
 const dec = (value: string) => new Prisma.Decimal(value);
 
-/** Dòng giữ chỗ tối thiểu cho KCS cân gói thừa. */
+/** Dòng giữ chỗ tối thiểu cho QC cân gói thừa. */
 const hold = (
   id: string,
   materialId: string,
@@ -18,7 +18,7 @@ const hold = (
   material: { name: materialId },
 });
 
-describe('planStoneReturn — KCS cân gói đá thừa theo mã', () => {
+describe('planStoneReturn — QC cân gói đá thừa theo mã', () => {
   // Cấp lúc chỉ định 100 viên A (2 g); thợ xin thêm 20 viên B (0,4 g) rồi 50 viên A (1 g).
   const holds = [
     hold('a1', 'A', 100, '2'),
@@ -74,7 +74,7 @@ describe('planStoneReturn — KCS cân gói đá thừa theo mã', () => {
     ).toThrow(BadRequestException);
   });
 
-  it('dòng cấp cũ không cân gói thì dùng số viên KCS đếm; đã cân hết thì không nhận số viên', () => {
+  it('dòng cấp cũ không cân gói thì dùng số viên QC đếm; đã cân hết thì không nhận số viên', () => {
     const mixed = [hold('old', 'A', 40, null), hold('new', 'B', 20, '0.4')];
     const plan = planStoneReturn(mixed, [], 10);
     expect(plan.updates.find((item) => item.id === 'old')).toMatchObject({
