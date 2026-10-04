@@ -8,9 +8,7 @@ import {
 import {
   CastingSlipImageKind,
   CastingSlipStatus,
-  IntakeOrderStatus,
   Prisma,
-  ProductionSource,
   ProductionStatus,
   RoleCode,
 } from '@prisma/client';
@@ -19,12 +17,10 @@ import { isCastWorkerAssignee } from '../auth/staff-job-presets';
 import type { AuthUserPayload } from '../auth/types';
 import { canConfirmIntakeWarehouse } from '../intake-orders/intake-warehouse-access';
 import { InventoryService } from '../inventory/inventory.service';
-import { dbTable } from '../prisma/database-url';
 import { PrismaService } from '../prisma/prisma.service';
-import { decStr } from '../util/money';
 import { actorName } from '../production-orders/order-detail';
 import { ACTIVITY, logActivity } from '../production-orders/activity-log';
-import { orderCode } from '../production-orders/production-orders.service';
+import { toIntakeStatus } from '../production-orders/intake-order';
 import { CloudinaryService } from '../uploads/cloudinary.service';
 import {
   CastingLossQuery,
@@ -151,14 +147,16 @@ export class CastingSlipsService {
   async candidates(query: CastingSlipCandidatesQuery) {
     const keyword = query.search?.trim();
     const contains = { contains: keyword, mode: 'insensitive' } as const;
-    const rows = await this.prisma.intakeOrder.findMany({
+    const rows = await this.prisma.productionOrder.findMany({
       where: {
-        status: IntakeOrderStatus.WAX_CONFIRMED,
+        intakeSeq: { not: null },
+        cutAt: null,
+        status: ProductionStatus.WAX_CONFIRMED,
         castingSlipLine: null,
         ...(keyword
           ? {
               OR: [
-                { code: contains },
+                { intakeCode: contains },
                 { sxCode: contains },
                 { productName: contains },
                 { trackingCode: contains },
@@ -170,6 +168,7 @@ export class CastingSlipsService {
       take: 200,
       select: {
         id: true,
+        intakeCode: true,
         code: true,
         sxCode: true,
         productName: true,
@@ -184,8 +183,8 @@ export class CastingSlipsService {
     });
     return rows.map((row) => ({
       id: row.id,
-      code: row.code,
-      sxCode: row.sxCode,
+      code: row.intakeCode ?? row.code,
+      sxCode: row.sxCode ?? row.code,
       productName: row.productName,
       trackingCode: row.trackingCode,
       qty: row.qty,
@@ -205,11 +204,14 @@ export class CastingSlipsService {
       throw new BadRequestException('Một đơn chỉ chọn một lần trên phiếu');
     }
     const slipDate = parseDate(dto.slipDate, 'Ngày phiếu');
-    const orders = await this.prisma.intakeOrder.findMany({
+    const orders = await this.prisma.productionOrder.findMany({
       where: { id: { in: ids } },
       select: {
         id: true,
         code: true,
+        intakeCode: true,
+        intakeSeq: true,
+        cutAt: true,
         status: true,
         productWeightGram: true,
         castingTreeWeightGram: true,
@@ -221,27 +223,28 @@ export class CastingSlipsService {
     const lines = ids.map((id, sortOrder) => {
       const order = byId.get(id);
       if (!order) throw new NotFoundException('Không tìm thấy đơn');
+      const label = order.intakeCode ?? order.code;
       if (order.castingSlipLine) {
         throw new BadRequestException(
-          `Đơn ${order.code} đã nằm trên phiếu đúc khác`,
+          `Đơn ${label} đã nằm trên phiếu đúc khác`,
         );
       }
-      if (order.status !== IntakeOrderStatus.WAX_CONFIRMED) {
+      if (order.status !== ProductionStatus.WAX_CONFIRMED) {
         throw new BadRequestException(
-          `Đơn ${order.code} chưa ở trạng thái Chờ SX · Đã có Sáp (E)`,
+          `Đơn ${label} chưa ở trạng thái Chờ SX · Đã có Sáp (E)`,
         );
       }
       const wax = waxWeightOf(order);
       if (wax == null || wax.lte(0)) {
         throw new BadRequestException(
-          `Đơn ${order.code} thiếu trọng lượng sáp / cây thông`,
+          `Đơn ${label} thiếu trọng lượng sáp / cây thông`,
         );
       }
       return {
-        intakeOrderId: id,
+        orderId: id,
         sortOrder,
         waxWeightGram: wax,
-        code: order.code,
+        code: label,
       };
     });
     const waxWeightGram = lines.reduce(
@@ -272,8 +275,8 @@ export class CastingSlipsService {
               status: CastingSlipStatus.PENDING_ISSUE,
               orders: {
                 create: lines.map(
-                  ({ intakeOrderId, sortOrder, waxWeightGram: wax }) => ({
-                    intakeOrderId,
+                  ({ orderId, sortOrder, waxWeightGram: wax }) => ({
+                    orderId,
                     sortOrder,
                     waxWeightGram: wax,
                   }),
@@ -289,7 +292,7 @@ export class CastingSlipsService {
       } catch (error) {
         if (isUniqueViolation(error) && attempt < CODE_RETRIES - 1) {
           // Trùng mã phiếu random thì thử mã khác; trùng đơn (unique intake) thì báo rõ.
-          if (uniqueTarget(error).includes('intake_order_id')) {
+          if (uniqueTarget(error).includes('order_id')) {
             throw new ConflictException(
               'Có đơn vừa được lên phiếu đúc khác — tải lại danh sách đơn',
             );
@@ -319,7 +322,7 @@ export class CastingSlipsService {
           estimateS999Gram: true,
           estimateMasterAlloyGram: true,
           estimateS925Gram: true,
-          orders: { select: { intakeOrderId: true } },
+          orders: { select: { orderId: true } },
         },
       });
       if (!slip) throw new NotFoundException('Không tìm thấy phiếu đúc');
@@ -341,10 +344,10 @@ export class CastingSlipsService {
           kind: CastingSlipImageKind.ISSUE,
         })),
       });
-      const ids = slip.orders.map((line) => line.intakeOrderId);
-      const moved = await tx.intakeOrder.updateMany({
-        where: { id: { in: ids }, status: IntakeOrderStatus.WAX_CONFIRMED },
-        data: { status: IntakeOrderStatus.WAIT_CASTING },
+      const ids = slip.orders.map((line) => line.orderId);
+      const moved = await tx.productionOrder.updateMany({
+        where: { id: { in: ids }, status: ProductionStatus.WAX_CONFIRMED },
+        data: { status: ProductionStatus.WAIT_CASTING },
       });
       if (moved.count !== ids.length) {
         throw new ConflictException(
@@ -525,7 +528,7 @@ export class CastingSlipsService {
     await this.prisma.runTx(async (tx) => {
       const slip = await tx.castingSlip.findUnique({
         where: { id },
-        select: { orders: { select: { intakeOrderId: true } } },
+        select: { orders: { select: { orderId: true } } },
       });
       if (!slip) throw new NotFoundException('Không tìm thấy phiếu đúc');
       const claimed = await tx.castingSlip.updateMany({
@@ -540,12 +543,12 @@ export class CastingSlipsService {
       if (claimed.count !== 1) {
         throw new BadRequestException('Phiếu đúc không ở trạng thái Chờ đúc');
       }
-      await tx.intakeOrder.updateMany({
+      await tx.productionOrder.updateMany({
         where: {
-          id: { in: slip.orders.map((line) => line.intakeOrderId) },
-          status: IntakeOrderStatus.WAIT_CASTING,
+          id: { in: slip.orders.map((line) => line.orderId) },
+          status: ProductionStatus.WAIT_CASTING,
         },
-        data: { status: IntakeOrderStatus.CASTING },
+        data: { status: ProductionStatus.CASTING },
       });
     });
     return this.getById(id);
@@ -589,7 +592,7 @@ export class CastingSlipsService {
     await this.prisma.runTx(async (tx) => {
       const slipOrders = await tx.castingSlip.findUnique({
         where: { id },
-        select: { orders: { select: { intakeOrderId: true } } },
+        select: { orders: { select: { orderId: true } } },
       });
       if (!slipOrders) throw new NotFoundException('Không tìm thấy phiếu đúc');
       const claimed = await tx.castingSlip.updateMany({
@@ -609,12 +612,12 @@ export class CastingSlipsService {
           'Chỉ nhập kết quả khi phiếu đúc đang ở trạng thái Đang đúc',
         );
       }
-      await tx.intakeOrder.updateMany({
+      await tx.productionOrder.updateMany({
         where: {
-          id: { in: slipOrders.orders.map((line) => line.intakeOrderId) },
-          status: IntakeOrderStatus.CASTING,
+          id: { in: slipOrders.orders.map((line) => line.orderId) },
+          status: ProductionStatus.CASTING,
         },
-        data: { status: IntakeOrderStatus.CAST_PENDING_CONFIRMATION },
+        data: { status: ProductionStatus.CAST_PENDING_CONFIRMATION },
       });
       await tx.castingSlipImage.deleteMany({
         where: { slipId: id, kind: CastingSlipImageKind.RESULT },
@@ -642,7 +645,7 @@ export class CastingSlipsService {
         select: {
           status: true,
           castTreeWeightGram: true,
-          orders: { select: { intakeOrderId: true } },
+          orders: { select: { orderId: true } },
         },
       });
       if (!slip) throw new NotFoundException('Không tìm thấy phiếu đúc');
@@ -663,17 +666,17 @@ export class CastingSlipsService {
       if (claimed.count !== 1) {
         throw new BadRequestException('Phiếu đúc chưa chờ thủ kho xác nhận');
       }
-      await tx.intakeOrder.updateMany({
+      await tx.productionOrder.updateMany({
         where: {
-          id: { in: slip.orders.map((line) => line.intakeOrderId) },
+          id: { in: slip.orders.map((line) => line.orderId) },
           status: {
             in: [
-              IntakeOrderStatus.CAST_PENDING_CONFIRMATION,
-              IntakeOrderStatus.CASTING,
+              ProductionStatus.CAST_PENDING_CONFIRMATION,
+              ProductionStatus.CASTING,
             ],
           },
         },
-        data: { status: IntakeOrderStatus.CAST_DONE },
+        data: { status: ProductionStatus.CAST_DONE },
       });
     });
     return this.getById(id);
@@ -745,25 +748,17 @@ export class CastingSlipsService {
         castTreeWeightGram: true,
         orders: {
           select: {
-            intake: {
+            order: {
               select: {
                 id: true,
                 code: true,
+                intakeCode: true,
                 status: true,
-                requestType: true,
-                productName: true,
+                cutAt: true,
                 qty: true,
                 trackingCode: true,
-                placedBy: true,
+                productName: true,
                 description: true,
-                createdDate: true,
-                dueDate: true,
-                model3dUrl: true,
-                stoneCount3d: true,
-                stoneWeight3dGram: true,
-                reworkOfOrderId: true,
-                reworkOfSubTicketId: true,
-                productionOrder: { select: { id: true } },
               },
             },
           },
@@ -779,26 +774,23 @@ export class CastingSlipsService {
     }
     if (
       blanks.size !== slip.orders.length ||
-      slip.orders.some(({ intake }) => !blanks.has(intake.id))
+      slip.orders.some(({ order }) => !blanks.has(order.id))
     ) {
       throw new BadRequestException(
         'Phải chia phôi cho đủ mọi đơn trên phiếu đúc',
       );
     }
     let allocated = restWeight;
-    for (const { intake } of slip.orders) {
-      const blank = blanks.get(intake.id)!;
-      if (
-        intake.productionOrder ||
-        intake.status !== IntakeOrderStatus.CAST_DONE
-      ) {
+    for (const { order } of slip.orders) {
+      const blank = blanks.get(order.id)!;
+      if (order.cutAt || order.status !== ProductionStatus.CAST_DONE) {
         throw new ConflictException(
-          `Đơn ${intake.code} chưa Đúc xong hoặc đã cắt cây thông`,
+          `Đơn ${order.intakeCode ?? order.code} chưa Đúc xong hoặc đã cắt cây thông`,
         );
       }
-      if (blank.qty > intake.qty) {
+      if (blank.qty > order.qty) {
         throw new BadRequestException(
-          `Phôi đơn ${intake.code} vượt số lượng cần làm`,
+          `Phôi đơn ${order.intakeCode ?? order.code} vượt số lượng cần làm`,
         );
       }
       allocated = allocated.add(new Prisma.Decimal(blank.weightGram));
@@ -824,30 +816,8 @@ export class CastingSlipsService {
         'Phiếu đúc chưa Đúc xong hoặc đã cắt cây thông',
       );
     }
-    const intakeIds = slip.orders.map(({ intake }) => intake.id);
-    const moved = await tx.intakeOrder.updateMany({
-      where: {
-        id: { in: intakeIds },
-        status: IntakeOrderStatus.CAST_DONE,
-      },
-      data: { status: IntakeOrderStatus.WAIT_COOLING },
-    });
-    if (moved.count !== intakeIds.length) {
-      throw new ConflictException('Một đơn trên phiếu vừa đổi trạng thái');
-    }
-    // Keep the sequence lock transaction-scoped, but return a Prisma-decodable
-    // value instead of PostgreSQL's `void` lock-function result.
-    await tx.$queryRaw`
-        WITH sequence_lock AS MATERIALIZED (
-          SELECT pg_advisory_xact_lock(hashtext('enshido_production_order_seq'))
-        )
-        SELECT 1::int AS locked FROM sequence_lock
-      `;
-    const [last, btpWarehouse, pieceUnit, lastInbound] = await Promise.all([
-      tx.productionOrder.findFirst({
-        orderBy: { seq: 'desc' },
-        select: { seq: true },
-      }),
+    const orderIds = slip.orders.map(({ order }) => order.id);
+    const [btpWarehouse, pieceUnit, lastInbound] = await Promise.all([
       tx.warehouse.findUnique({
         where: { code: 'btp-cho-vao-da' },
         select: { id: true, code: true },
@@ -865,79 +835,57 @@ export class CastingSlipsService {
     if (!pieceUnit) {
       throw new BadRequestException('Thiếu đơn vị tính "chiec" để nhập phôi');
     }
-    let seq = last?.seq ?? 0;
     const inboundSort = { next: (lastInbound._max.sortOrder ?? 0) + 1 };
     const cutAt = new Date();
-    for (const { intake } of slip.orders) {
-      const blank = blanks.get(intake.id)!;
-      // Phôi cắt cho đơn ở phiếu đúc này — mốc hao hụt cắt, không lẫn với phôi phiếu bù.
+    // Cắt cây thông: đơn đã có sẵn từ lúc tạo — chỉ chuyển sang Nguội trên chính bản ghi đó,
+    // không sinh đơn / phiếu mới.
+    const moved = await tx.productionOrder.updateMany({
+      where: {
+        id: { in: orderIds },
+        status: ProductionStatus.CAST_DONE,
+        cutAt: null,
+      },
+      data: { status: ProductionStatus.WAIT_FILING },
+    });
+    if (moved.count !== orderIds.length) {
+      throw new ConflictException('Một đơn trên phiếu vừa đổi trạng thái');
+    }
+    for (const { order } of slip.orders) {
+      const blank = blanks.get(order.id)!;
+      const cutImages = blankImages.get(order.id) ?? [];
+      // Phôi cắt cho đơn ở phiếu đúc này — mốc hao hụt cắt.
       await tx.castingSlipOrder.update({
-        where: { intakeOrderId: intake.id },
+        where: { orderId: order.id },
         data: {
           blankQty: blank.qty,
           blankWeightGram: new Prisma.Decimal(blank.weightGram),
         },
       });
-      // Đơn bù cho hàng lỗi: không sinh đơn A mới, thành phiếu con mới của đơn gốc.
-      if (intake.reworkOfOrderId) {
-        await this.attachReworkTicket(
-          tx,
-          intake,
-          blank,
-          cutAt,
-          confirmedByName,
-          actor,
-          inboundSort,
-        );
-        continue;
-      }
-      seq += 1;
-      const code = orderCode(seq);
-      const cutImages = blankImages.get(intake.id) ?? [];
-      const order = await tx.productionOrder.create({
+      const label = order.intakeCode ?? order.code;
+      const name = order.productName?.trim();
+      const description = [name, order.description]
+        .map((part) => part?.trim())
+        .filter(Boolean)
+        .join(' — ');
+      await tx.productionOrder.update({
+        where: { id: order.id },
         data: {
-          seq,
-          code,
-          status: ProductionStatus.WAIT_FILING,
-          source: ProductionSource.NVL,
-          requestType: intake.requestType,
-          qty: intake.qty,
-          trackingCode: intake.trackingCode,
-          model3dCode: intake.trackingCode,
-          model3dUrl: intake.model3dUrl,
-          closedBy: intake.placedBy,
-          description: [intake.productName, intake.description]
-            .map((part) => part.trim())
-            .filter(Boolean)
-            .join(' — '),
-          receivedDate: intake.createdDate,
-          dueDate: intake.dueDate,
           castingSentDate: slip.slipDate,
           castingReturnedDate: cutAt,
           cutAt,
           blankQty: blank.qty,
           blankWeight: new Prisma.Decimal(blank.weightGram),
-          createdBy: confirmedByName,
-          createdByUserId: actor.id,
-          intakeOrderId: intake.id,
-          // Mặc định 1 đơn là 1 phiếu (bước 11): thủ kho chia nhỏ sau nếu cần.
-          // Đá theo 3D khai ở bước 3D / bơm sáp: mốc hao hụt Vào đá; 0 viên = bỏ qua Vào đá.
-          stoneCount: intake.stoneCount3d,
-          stoneWeight: intake.stoneWeight3dGram,
-          subTicketSeq: 1,
-          subTickets: {
-            create: {
-              no: 1,
-              qty: intake.qty,
-              createdByUserId: actor.id,
-              createdByName: confirmedByName,
-            },
-          },
+          dataChangedAt: cutAt,
+          // Lệnh sản xuất hiển thị "tên SP — mô tả" như trước đây.
+          ...(name && !order.description?.startsWith(name)
+            ? { description }
+            : {}),
           statusLogs: {
             create: {
+              fromStatus: ProductionStatus.CAST_DONE,
               toStatus: ProductionStatus.WAIT_FILING,
               changedBy: confirmedByName,
-              note: `Đúc xong, nhận ${blank.qty} phôi từ đơn tạo ${intake.code}`,
+              note: `Đúc xong, nhận ${blank.qty} phôi — cắt cây thông ${label}`,
             },
           },
           ...(cutImages.length
@@ -951,11 +899,10 @@ export class CastingSlipsService {
               }
             : {}),
         },
-        select: { id: true },
       });
       const materialId = await this.inventory.ensureNamedMaterial(tx, {
         warehouseCode: 'btp-cho-vao-da',
-        name: `Phôi ${intake.trackingCode?.trim() || code}`,
+        name: `Phôi ${order.trackingCode?.trim() || order.code}`,
         unitCode: 'chiec',
         warehouse: btpWarehouse,
         unit: pieceUnit,
@@ -965,7 +912,7 @@ export class CastingSlipsService {
         qty: new Prisma.Decimal(blank.qty),
         gramQty: new Prisma.Decimal(blank.weightGram),
         receivedAt: cutAt,
-        note: `Phôi đơn ${code} — đúc xong`,
+        note: `Phôi đơn ${order.code} — đúc xong`,
         enteredBy: confirmedByName,
         productionOrderId: order.id,
         sortCursor: inboundSort,
@@ -975,7 +922,7 @@ export class CastingSlipsService {
         data: { blankMaterialId: materialId, blankInboundId: inboundId },
       });
       await logActivity(tx, order.id, actor, ACTIVITY.ORDER_CUT, {
-        orderCode: code,
+        orderCode: order.code,
         after: {
           status: ProductionStatus.WAIT_FILING,
           qty: blank.qty,
@@ -1028,118 +975,6 @@ export class CastingSlipsService {
         })),
       });
     }
-  }
-
-  /**
-   * Đúc xong đơn bù (hàng lỗi Nguội / Vào đá): cộng phôi vào đơn gốc và tạo phiếu con mới ở
-   * trạng thái Chờ nguội — thủ kho chỉ định thợ Nguội như phiếu thường.
-   */
-  private async attachReworkTicket(
-    tx: Prisma.TransactionClient,
-    intake: {
-      id: string;
-      code: string;
-      qty: number;
-      trackingCode: string | null;
-      reworkOfOrderId: string | null;
-      reworkOfSubTicketId: string | null;
-    },
-    blank: { qty: number; weightGram: number | string | Prisma.Decimal },
-    cutAt: Date,
-    by: string,
-    actor: AuthUserPayload,
-    inboundSort?: { next: number },
-  ) {
-    const orderId = intake.reworkOfOrderId!;
-    await tx.$queryRaw`SELECT id FROM ${dbTable('production_orders')} WHERE id = ${orderId}::uuid FOR UPDATE`;
-    const order = await tx.productionOrder.findUniqueOrThrow({
-      where: { id: orderId },
-      select: {
-        id: true,
-        code: true,
-        status: true,
-        blankMaterialId: true,
-        blankQty: true,
-        blankWeight: true,
-        subTicketSeq: true,
-        subTickets: { select: { id: true, no: true } },
-      },
-    });
-    if (order.status === ProductionStatus.DELIVERED) {
-      throw new BadRequestException(
-        `Đơn gốc ${order.code} đã giao — không nhận thêm phiếu bù ${intake.code}`,
-      );
-    }
-    const weight = new Prisma.Decimal(blank.weightGram);
-    const materialId =
-      order.blankMaterialId ??
-      (await this.inventory.ensureNamedMaterial(tx, {
-        warehouseCode: 'btp-cho-vao-da',
-        name: `Phôi ${intake.trackingCode?.trim() || order.code}`,
-        unitCode: 'chiec',
-      }));
-    const inboundId = await this.inventory.createAutoInbound(tx, {
-      materialId,
-      qty: new Prisma.Decimal(blank.qty),
-      gramQty: weight,
-      receivedAt: cutAt,
-      note: `Phôi bù ${intake.code} — đúc xong, cho đơn ${order.code}`,
-      enteredBy: by,
-      productionOrderId: order.id,
-      sortCursor: inboundSort,
-    });
-    const no = order.subTicketSeq + 1;
-    const origin = order.subTickets.find(
-      (ticket) => ticket.id === intake.reworkOfSubTicketId,
-    );
-    const from = origin ? `${order.code}-${origin.no}` : order.code;
-    await tx.productionSubTicket.create({
-      data: {
-        orderId: order.id,
-        no,
-        qty: intake.qty,
-        note: `Bù cho ${from} (${intake.code})`,
-        createdByUserId: actor.id,
-        createdByName: by,
-      },
-    });
-    const reopen =
-      order.status === ProductionStatus.DEFECT ||
-      order.status === ProductionStatus.FINISHING;
-    await tx.productionOrder.update({
-      where: { id: order.id },
-      data: {
-        blankMaterialId: materialId,
-        blankInboundId: order.blankMaterialId ? undefined : inboundId,
-        blankQty: (order.blankQty ?? 0) + blank.qty,
-        blankWeight: (order.blankWeight ?? new Prisma.Decimal(0)).add(weight),
-        subTicketSeq: no,
-        dataChangedAt: new Date(),
-        ...(reopen
-          ? {
-              status: ProductionStatus.WAIT_FILING,
-              statusLogs: {
-                create: {
-                  fromStatus: order.status,
-                  toStatus: ProductionStatus.WAIT_FILING,
-                  changedBy: by,
-                  note: `Phiếu bù ${order.code}-${no} (${intake.qty} sp) đúc xong — quay lại Nguội`,
-                },
-              },
-            }
-          : {}),
-      },
-    });
-    await logActivity(tx, order.id, actor, ACTIVITY.ORDER_CUT, {
-      orderCode: order.code,
-      subTicketNo: no,
-      after: {
-        reworkIntake: intake.code,
-        qty: intake.qty,
-        weight: decStr(weight),
-      },
-      note: `Đúc xong phiếu bù ${intake.code}, tạo phiếu con ${order.code}-${no}`,
-    });
   }
 
   /** Mã NVL nhận phần cây còn lại sau đúc: kho NVL chính, tính theo gram. */
@@ -1227,13 +1062,13 @@ export class CastingSlipsService {
       if (claimed.count !== 1) {
         throw new BadRequestException('Phiếu đúc chưa chờ thủ kho xác nhận');
       }
-      const intakeIds = old.orders.map((line) => line.intakeOrderId);
-      await tx.intakeOrder.updateMany({
+      const intakeIds = old.orders.map((line) => line.orderId);
+      await tx.productionOrder.updateMany({
         where: {
           id: { in: intakeIds },
-          status: IntakeOrderStatus.CAST_PENDING_CONFIRMATION,
+          status: ProductionStatus.CAST_PENDING_CONFIRMATION,
         },
-        data: { status: IntakeOrderStatus.WAIT_CASTING },
+        data: { status: ProductionStatus.WAIT_CASTING },
       });
       await tx.castingSlipOrder.deleteMany({ where: { slipId: id } });
 
@@ -1258,7 +1093,7 @@ export class CastingSlipsService {
               redoOfSlipId: rootSlipId,
               orders: {
                 create: old.orders.map((line) => ({
-                  intakeOrderId: line.intakeOrderId,
+                  orderId: line.orderId,
                   sortOrder: line.sortOrder,
                   waxWeightGram: line.waxWeightGram,
                 })),
@@ -1280,7 +1115,7 @@ export class CastingSlipsService {
           break;
         } catch (error) {
           if (isUniqueViolation(error) && attempt < CODE_RETRIES - 1) {
-            if (uniqueTarget(error).includes('intake_order_id')) {
+            if (uniqueTarget(error).includes('order_id')) {
               throw new ConflictException(
                 'Có đơn không gỡ được khỏi phiếu lỗi — tải lại và thử lại',
               );
@@ -1326,7 +1161,9 @@ export class CastingSlipsService {
       and.push({
         orders: {
           some: {
-            intake: { code: { contains: intakeCode, mode: 'insensitive' } },
+            order: {
+              intakeCode: { contains: intakeCode, mode: 'insensitive' },
+            },
           },
         },
       });
@@ -1416,16 +1253,17 @@ const slipOrderInclude = {
   orders: {
     orderBy: { sortOrder: 'asc' as const },
     include: {
-      intake: {
+      order: {
         select: {
           id: true,
           code: true,
+          intakeCode: true,
           sxCode: true,
           productName: true,
           trackingCode: true,
           qty: true,
           status: true,
-          productionOrder: { select: { code: true, blankWeight: true } },
+          cutAt: true,
         },
       },
     },
@@ -1593,14 +1431,15 @@ function slipRowBase(row: SlipRowBaseInput) {
     waxWeightGram: row.waxWeightGram.toString(),
     batchOrderCodes: row.batchOrderCodes,
     orders: row.orders.map((line) => ({
-      intakeOrderId: line.intakeOrderId,
-      code: line.intake.code,
-      sxCode: line.intake.sxCode,
-      productName: line.intake.productName,
-      trackingCode: line.intake.trackingCode,
-      qty: line.intake.qty,
-      status: line.intake.status,
-      productionOrderCode: line.intake.productionOrder?.code ?? null,
+      intakeOrderId: line.orderId,
+      code: line.order.intakeCode ?? line.order.code,
+      sxCode: line.order.sxCode ?? line.order.code,
+      productName: line.order.productName,
+      trackingCode: line.order.trackingCode,
+      qty: line.order.qty,
+      status: toIntakeStatus(line.order),
+      // Cùng một bản ghi: mã A… có từ lúc tạo, "đã vào lệnh sản xuất" = đã cắt cây.
+      productionOrderCode: line.order.cutAt ? line.order.code : null,
       blankQty: line.blankQty,
       blankWeightGram: dec(line.blankWeightGram),
       waxWeightGram: line.waxWeightGram.toString(),

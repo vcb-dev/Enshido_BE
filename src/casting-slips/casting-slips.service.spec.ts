@@ -1,10 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
-import {
-  IntakeOrderStatus,
-  Prisma,
-  ProductionRequestType,
-  RoleCode,
-} from '@prisma/client';
+import { Prisma, ProductionStatus, RoleCode } from '@prisma/client';
 import type { AuthUserPayload } from '../auth/types';
 import { Permission } from '../auth/permissions';
 import { CastingSlipsService } from './casting-slips.service';
@@ -24,21 +19,17 @@ const image = {
   publicId: 'enshido/a',
 };
 
-function intake(id: string) {
+function order(id: string) {
   return {
     id,
-    code: `DH${id}`,
-    status: IntakeOrderStatus.CAST_DONE,
-    requestType: ProductionRequestType.BULK,
+    code: `A${id}`,
+    intakeCode: `DH${id}`,
+    status: ProductionStatus.CAST_DONE,
+    cutAt: null,
     productName: 'Nhẫn',
     qty: 2,
     trackingCode: `SP${id}`,
-    placedBy: 'Quản lý',
     description: '',
-    createdDate: new Date('2026-09-29'),
-    dueDate: null,
-    model3dUrl: null,
-    productionOrder: null,
   };
 }
 
@@ -51,12 +42,13 @@ function setup(treeWeight: number) {
         confirmedAt: new Date('2026-10-04'),
         restWeightGram: null,
         castTreeWeightGram: new Prisma.Decimal(treeWeight),
-        orders: [{ intake: intake('1') }, { intake: intake('2') }],
+        orders: [{ order: order('1') }, { order: order('2') }],
       }),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       update: jest.fn(),
     },
-    intakeOrder: {
+    castingSlipOrder: { update: jest.fn().mockResolvedValue({}) },
+    productionOrder: {
       updateMany: jest
         .fn()
         .mockImplementation(
@@ -70,14 +62,7 @@ function setup(treeWeight: number) {
                 : 1,
           }),
         ),
-    },
-    castingSlipOrder: { update: jest.fn().mockResolvedValue({}) },
-    productionOrder: {
-      findFirst: jest.fn().mockResolvedValue({ seq: 42 }),
-      create: jest
-        .fn()
-        .mockResolvedValueOnce({ id: 'order-1' })
-        .mockResolvedValueOnce({ id: 'order-2' }),
+      create: jest.fn(),
       update: jest.fn(),
     },
     productionActivityLog: { create: jest.fn() },
@@ -125,45 +110,31 @@ function setup(treeWeight: number) {
 }
 
 describe('cắt cây thông sau Đúc xong → Chờ nguội', () => {
-  it('tạo đúng một lệnh và một phiếu nhập phôi cho mỗi đơn, không tạo phiếu cắt', async () => {
+  it('chỉ chuyển đơn sẵn có sang Chờ nguội, không tạo lệnh / phiếu mới', async () => {
     const { service, dto, tx, inventory } = setup(10);
     await service.confirm('slip', dto, actor);
 
-    expect(tx.productionOrder.create).toHaveBeenCalledTimes(2);
-    expect(tx.productionOrder.create).toHaveBeenNthCalledWith(
-      1,
+    expect(tx.productionOrder.create).not.toHaveBeenCalled();
+    expect(tx.productionOrder.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ['1', '2'] }, status: 'CAST_DONE', cutAt: null },
+      data: { status: 'WAIT_FILING' },
+    });
+    expect(tx.productionOrder.update).toHaveBeenCalledWith(
       expect.objectContaining({
+        where: { id: '1' },
         data: expect.objectContaining({
-          code: 'A043',
-          status: 'WAIT_FILING',
           blankQty: 2,
-          intakeOrderId: '1',
-        }) as unknown,
-      }),
-    );
-    expect(tx.productionOrder.create).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        data: expect.objectContaining({
-          code: 'A044',
-          status: 'WAIT_FILING',
-          blankQty: 2,
-          intakeOrderId: '2',
+          cutAt: expect.any(Date) as unknown,
         }) as unknown,
       }),
     );
     expect(inventory.createAutoInbound).toHaveBeenCalledTimes(3);
-    // Phôi ghi theo dòng phiếu đúc — mốc hao hụt cắt, không lẫn phôi phiếu bù.
+    // Phôi ghi theo dòng phiếu đúc — mốc hao hụt cắt.
     expect(tx.castingSlipOrder.update).toHaveBeenCalledTimes(2);
     expect(tx.castingSlipOrder.update).toHaveBeenNthCalledWith(1, {
-      where: { intakeOrderId: '1' },
+      where: { orderId: '1' },
       data: { blankQty: 2, blankWeightGram: new Prisma.Decimal(4) },
     });
-    expect(tx.intakeOrder.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: { status: 'WAIT_COOLING' },
-      }),
-    );
     expect(inventory.bustBtpStock).toHaveBeenCalled();
   });
 
@@ -197,12 +168,8 @@ describe('cắt cây thông sau Đúc xong → Chờ nguội', () => {
       .mockResolvedValueOnce(firstSlip)
       .mockResolvedValueOnce({
         ...firstSlip,
-        orders: [{ intake: intake('3') }, { intake: intake('4') }],
+        orders: [{ order: order('3') }, { order: order('4') }],
       });
-    tx.productionOrder.findFirst
-      .mockResolvedValueOnce({ seq: 42 })
-      .mockResolvedValueOnce({ seq: 44 });
-    tx.productionOrder.create.mockResolvedValue({ id: 'created-order' });
     await service.cutMany(
       [
         { slipId: 'slip-1', ...dto },
@@ -218,22 +185,12 @@ describe('cắt cây thông sau Đúc xong → Chờ nguội', () => {
       actor,
     );
     expect(prisma.runTx).toHaveBeenCalledTimes(1);
-    expect(tx.productionOrder.create).toHaveBeenCalledTimes(4);
-    expect(tx.intakeOrder.updateMany).toHaveBeenCalledTimes(2);
-    expect(tx.intakeOrder.updateMany).toHaveBeenNthCalledWith(2, {
-      where: { id: { in: ['3', '4'] }, status: 'CAST_DONE' },
-      data: { status: 'WAIT_COOLING' },
+    expect(tx.productionOrder.create).not.toHaveBeenCalled();
+    expect(tx.productionOrder.updateMany).toHaveBeenCalledTimes(2);
+    expect(tx.productionOrder.updateMany).toHaveBeenNthCalledWith(2, {
+      where: { id: { in: ['3', '4'] }, status: 'CAST_DONE', cutAt: null },
+      data: { status: 'WAIT_FILING' },
     });
-    expect(tx.productionOrder.create).toHaveBeenNthCalledWith(
-      4,
-      expect.objectContaining({
-        data: expect.objectContaining({
-          code: 'A046',
-          intakeOrderId: '4',
-          status: 'WAIT_FILING',
-        }),
-      }),
-    );
     expect(service.getById).toHaveBeenCalledTimes(2);
   });
 
@@ -277,7 +234,7 @@ describe('cắt cây thông sau Đúc xong → Chờ nguội', () => {
     await expect(service.confirm('slip', dto, actor)).rejects.toThrow(
       'Phiếu đúc chưa Đúc xong hoặc đã cắt cây thông',
     );
-    expect(tx.intakeOrder.updateMany).not.toHaveBeenCalled();
+    expect(tx.productionOrder.updateMany).not.toHaveBeenCalled();
     expect(tx.productionOrder.create).not.toHaveBeenCalled();
   });
 });

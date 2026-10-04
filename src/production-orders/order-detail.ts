@@ -8,6 +8,7 @@ import {
   SubTicketOutcome,
 } from '@prisma/client';
 import { ctStr, decStr } from '../util/money';
+import { toIntakeStatus } from './intake-order';
 import {
   issuedOf,
   lossPercentOf,
@@ -41,6 +42,16 @@ export const STAGE_STATUS: Record<ProductionStage, ProductionStatus> = {
 };
 
 export const STATUS_LABEL: Record<ProductionStatus, string> = {
+  PENDING_APPROVAL: 'Chờ duyệt',
+  REJECTED: 'Từ chối',
+  APPROVED: 'Đã duyệt',
+  READY_FOR_PRODUCTION: 'Đã có 3D',
+  WAX_PRINTED: 'Đã in sáp',
+  PENDING_WAREHOUSE_CONFIRMATION: 'Chờ thủ kho xác nhận',
+  WAX_CONFIRMED: 'Đã có sáp',
+  WAIT_CASTING: 'Chờ đúc',
+  CAST_PENDING_CONFIRMATION: 'Chờ xác nhận đúc',
+  CAST_DONE: 'Đúc xong',
   NEW: 'Mới',
   REDO_3D: 'Sửa 3D',
   CASTING: 'Đúc',
@@ -80,7 +91,6 @@ export const IN_STAGE_STATUSES: ProductionStatus[] = [
 ];
 
 export const detailInclude = {
-  intakeOrder: { select: { code: true, sxCode: true } },
   images: { orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }] },
   stages: {
     orderBy: { createdAt: 'asc' },
@@ -97,10 +107,12 @@ export const detailInclude = {
     },
   },
   // Đơn tạo bù cho hàng lỗi của đơn này — để phiếu lỗi hiện "Phiếu bù: DH…".
-  reworkIntakes: {
+  reworkOrders: {
     select: {
       code: true,
+      intakeCode: true,
       status: true,
+      cutAt: true,
       qty: true,
       reworkOfEntryId: true,
       reworkOfSubTicketId: true,
@@ -850,8 +862,8 @@ export function toDetail(order: OrderDetail) {
   return {
     id: order.id,
     code: order.code,
-    intakeOrderCode: order.intakeOrder?.code ?? null,
-    intakeSxCode: order.intakeOrder?.sxCode ?? null,
+    intakeOrderCode: order.intakeCode,
+    intakeSxCode: order.sxCode,
     status: order.status,
     source: order.source,
     btp: order.btpMaterial,
@@ -1019,9 +1031,9 @@ export function toDetail(order: OrderDetail) {
       ),
     },
     /** Phiếu bù cho hàng lỗi Nguội / Vào đá: đơn tạo bù đang đi lại từ bước sáp. */
-    reworks: order.reworkIntakes.map((rework) => ({
-      code: rework.code,
-      status: rework.status,
+    reworks: order.reworkOrders.map((rework) => ({
+      code: rework.intakeCode ?? rework.code,
+      status: toIntakeStatus(rework),
       qty: rework.qty,
       entryId: rework.reworkOfEntryId,
       ticketNo:

@@ -500,6 +500,18 @@ model BtpWaitingItem {
 
 /// Trạng thái đơn sản xuất, xếp theo luồng: Nguội → Vào đá → Khắc → Bóng → Xi → Lỗi / Hoàn thiện.
 enum ProductionStatus {
+  /// Các trạng thái tiền-Nguội (đơn tạo → duyệt → 3D → sáp → đúc): chỉ dùng khi `intakeSeq` có giá trị
+  /// và chưa `cutAt`. Cắt cây thông xong đơn chuyển thẳng sang WAIT_FILING trên cùng bản ghi.
+  PENDING_APPROVAL
+  REJECTED
+  APPROVED
+  READY_FOR_PRODUCTION
+  WAX_PRINTED
+  PENDING_WAREHOUSE_CONFIRMATION
+  WAX_CONFIRMED
+  WAIT_CASTING
+  CAST_PENDING_CONFIRMATION
+  CAST_DONE
   NEW
   REDO_3D
   CASTING
@@ -555,114 +567,136 @@ enum ProductionStage {
 
 /// Đơn sản xuất — một dòng trên danh sách đơn, in ra một phiếu cho thợ.
 model ProductionOrder {
-  id                  String                @id @default(uuid()) @db.Uuid
+  id                    String                @id @default(uuid()) @db.Uuid
   /// Số thứ tự sinh mã SX (A001, A002…).
-  seq                 Int                   @unique
-  code                String                @unique
-  status              ProductionStatus      @default(NEW)
-  source              ProductionSource      @default(NVL)
+  seq                   Int                   @unique
+  code                  String                @unique
+  status                ProductionStatus      @default(NEW)
+  source                ProductionSource      @default(NVL)
   /// Mã BTP lấy ra làm đơn (đơn BTP). Phiếu xuất BTP tự tạo gắn mã đơn, `autoIssued = true`.
-  btpMaterialId       String?               @map("btp_material_id") @db.Uuid
+  btpMaterialId         String?               @map("btp_material_id") @db.Uuid
   /// Mã NVL lấy ra làm Đơn mới. Phiếu xuất NVL tự tạo gắn mã đơn, `autoIssued = true`.
-  nvlMaterialId       String?               @map("nvl_material_id") @db.Uuid
+  nvlMaterialId         String?               @map("nvl_material_id") @db.Uuid
   /// Mã thành phẩm lấy từ kho thành phẩm khi lên Đơn mới.
-  sourceOrderCode     String?               @map("source_order_code")
-  requestType         ProductionRequestType @map("request_type")
-  qty                 Int                   @default(1)
+  sourceOrderCode       String?               @map("source_order_code")
+  requestType           ProductionRequestType @map("request_type")
+  qty                   Int                   @default(1)
   /// Đơn vị số lượng cần làm: chiếc | đôi.
-  qtyUnit             String?               @map("qty_unit")
+  qtyUnit               String?               @map("qty_unit")
   /// Số lượng thành phẩm cần lên đơn (form Đơn mới).
-  finishedProductQty  Int?                  @map("finished_product_qty")
+  finishedProductQty    Int?                  @map("finished_product_qty")
   /// Cột "Đã trả" trên Lark.
-  returnedQty         Int                   @default(0) @map("returned_qty")
-  model3dCode         String?               @map("model_3d_code")
-  model3dUrl          String?               @map("model_3d_url")
-  leadTime            String?               @map("lead_time")
+  returnedQty           Int                   @default(0) @map("returned_qty")
+  model3dCode           String?               @map("model_3d_code")
+  model3dUrl            String?               @map("model_3d_url")
+  leadTime              String?               @map("lead_time")
   /// Mã theo dõi đơn bên bán hàng, vd V-9147.
-  trackingCode        String?               @map("tracking_code")
-  closedBy            String                @map("closed_by")
+  trackingCode          String?               @map("tracking_code")
+  closedBy              String                @map("closed_by")
   /// Khách hàng trên phiếu lên đơn.
-  customerName        String?               @map("customer_name")
-  description         String
-  stoneColor          String?               @map("stone_color")
-  stoneTypes          String[]              @default([]) @map("stone_types")
+  customerName          String?               @map("customer_name")
+  description           String
+  stoneColor            String?               @map("stone_color")
+  stoneTypes            String[]              @default([]) @map("stone_types")
   /// Kích thước (đường kính, dài…). Size nhẫn / lắc nằm ở `sizeLabel`.
-  size                String?
-  sizeLabel           String?               @map("size_label")
-  stoneCount          Int?                  @map("stone_count")
-  stoneWeight         Decimal?              @map("stone_weight") @db.Decimal(18, 4)
+  size                  String?
+  sizeLabel             String?               @map("size_label")
+  stoneCount            Int?                  @map("stone_count")
+  stoneWeight           Decimal?              @map("stone_weight") @db.Decimal(18, 4)
   /// Trọng lượng NVL / thành phẩm (g) — lấy từ NVL khi lên đơn.
-  weight              Decimal?              @map("weight") @db.Decimal(18, 4)
-  laserEngraving      String?               @map("laser_engraving")
-  otherRequirements   String?               @map("other_requirements")
-  mainMaterial        String?               @map("main_material")
-  platingColor        String?               @map("plating_color")
+  weight                Decimal?              @map("weight") @db.Decimal(18, 4)
+  laserEngraving        String?               @map("laser_engraving")
+  otherRequirements     String?               @map("other_requirements")
+  mainMaterial          String?               @map("main_material")
+  platingColor          String?               @map("plating_color")
   /// Danh mục BTP (form Đơn BTP).
-  btpCategory         String?               @map("btp_category")
+  btpCategory           String?               @map("btp_category")
   /// Tên bán thành phẩm — điền sẵn khi chọn mã BTP / mã thành phẩm.
-  btpName             String?               @map("btp_name")
+  btpName               String?               @map("btp_name")
   /// Phân loại sản phẩm kho BTP.
-  productKind         String?               @map("product_kind")
-  askedUserId         String?               @map("asked_user_id") @db.Uuid
-  askedUserName       String?               @map("asked_user_name")
+  productKind           String?               @map("product_kind")
+  askedUserId           String?               @map("asked_user_id") @db.Uuid
+  askedUserName         String?               @map("asked_user_name")
   /// Ngày đặt đơn trên phiếu.
-  receivedDate        DateTime              @map("received_date") @db.Date
-  dueDate             DateTime?             @map("due_date") @db.Date
+  receivedDate          DateTime              @map("received_date") @db.Date
+  dueDate               DateTime?             @map("due_date") @db.Date
   /// Ngày báo Đúc — có ngày này đơn mới được in phiếu thợ.
-  castingSentDate     DateTime?             @map("casting_sent_date") @db.Date
-  castingReturnedDate DateTime?             @map("casting_returned_date") @db.Date
+  castingSentDate       DateTime?             @map("casting_sent_date") @db.Date
+  castingReturnedDate   DateTime?             @map("casting_returned_date") @db.Date
   /// Lúc thủ kho xác nhận đúc và cân phôi cho đơn — có mốc này đơn NVL vào Nguội.
-  cutAt               DateTime?             @map("cut_at")
+  cutAt                 DateTime?             @map("cut_at")
   /// Phôi nhận sau đúc, lưu trực tiếp trên lệnh (không tạo phiếu cắt riêng).
-  blankQty            Int?                  @map("blank_qty")
-  blankWeight         Decimal?              @map("blank_weight") @db.Decimal(18, 4)
-  blankMaterialId     String?               @map("blank_material_id") @db.Uuid
-  blankInboundId      String?               @unique @map("blank_inbound_id") @db.Uuid
-  debtStatus          String?               @map("debt_status")
-  parentId            String?               @map("parent_id") @db.Uuid
-  lastPrintedAt       DateTime?             @map("last_printed_at")
+  blankQty              Int?                  @map("blank_qty")
+  blankWeight           Decimal?              @map("blank_weight") @db.Decimal(18, 4)
+  blankMaterialId       String?               @map("blank_material_id") @db.Uuid
+  blankInboundId        String?               @unique @map("blank_inbound_id") @db.Uuid
+  debtStatus            String?               @map("debt_status")
+  parentId              String?               @map("parent_id") @db.Uuid
+  lastPrintedAt         DateTime?             @map("last_printed_at")
   /// Lần cuối nội dung in trên phiếu thay đổi. Tách khỏi updatedAt vì đánh dấu "đã in" cũng làm updatedAt đổi.
-  dataChangedAt       DateTime              @default(now()) @map("data_changed_at")
-  createdBy           String?               @map("created_by")
+  dataChangedAt         DateTime              @default(now()) @map("data_changed_at")
+  createdBy             String?               @map("created_by")
   /// Người lên đơn — có quyền chia phiếu con. Đơn tạo trước khi có cột này để trống.
-  createdByUserId     String?               @map("created_by_user_id") @db.Uuid
+  createdByUserId       String?               @map("created_by_user_id") @db.Uuid
   /// Số phiếu con đã cấp (A012-1, A012-2…). Chỉ tăng, số của phiếu đã xoá không cấp lại.
-  subTicketSeq        Int                   @default(0) @map("sub_ticket_seq")
+  subTicketSeq          Int                   @default(0) @map("sub_ticket_seq")
   /// Đơn không chia phiếu con: khâu đang mở để thợ tự nhận trên chính phiếu mẹ.
-  pendingStage        ProductionStage?      @map("pending_stage")
-  pendingAt           DateTime?             @map("pending_at")
-  pendingByName       String?               @map("pending_by_name")
+  pendingStage          ProductionStage?      @map("pending_stage")
+  pendingAt             DateTime?             @map("pending_at")
+  pendingByName         String?               @map("pending_by_name")
   /// Thợ đã tự nhận khâu của phiếu mẹ, chờ người giao xác nhận số lượng và bạc.
-  claimedByUserId     String?               @map("claimed_by_user_id") @db.Uuid
-  claimedByName       String?               @map("claimed_by_name")
-  claimedAt           DateTime?             @map("claimed_at")
-  createdAt           DateTime              @default(now()) @map("created_at")
-  updatedAt           DateTime              @updatedAt @map("updated_at")
+  claimedByUserId       String?               @map("claimed_by_user_id") @db.Uuid
+  claimedByName         String?               @map("claimed_by_name")
+  claimedAt             DateTime?             @map("claimed_at")
+  /// Phần "đơn tạo" (trước Nguội). `intakeSeq` có giá trị = đơn đi qua luồng tạo → đúc → cắt cây;
+  /// đơn tạo tay (Đơn mới / Tồn) để trống. `code` (A…) cấp ngay lúc tạo, `intakeCode` (DH…) là mã đơn hàng.
+  intakeSeq             Int?                  @unique @map("intake_seq")
+  intakeCode            String?               @unique @map("intake_code")
+  /// Mã lệnh sản xuất (random) — hiển thị cột Mã SX.
+  sxCode                String?               @unique @map("sx_code")
+  productName           String?               @map("product_name")
+  /// Chỉ set khi duyệt: true = đã có khuôn; false = cần vẽ 3D in resin.
+  hasMold               Boolean?              @map("has_mold")
+  productWeightGram     Decimal?              @map("product_weight_gram") @db.Decimal(18, 4)
+  castingTreeWeightGram Decimal?              @map("casting_tree_weight_gram") @db.Decimal(18, 4)
+  /// Bước 5–6: TL thủ kho cân kiểm lúc xác nhận sáp. Phiếu đúc lấy số này nếu có.
+  waxCheckedWeightGram  Decimal?              @map("wax_checked_weight_gram") @db.Decimal(18, 4)
+  waxCheckedByName      String?               @map("wax_checked_by_name")
+  rejectReason          String?               @map("reject_reason")
+  rejectedByName        String?               @map("rejected_by_name")
+  rejectedAt            DateTime?             @map("rejected_at")
+  createdAt             DateTime              @default(now()) @map("created_at")
+  updatedAt             DateTime              @updatedAt @map("updated_at")
 
-  parent           ProductionOrder?            @relation("ProductionOrderTree", fields: [parentId], references: [id], onDelete: SetNull)
-  btpMaterial      Material?                   @relation("OrderBtpMaterial", fields: [btpMaterialId], references: [id], onDelete: SetNull)
-  nvlMaterial      Material?                   @relation("OrderNvlMaterial", fields: [nvlMaterialId], references: [id], onDelete: SetNull)
-  children         ProductionOrder[]           @relation("ProductionOrderTree")
-  images           ProductionOrderImage[]
-  stages           ProductionStageEntry[]
-  subTickets       ProductionSubTicket[]
-  statusLogs       ProductionStatusLog[]
-  activityLogs     ProductionActivityLog[]
-  materialRequests ProductionMaterialRequest[]
-  stoneHolds       ProductionStoneHold[]
-  outbounds        StockOutbound[]
-  outboundDrafts   StockOutboundDraft[]
-  costs            ProductionOrderCost[]
-  receipt          FinishedGoodsReceipt?
-  shipmentLines    ShipmentLine[]
-  autoShipments    Shipment[]                  @relation("OrderAutoShipment")
-  bomLines         ProductionOrderBomLine[]
-  inbounds         StockInbound[]
-  /// Đơn tạo (DH…) mà lệnh sản xuất này sinh ra khi xác nhận đúc.
-  intakeOrderId    String?                     @unique @map("intake_order_id") @db.Uuid
-  intakeOrder      IntakeOrder?                @relation(fields: [intakeOrderId], references: [id], onDelete: SetNull)
-  /// Các đơn tạo bù cho hàng lỗi của đơn này.
-  reworkIntakes    IntakeOrder[]               @relation("ReworkIntakes")
+  parent              ProductionOrder?            @relation("ProductionOrderTree", fields: [parentId], references: [id], onDelete: SetNull)
+  btpMaterial         Material?                   @relation("OrderBtpMaterial", fields: [btpMaterialId], references: [id], onDelete: SetNull)
+  nvlMaterial         Material?                   @relation("OrderNvlMaterial", fields: [nvlMaterialId], references: [id], onDelete: SetNull)
+  children            ProductionOrder[]           @relation("ProductionOrderTree")
+  images              ProductionOrderImage[]
+  stages              ProductionStageEntry[]
+  subTickets          ProductionSubTicket[]
+  statusLogs          ProductionStatusLog[]
+  activityLogs        ProductionActivityLog[]
+  materialRequests    ProductionMaterialRequest[]
+  stoneHolds          ProductionStoneHold[]
+  outbounds           StockOutbound[]
+  outboundDrafts      StockOutboundDraft[]
+  costs               ProductionOrderCost[]
+  receipt             FinishedGoodsReceipt?
+  shipmentLines       ShipmentLine[]
+  autoShipments       Shipment[]                  @relation("OrderAutoShipment")
+  bomLines            ProductionOrderBomLine[]
+  inbounds            StockInbound[]
+  /// Dòng của đơn trên phiếu đúc — mỗi đơn đi đúc một lần, trên đúng một phiếu.
+  castingSlipLine     CastingSlipOrder?
+  /// Đơn bù cho hàng lỗi Nguội / Vào đá (thủ kho bấm "Tạo phiếu bù"): đơn gốc, phiếu con lỗi và lần
+  /// KCS nhận lại sinh ra nó. Đi lại từ bước sáp, đúc xong vào Nguội như đơn thường.
+  reworkOfOrderId     String?                     @map("rework_of_order_id") @db.Uuid
+  reworkOfSubTicketId String?                     @map("rework_of_sub_ticket_id") @db.Uuid
+  /// Mỗi lần KCS nhận lại chỉ được bù một lần.
+  reworkOfEntryId     String?                     @unique @map("rework_of_entry_id") @db.Uuid
+  reworkOfOrder       ProductionOrder?            @relation("ReworkOrders", fields: [reworkOfOrderId], references: [id], onDelete: SetNull)
+  reworkOrders        ProductionOrder[]           @relation("ReworkOrders")
 
   @@index([status, createdAt])
   @@index([status, seq])
@@ -676,6 +710,7 @@ model ProductionOrder {
   @@index([nvlMaterialId])
   @@index([pendingStage, claimedByUserId])
   @@index([claimedByUserId])
+  @@index([reworkOfOrderId])
   @@map("production_orders")
 }
 
@@ -1174,80 +1209,6 @@ enum IntakeOrderStatus {
   CANCELLED
 }
 
-/// Phiếu lên đơn — thông tin đặt hàng cơ bản (ảnh, SL, hạn trả, mã sản phẩm…).
-model IntakeOrder {
-  id                    String                @id @default(uuid()) @db.Uuid
-  seq                   Int                   @unique
-  code                  String                @unique
-  /// Mã lệnh sản xuất (random) — hiển thị cột Mã SX; `code` là mã đơn hàng DH….
-  sxCode                String                @unique @map("sx_code")
-  status                IntakeOrderStatus     @default(PENDING_APPROVAL)
-  requestType           ProductionRequestType @map("request_type")
-  productName           String                @default("") @map("product_name")
-  qty                   Int                   @default(1)
-  /// Mã sản phẩm (SKU / mã hàng).
-  trackingCode          String?               @map("tracking_code")
-  placedBy              String                @map("placed_by")
-  description           String
-  /// Ngày tạo trên phiếu (có thể khác `createdAt` hệ thống).
-  createdDate           DateTime              @map("created_date") @db.Date
-  dueDate               DateTime?             @map("due_date") @db.Date
-  /// Chỉ set khi duyệt: true = đã có khuôn; false = cần vẽ 3D in resin.
-  hasMold               Boolean?              @map("has_mold")
-  model3dUrl            String?               @map("model3d_url")
-  productWeightGram     Decimal?              @map("product_weight_gram") @db.Decimal(18, 4)
-  /// Đá theo file 3D (bước 3 / bơm sáp): số viên và tổng TL (g) cho cả đơn. Bỏ trống = chưa
-  /// khai; 0 viên = đơn không có đá, bỏ qua khâu Vào đá.
-  stoneCount3d          Int?                  @map("stone_count_3d")
-  stoneWeight3dGram     Decimal?              @map("stone_weight_3d_gram") @db.Decimal(18, 4)
-  castingTreeWeightGram Decimal?              @map("casting_tree_weight_gram") @db.Decimal(18, 4)
-  /// Bước 5–6: TL thủ kho cân kiểm lúc xác nhận sáp (bắt buộc ở đơn bơm sáp). Phiếu đúc lấy số này nếu có.
-  waxCheckedWeightGram  Decimal?              @map("wax_checked_weight_gram") @db.Decimal(18, 4)
-  waxCheckedByName      String?               @map("wax_checked_by_name")
-  /// Bước 2 từ chối đơn: lý do (tuỳ chọn), người và lúc từ chối.
-  rejectReason          String?               @map("reject_reason")
-  rejectedByName        String?               @map("rejected_by_name")
-  rejectedAt            DateTime?             @map("rejected_at")
-  createdAt             DateTime              @default(now()) @map("created_at")
-  updatedAt             DateTime              @updatedAt @map("updated_at")
-
-  images          IntakeOrderImage[]
-  /// Dòng của đơn trên phiếu đúc — mỗi đơn đi đúc một lần, trên đúng một phiếu.
-  castingSlipLine CastingSlipOrder?
-  /// Lệnh sản xuất (A001…) sinh ra khi xác nhận đúc — nơi đơn đi tiếp các khâu Nguội…
-  productionOrder ProductionOrder?
-
-  /// Đơn bù cho hàng lỗi ở Nguội / Vào đá (thủ kho bấm "Tạo phiếu bù"): đơn sản xuất gốc, phiếu con
-  /// lỗi và lần KCS nhận lại sinh ra nó. Đi lại từ bước sáp; đúc xong thành phiếu con của đơn gốc.
-  reworkOfOrderId     String?          @map("rework_of_order_id") @db.Uuid
-  reworkOfSubTicketId String?          @map("rework_of_sub_ticket_id") @db.Uuid
-  /// Mỗi lần KCS nhận lại chỉ được bù một lần.
-  reworkOfEntryId     String?          @unique @map("rework_of_entry_id") @db.Uuid
-  reworkOfOrder       ProductionOrder? @relation("ReworkIntakes", fields: [reworkOfOrderId], references: [id], onDelete: SetNull)
-
-  @@index([status, createdDate])
-  @@index([trackingCode])
-  @@index([placedBy])
-  @@index([requestType])
-  @@map("intake_orders")
-}
-
-model IntakeOrderImage {
-  id        String              @id @default(uuid()) @db.Uuid
-  orderId   String              @map("order_id") @db.Uuid
-  kind      ProductionImageKind
-  url       String
-  publicId  String              @map("public_id")
-  width     Int?
-  height    Int?
-  sortOrder Int                 @default(0) @map("sort_order")
-
-  order IntakeOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
-
-  @@index([orderId, kind, sortOrder])
-  @@map("intake_order_images")
-}
-
 model CastingOrder {
   id        String   @id @default(uuid()) @db.Uuid
   code      String   @unique
@@ -1283,49 +1244,49 @@ enum CastingSlipImageKind {
 /// Phiếu đúc (bước 7): một lần đúc gồm nhiều đơn đã có sáp (E). Thủ kho lọc đơn, in phiếu,
 /// cấp vật tư; thợ đúc quét QR trên phiếu để nhận (bước 8).
 model CastingSlip {
-  id                   String            @id @default(uuid()) @db.Uuid
-  code                 String            @unique
-  slipDate             DateTime          @map("slip_date") @db.Date
+  id                      String            @id @default(uuid()) @db.Uuid
+  code                    String            @unique
+  slipDate                DateTime          @map("slip_date") @db.Date
   /// Tổng TL sáp (cây thông) giao = cộng TL sáp các đơn trên phiếu, lấy từ bước E.
-  waxWeightGram        Decimal           @map("wax_weight_gram") @db.Decimal(18, 4)
+  waxWeightGram           Decimal           @map("wax_weight_gram") @db.Decimal(18, 4)
   /// Mã các đơn trong lô (DH001, DH002…) — sinh tự động từ `orders`, giữ để tìm kiếm / in.
-  batchOrderCodes      String            @map("batch_order_codes")
+  batchOrderCodes         String            @map("batch_order_codes")
   /// Định mức / trọng lượng ước tính (g) — tách với số thực xuất.
   estimateS999Gram        Decimal?          @map("estimate_s999_gram") @db.Decimal(18, 4)
   estimateMasterAlloyGram Decimal?          @map("estimate_master_alloy_gram") @db.Decimal(18, 4)
   estimateS925Gram        Decimal?          @map("estimate_s925_gram") @db.Decimal(18, 4)
-  issueS999Gram        Decimal?          @map("issue_s999_gram") @db.Decimal(18, 4)
-  issueMasterAlloyGram Decimal?          @map("issue_master_alloy_gram") @db.Decimal(18, 4)
-  issueS925Gram        Decimal?          @map("issue_s925_gram") @db.Decimal(18, 4)
-  status               CastingSlipStatus @default(WAIT_CASTING)
+  issueS999Gram           Decimal?          @map("issue_s999_gram") @db.Decimal(18, 4)
+  issueMasterAlloyGram    Decimal?          @map("issue_master_alloy_gram") @db.Decimal(18, 4)
+  issueS925Gram           Decimal?          @map("issue_s925_gram") @db.Decimal(18, 4)
+  status                  CastingSlipStatus @default(WAIT_CASTING)
   /// Bước 8: thợ đúc quét phiếu, bấm bắt đầu đúc.
-  startedAt            DateTime?         @map("started_at")
-  startedByName        String?           @map("started_by_name")
+  startedAt               DateTime?         @map("started_at")
+  startedByName           String?           @map("started_by_name")
   /// Thợ đúc nhận phiếu — hao hụt đúc tính theo người này.
-  startedByUserId      String?           @map("started_by_user_id") @db.Uuid
+  startedByUserId         String?           @map("started_by_user_id") @db.Uuid
   /// Bước 9: TL cây thông sau đúc, bạc và thạch cao đã dùng (g).
-  castTreeWeightGram   Decimal?          @map("cast_tree_weight_gram") @db.Decimal(18, 4)
-  silverUsedGram       Decimal?          @map("silver_used_gram") @db.Decimal(18, 4)
-  plasterUsedGram      Decimal?          @map("plaster_used_gram") @db.Decimal(18, 4)
-  submittedAt          DateTime?         @map("submitted_at")
-  submittedByName      String?           @map("submitted_by_name")
-  submittedByUserId    String?           @map("submitted_by_user_id") @db.Uuid
+  castTreeWeightGram      Decimal?          @map("cast_tree_weight_gram") @db.Decimal(18, 4)
+  silverUsedGram          Decimal?          @map("silver_used_gram") @db.Decimal(18, 4)
+  plasterUsedGram         Decimal?          @map("plaster_used_gram") @db.Decimal(18, 4)
+  submittedAt             DateTime?         @map("submitted_at")
+  submittedByName         String?           @map("submitted_by_name")
+  submittedByUserId       String?           @map("submitted_by_user_id") @db.Uuid
   /// Bước 9: thủ kho kiểm và xác nhận → Đúc xong.
-  confirmedAt          DateTime?         @map("confirmed_at")
-  confirmedByName      String?           @map("confirmed_by_name")
+  confirmedAt             DateTime?         @map("confirmed_at")
+  confirmedByName         String?           @map("confirmed_by_name")
   /// Phần cây còn lại sau chia phôi, nhập kho NVL khi xác nhận đúc.
-  restWeightGram       Decimal?          @map("rest_weight_gram") @db.Decimal(18, 4)
-  restMaterialId       String?           @map("rest_material_id") @db.Uuid
-  restInboundId        String?           @unique @map("rest_inbound_id") @db.Uuid
+  restWeightGram          Decimal?          @map("rest_weight_gram") @db.Decimal(18, 4)
+  restMaterialId          String?           @map("rest_material_id") @db.Uuid
+  restInboundId           String?           @unique @map("rest_inbound_id") @db.Uuid
   /// Thủ kho báo lỗi đúc (phiếu CAST_FAILED).
-  rejectedAt           DateTime?         @map("rejected_at")
-  rejectedByName       String?           @map("rejected_by_name")
+  rejectedAt              DateTime?         @map("rejected_at")
+  rejectedByName          String?           @map("rejected_by_name")
   /// Phiếu làm lại sinh từ phiếu lỗi.
-  redoOfSlipId         String?           @map("redo_of_slip_id") @db.Uuid
-  createdByName        String?           @map("created_by_name")
-  lastPrintedAt        DateTime?         @map("last_printed_at")
-  createdAt            DateTime          @default(now()) @map("created_at")
-  updatedAt            DateTime          @updatedAt @map("updated_at")
+  redoOfSlipId            String?           @map("redo_of_slip_id") @db.Uuid
+  createdByName           String?           @map("created_by_name")
+  lastPrintedAt           DateTime?         @map("last_printed_at")
+  createdAt               DateTime          @default(now()) @map("created_at")
+  updatedAt               DateTime          @updatedAt @map("updated_at")
 
   orders CastingSlipOrder[]
   images CastingSlipImage[]
@@ -1344,7 +1305,7 @@ model CastingSlip {
 model CastingSlipOrder {
   id              String   @id @default(uuid()) @db.Uuid
   slipId          String   @map("slip_id") @db.Uuid
-  intakeOrderId   String   @unique @map("intake_order_id") @db.Uuid
+  orderId         String   @unique @map("order_id") @db.Uuid
   sortOrder       Int      @default(0) @map("sort_order")
   waxWeightGram   Decimal  @map("wax_weight_gram") @db.Decimal(18, 4)
   /// Phôi cắt ra cho đơn này ở lần cắt cây của phiếu đúc (SL / TL) — mốc tính hao hụt cắt. Lưu
@@ -1352,8 +1313,8 @@ model CastingSlipOrder {
   blankQty        Int?     @map("blank_qty")
   blankWeightGram Decimal? @map("blank_weight_gram") @db.Decimal(18, 4)
 
-  slip   CastingSlip @relation(fields: [slipId], references: [id], onDelete: Cascade)
-  intake IntakeOrder @relation(fields: [intakeOrderId], references: [id], onDelete: Restrict)
+  slip  CastingSlip     @relation(fields: [slipId], references: [id], onDelete: Cascade)
+  order ProductionOrder @relation(fields: [orderId], references: [id], onDelete: Restrict)
 
   @@index([slipId, sortOrder])
   @@map("casting_slip_orders")
