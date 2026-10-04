@@ -222,6 +222,7 @@ export class ProductionOrdersService {
       const contains = { contains: search, mode: 'insensitive' as const };
       base.OR = [
         { code: contains },
+        { intakeOrder: { sxCode: contains } },
         { trackingCode: contains },
         { model3dCode: contains },
         { closedBy: contains },
@@ -375,7 +376,7 @@ export class ProductionOrdersService {
           claimedByUserId: true,
           receipt: { select: { id: true } },
           btpMaterial: { select: { sku: true } },
-          intakeOrder: { select: { code: true } },
+          intakeOrder: { select: { code: true, sxCode: true } },
           // Phiếu con kèm các khâu của chúng — vừa đủ để tính trạng thái từng phiếu cho cột
           // "Phiếu con" ở danh sách, không kéo cả chi tiết đơn.
           subTickets: {
@@ -438,6 +439,7 @@ export class ProductionOrdersService {
           leadTime: row.leadTime,
           trackingCode: row.trackingCode,
           intakeOrderCode: row.intakeOrder?.code ?? null,
+          intakeSxCode: row.intakeOrder?.sxCode ?? null,
           closedBy: row.closedBy,
           customerName: row.customerName,
           description: row.description,
@@ -2882,6 +2884,7 @@ function asCreatedDetail(
 ): OrderDetail {
   return {
     ...row,
+    intakeOrder: null,
     btpMaterial: btpMaterial
       ? { id: btpMaterial.id, sku: btpMaterial.sku, name: btpMaterial.name }
       : null,
