@@ -72,6 +72,10 @@ import {
   ticketNetQty,
   KEEPER_CONFIRM_STAGES,
   requireStage,
+  DEFECT_STATUSES,
+  defectStatusOf,
+  skipsStone,
+  STATUS_LABEL,
 } from './order-detail';
 import {
   ACTIVITY,
@@ -951,7 +955,7 @@ export class ProductionSubTicketsService {
       if (
         !dto.stage &&
         stage === ProductionStage.STONE_SETTING &&
-        order.stoneCount === 0
+        skipsStone(order)
       ) {
         stage = nextStageAfter(stage);
       }
@@ -1000,7 +1004,7 @@ export class ProductionSubTicketsService {
       if (
         stage === ProductionStage.STONE_SETTING &&
         stones.length === 0 &&
-        order.stoneCount !== 0
+        !skipsStone(order)
       ) {
         throw new BadRequestException(
           'Khâu Vào đá: chọn đá cấp cho thợ (số viên, TL)',
@@ -1218,7 +1222,7 @@ export class ProductionSubTicketsService {
           where: { subTicketId: ticket.id, status: 'HELD', stageEntryId: null },
           select: { id: true, stoneCount: true, weight: true },
         });
-        if (holds.length === 0 && order.stoneCount !== 0) {
+        if (holds.length === 0 && !skipsStone(order)) {
           throw new BadRequestException(
             `Phiếu ${ticketCode(order, ticket)} chưa được cấp đá — nhờ thủ kho chỉ định lại kèm đá`,
           );
@@ -1270,6 +1274,7 @@ export class ProductionSubTicketsService {
       const nextStatus = deriveOrderStatus({
         status: S.FILING,
         stoneCount: order.stoneCount,
+        stoneSkipped: order.stoneSkipped,
         pendingStage: null,
         claimedByUserId: null,
         subTickets: order.subTickets.map((other) =>
@@ -1894,6 +1899,101 @@ export class ProductionSubTicketsService {
     });
   }
 
+  /**
+   * Thủ kho đánh dấu đơn không có đá (mô tả luồng bước 17): các phiếu đã nguội xong sang thẳng
+   * O Chờ khắc, bỏ khâu Vào đá. Bỏ đánh dấu được khi chưa phiếu nào giao khâu sau Vào đá.
+   */
+  async setStoneSkipped(code: string, skip: boolean, actor: AuthUserPayload) {
+    return this.mutate(code, async (tx, order) => {
+      assertOrderActive(order);
+      if (!IN_STAGE_STATUSES.includes(order.status)) {
+        throw new BadRequestException(
+          `Đơn ${order.code} đang ${STATUS_LABEL[order.status]} — chỉ đánh dấu không có đá khi đơn đang ở các khâu`,
+        );
+      }
+      if (order.stoneSkipped === skip) {
+        throw new BadRequestException(
+          skip
+            ? 'Đơn đã được đánh dấu không có đá'
+            : 'Đơn chưa được đánh dấu không có đá',
+        );
+      }
+      const stone = ProductionStage.STONE_SETTING;
+      if (skip) {
+        const pending =
+          order.pendingStage === stone ||
+          order.subTickets.some((ticket) => ticket.pendingStage === stone);
+        if (pending) {
+          throw new BadRequestException(
+            'Đơn đang có phiếu mở khâu Vào đá — huỷ mở khâu (nhả đá đã cấp) trước khi đánh dấu không có đá',
+          );
+        }
+        if (order.stages.some((entry) => entry.stage === stone)) {
+          throw new BadRequestException(
+            'Đơn đã có phiếu giao khâu Vào đá — không đánh dấu không có đá được',
+          );
+        }
+      } else {
+        if (order.stoneCount === 0) {
+          throw new BadRequestException(
+            'Đơn có 0 viên đá trên 3D nên luôn bỏ khâu Vào đá — sửa số viên đá trên đơn nếu cần vào đá',
+          );
+        }
+        const after = (stage: ProductionStage | null) =>
+          stage != null &&
+          STAGE_ORDER.indexOf(stage) > STAGE_ORDER.indexOf(stone);
+        if (
+          order.stages.some((entry) => after(entry.stage)) ||
+          after(order.pendingStage) ||
+          order.subTickets.some((ticket) => after(ticket.pendingStage))
+        ) {
+          throw new BadRequestException(
+            'Đơn đã có phiếu giao khâu sau Vào đá — không bỏ đánh dấu được',
+          );
+        }
+      }
+
+      const by = actorName(actor);
+      const now = new Date();
+      const status = deriveOrderStatus({ ...order, stoneSkipped: skip });
+      await tx.productionOrder.update({
+        where: { id: order.id },
+        data: {
+          stoneSkipped: skip,
+          stoneSkippedAt: skip ? now : null,
+          stoneSkippedByName: skip ? by : null,
+          status,
+          dataChangedAt: now,
+          statusLogs:
+            status === order.status
+              ? undefined
+              : {
+                  create: {
+                    fromStatus: order.status,
+                    toStatus: status,
+                    note: skip
+                      ? 'Thủ kho đánh dấu đơn không có đá — bỏ khâu Vào đá'
+                      : 'Thủ kho bỏ đánh dấu không có đá — đơn đi lại khâu Vào đá',
+                    changedBy: by,
+                  },
+                },
+        },
+      });
+      await logActivity(
+        tx,
+        order.id,
+        actor,
+        skip ? ACTIVITY.STONE_SKIP : ACTIVITY.STONE_UNSKIP,
+        {
+          orderCode: order.code,
+          stage: stone,
+          before: { stoneSkipped: !skip, status: order.status },
+          after: { stoneSkipped: skip, status },
+        },
+      );
+    });
+  }
+
   /** Tính lại trạng thái đơn sau khi thủ kho xác nhận / gỡ xác nhận (đọc lại từ DB trong tx). */
   private async syncOrderAfterStage(
     tx: Prisma.TransactionClient,
@@ -1909,7 +2009,7 @@ export class ProductionSubTicketsService {
     let fresh = await load();
     if (
       outcomeChanged ||
-      fresh.status === S.DEFECT ||
+      DEFECT_STATUSES.includes(fresh.status) ||
       fresh.status === S.FINISHING
     ) {
       await this.syncOrder(tx, fresh, actor);
@@ -2071,6 +2171,7 @@ export class ProductionSubTicketsService {
         // Vừa giao khâu nên đơn chắc chắn đang ở một khâu, kể cả khi làm lại từ Lỗi.
         status: S.FILING,
         stoneCount: order.stoneCount,
+        stoneSkipped: order.stoneSkipped,
         pendingStage: null,
         claimedByUserId: null,
         subTickets: order.subTickets.map((other) =>
@@ -2283,6 +2384,7 @@ export class ProductionSubTicketsService {
         qty: true,
         outcome: true,
         outcomeQty: true,
+        outcomeStage: true,
         pendingStage: true,
         claimedByUserId: true,
       },
@@ -2321,9 +2423,12 @@ export class ProductionSubTicketsService {
     let status = order.status;
     let note: string | null = null;
     if (done) {
-      status = finishedQty > 0 ? S.FINISHING : S.DEFECT;
+      status = finishedQty > 0 ? S.FINISHING : defectStatusOf(tickets);
       note = `${finished.length}/${tickets.length} phiếu con hoàn thiện — ${finishedQty} sp chờ nhập kho thành phẩm`;
-    } else if (order.status === S.FINISHING || order.status === S.DEFECT) {
+    } else if (
+      order.status === S.FINISHING ||
+      DEFECT_STATUSES.includes(order.status)
+    ) {
       // Gỡ kết cục một phiếu: đơn quay lại trạng thái của phiếu đi xa nhất còn đang chạy.
       status =
         furthestStatus(
@@ -2333,7 +2438,7 @@ export class ProductionSubTicketsService {
               entriesOf(order, ticket.id),
               lastOf(order.stages.filter((entry) => !entry.subTicketId))
                 ?.stage ?? null,
-              order.stoneCount === 0,
+              skipsStone(order),
             ),
           ),
         ) ?? S.CASTING;

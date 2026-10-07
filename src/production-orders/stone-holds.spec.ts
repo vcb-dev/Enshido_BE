@@ -55,6 +55,48 @@ describe('planStoneReturn — QC cân gói đá thừa theo mã', () => {
     expect(byId.get('a1')?.returnedCount).toBe(25);
   });
 
+  it('QC đếm số viên thừa thì dùng đúng số đó, không suy theo TL', () => {
+    const plan = planStoneReturn(
+      holds,
+      [{ materialId: 'B', weight: '0.3', count: 12 }],
+      null,
+    );
+    expect(plan.updates.find((item) => item.id === 'b1')?.returnedCount).toBe(
+      12,
+    );
+    expect(plan.returnedStoneCount).toBe(12);
+  });
+
+  it('cùng mã cấp nhiều lần: số viên đếm chia theo TL thừa từng lần cấp', () => {
+    const plan = planStoneReturn(
+      holds,
+      [{ materialId: 'A', weight: '1.5', count: 70 }],
+      null,
+    );
+    const byId = new Map(plan.updates.map((item) => [item.id, item]));
+    // a2 thừa 1 g / 1,5 g, a1 thừa 0,5 g / 1,5 g — a2 đầy ở 50 viên, phần dư dồn sang a1.
+    expect(byId.get('a2')?.returnedCount).toBe(47);
+    expect(byId.get('a1')?.returnedCount).toBe(23);
+    expect(plan.returnedStoneCount).toBe(70);
+  });
+
+  it('chặn số viên thừa quá số cấp, hoặc có viên thừa mà không cân gói', () => {
+    expect(() =>
+      planStoneReturn(
+        holds,
+        [{ materialId: 'B', weight: '0.1', count: 21 }],
+        null,
+      ),
+    ).toThrow(BadRequestException);
+    expect(() =>
+      planStoneReturn(
+        holds,
+        [{ materialId: 'B', weight: '0', count: 3 }],
+        null,
+      ),
+    ).toThrow(BadRequestException);
+  });
+
   it('chặn gói thừa nặng hơn TL đã cấp, mã không cấp, mã nhập hai lần', () => {
     expect(() =>
       planStoneReturn(holds, [{ materialId: 'B', weight: '0.5' }], null),

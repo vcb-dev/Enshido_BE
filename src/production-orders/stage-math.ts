@@ -148,6 +148,48 @@ export function splitReturnedWeight(
 }
 
 /**
+ * Chia số viên thừa QC đếm của một mã về các dòng cấp: theo tỷ lệ TL gói thừa của từng dòng
+ * (dòng cuối nhận phần dư), không dòng nào quá số viên đã cấp. Tổng luôn bằng `count`.
+ */
+export function splitReturnedCount(
+  holds: readonly {
+    id: string;
+    stoneCount: number;
+    returnedWeight: Prisma.Decimal;
+  }[],
+  count: number,
+): Map<string, number> {
+  const totalWeight = holds.reduce(
+    (sum, hold) => sum.add(hold.returnedWeight),
+    new Prisma.Decimal(0),
+  );
+  const back = new Map<string, number>();
+  let left = Math.max(0, count);
+  holds.forEach((hold, index) => {
+    const share =
+      index === holds.length - 1 || totalWeight.lte(0)
+        ? left
+        : new Prisma.Decimal(count)
+            .mul(hold.returnedWeight)
+            .div(totalWeight)
+            .toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP)
+            .toNumber();
+    const take = Math.min(left, share, hold.stoneCount);
+    back.set(hold.id, take);
+    left -= take;
+  });
+  // Dòng nào đã đầy thì phần dư dồn sang dòng còn chỗ — tổng không đổi.
+  for (const hold of holds) {
+    if (left <= 0) break;
+    const room = hold.stoneCount - (back.get(hold.id) ?? 0);
+    const extra = Math.min(room, left);
+    back.set(hold.id, (back.get(hold.id) ?? 0) + extra);
+    left -= extra;
+  }
+  return back;
+}
+
+/**
  * Đá thừa của một dòng cấp quy theo tỷ lệ cân gói — không ai đếm từng viên:
  * viên thừa = viên cấp × TL thừa / TL cấp (làm tròn). Dòng cũ không cân thì dùng số viên QC đếm.
  */
@@ -182,8 +224,23 @@ export function stoneUsedQty(
   },
   countUnit: boolean,
 ) {
-  const used =
-    hold.weight && hold.weight.gt(0) && hold.returnedWeight != null
+  // Mã tính theo viên: số xuất = số viên thực dùng (QC đếm hoặc suy theo TL lúc nhận lại).
+  // Trả lại nguyên gói thì không dùng viên nào, dù số viên đếm lệch.
+  const allBack =
+    hold.weight != null &&
+    hold.weight.gt(0) &&
+    hold.returnedWeight != null &&
+    hold.returnedWeight.gte(hold.weight);
+  const countBased =
+    countUnit &&
+    !allBack &&
+    hold.stoneCount != null &&
+    hold.returnedCount != null;
+  const used = countBased
+    ? hold.qty
+        .mul(hold.stoneCount! - Math.min(hold.returnedCount!, hold.stoneCount!))
+        .div(hold.stoneCount!)
+    : hold.weight && hold.weight.gt(0) && hold.returnedWeight != null
       ? hold.qty.mul(hold.weight.sub(hold.returnedWeight)).div(hold.weight)
       : hold.stoneCount
         ? hold.qty

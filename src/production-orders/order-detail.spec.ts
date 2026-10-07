@@ -15,7 +15,9 @@ import {
   outcomeStatus,
   recentFirst,
   deriveOrderStatus,
+  defectStatusOf,
   furthestStatus,
+  skipsStone,
   subTicketAvailable,
   subTicketCode,
   subTicketState,
@@ -696,6 +698,53 @@ describe('deriveOrderStatus', () => {
         stages: [],
       }),
     ).toBe('PLATING');
+  });
+
+  it('thủ kho đánh dấu không có đá: nguội xong sang thẳng Chờ khắc', () => {
+    const t1 = ticket({ id: 't1' });
+    const input = {
+      ...base,
+      status: ProductionStatus.WAIT_STONE,
+      stoneCount: 4,
+      subTickets: [t1],
+      stages: [entry({ stage: 'FILING', subTicketId: 't1', returnedAt: DONE })],
+    };
+    expect(deriveOrderStatus(input)).toBe('WAIT_STONE');
+    expect(deriveOrderStatus({ ...input, stoneSkipped: true })).toBe(
+      'WAIT_ENGRAVING',
+    );
+  });
+});
+
+describe('skipsStone', () => {
+  it('bỏ Vào đá khi 0 viên trên 3D hoặc thủ kho đánh dấu', () => {
+    expect(skipsStone({ stoneCount: 0 })).toBe(true);
+    expect(skipsStone({ stoneCount: 3, stoneSkipped: true })).toBe(true);
+    expect(skipsStone({ stoneCount: null, stoneSkipped: true })).toBe(true);
+    expect(skipsStone({ stoneCount: 3, stoneSkipped: false })).toBe(false);
+    expect(skipsStone({ stoneCount: null })).toBe(false);
+  });
+});
+
+describe('defectStatusOf — đơn lỗi hết', () => {
+  it('cùng lỗi ở Nguội → Lỗi nguội, cùng ở Vào đá → Lỗi vào đá', () => {
+    expect(
+      defectStatusOf([{ outcomeStage: 'FILING' }, { outcomeStage: 'FILING' }]),
+    ).toBe('FILING_DEFECT');
+    expect(defectStatusOf([{ outcomeStage: 'STONE_SETTING' }])).toBe(
+      'STONE_DEFECT',
+    );
+  });
+
+  it('lỗi lẫn khâu hoặc khâu khác → Sản xuất lỗi', () => {
+    expect(
+      defectStatusOf([
+        { outcomeStage: 'FILING' },
+        { outcomeStage: 'STONE_SETTING' },
+      ]),
+    ).toBe('DEFECT');
+    expect(defectStatusOf([{ outcomeStage: 'POLISHING' }])).toBe('DEFECT');
+    expect(defectStatusOf([{ outcomeStage: null }])).toBe('DEFECT');
   });
 });
 

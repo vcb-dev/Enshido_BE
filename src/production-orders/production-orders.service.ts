@@ -54,6 +54,9 @@ import {
   entriesOf,
   IN_STAGE_STATUSES,
   deriveOrderStatus,
+  DEFECT_STATUSES,
+  defectStatusOf,
+  skipsStone,
   earlyReturnedOf,
   KEEPER_CONFIRM_STAGES,
   LAST_STAGE,
@@ -132,6 +135,7 @@ const splitListSelect = {
   id: true,
   status: true,
   stoneCount: true,
+  stoneSkipped: true,
   subTickets: {
     select: {
       id: true,
@@ -352,6 +356,7 @@ export class ProductionOrdersService {
           code: true,
           status: true,
           stoneCount: true,
+          stoneSkipped: true,
           source: true,
           requestType: true,
           qty: true,
@@ -476,7 +481,7 @@ export class ProductionOrdersService {
               ticket,
               row.stages.filter((entry) => entry.subTicketId === ticket.id),
               parentEntries[parentEntries.length - 1]?.stage ?? null,
-              row.stoneCount === 0,
+              skipsStone(row),
               row.subTickets.length,
             ),
           ),
@@ -1540,7 +1545,7 @@ export class ProductionOrdersService {
     }
     // Báo Đúc lần đầu hoặc đúc lại sau lỗi thì đơn chuyển sang Đúc.
     const toCasting = (
-      [S.NEW, S.REDO_3D, S.DEFECT] as ProductionStatus[]
+      [S.NEW, S.REDO_3D, ...DEFECT_STATUSES] as ProductionStatus[]
     ).includes(order.status);
 
     const updated = await this.prisma.productionOrder.update({
@@ -1976,9 +1981,15 @@ export class ProductionOrdersService {
       });
     });
     await this.cloudinary.destroy(replacedImages);
-    // Nguội / Vào đá: thủ kho chỉ kiểm tra khi QC báo hàng lỗi. Không có hàng lỗi thì tự xác
-    // nhận ngay — nhập hàng đạt vào kho BTP, nguyên liệu thừa vào kho NVL như thủ kho bấm.
-    if (needsKeeper && (defectQty ?? 0) === 0 && returnedQty > 0) {
+    // Nguội: thủ kho chỉ kiểm tra khi QC báo hàng lỗi. Không có hàng lỗi thì tự xác nhận ngay —
+    // nhập hàng đạt vào kho BTP, nguyên liệu thừa vào kho NVL như thủ kho bấm. Vào đá luôn chờ
+    // thủ kho nhận hàng + túi đá thừa rồi bấm xác nhận (mô tả luồng bước 18).
+    if (
+      needsKeeper &&
+      entry.stage === ProductionStage.FILING &&
+      (defectQty ?? 0) === 0 &&
+      returnedQty > 0
+    ) {
       try {
         return await this.subTickets.confirmStage(
           order.code,
@@ -1994,9 +2005,12 @@ export class ProductionOrdersService {
       }
     }
     // QC nhận lại xong thì phiếu sang "Chờ" khâu kế (Nguội → L Chờ vào đá…); đơn theo phiếu xa nhất.
-    // Đơn không chia phiếu mà lỗi hết ở một khâu thì cả đơn Sản xuất lỗi.
+    // Đơn không chia phiếu mà lỗi hết ở một khâu thì cả đơn lỗi: Lỗi nguội / Lỗi vào đá theo
+    // khâu, khâu khác là Sản xuất lỗi.
     const parentDefect = closesAsDefect && !ticket;
-    const nextStatus = parentDefect ? S.DEFECT : deriveOrderStatus(updated);
+    const nextStatus = parentDefect
+      ? defectStatusOf([{ outcomeStage: entry.stage }])
+      : deriveOrderStatus(updated);
     if (nextStatus === updated.status) return toDetail(updated);
     return toDetail(
       await this.prisma.productionOrder.update({

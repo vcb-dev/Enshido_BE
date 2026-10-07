@@ -4,6 +4,7 @@ import type { InventoryService } from '../inventory/inventory.service';
 import { ctStr, decStr } from '../util/money';
 import {
   shrinkHold,
+  splitReturnedCount,
   splitReturnedWeight,
   stoneReturnedCount,
   stoneUsedByHold,
@@ -95,7 +96,11 @@ export function planEarlyReturn<
  */
 export function planStoneReturn(
   holds: readonly HoldForReturn[],
-  returnedStones: readonly { materialId: string; weight: string }[],
+  returnedStones: readonly {
+    materialId: string;
+    weight: string;
+    count?: number | null;
+  }[],
   legacyReturnedCount: number | null,
 ) {
   const weighed = holds.filter(
@@ -104,6 +109,8 @@ export function planStoneReturn(
   const legacy = holds.filter((hold) => !weighed.includes(hold));
   const seen = new Set<string>();
   const back = new Map<string, Prisma.Decimal>();
+  /** Số viên thừa QC đếm, đã chia về từng dòng cấp của mã. */
+  const backCount = new Map<string, number>();
   for (const line of returnedStones) {
     if (seen.has(line.materialId)) {
       throw new BadRequestException('Mỗi mã đá thừa chỉ nhập một dòng');
@@ -130,6 +137,35 @@ export function planStoneReturn(
       weight,
     );
     for (const [id, value] of split) back.set(id, value);
+    if (line.count != null) {
+      const counted = group.filter((hold) => hold.stoneCount != null);
+      const total = counted.reduce((sum, hold) => sum + hold.stoneCount!, 0);
+      if (counted.length === 0) {
+        throw new BadRequestException(
+          `${group[0].material.name}: đá cấp theo ct, không có số viên — chỉ nhập TL gói thừa`,
+        );
+      }
+      if (line.count > total) {
+        throw new BadRequestException(
+          `${group[0].material.name}: số viên thừa ${line.count} nhiều hơn số viên đã cấp ${total}`,
+        );
+      }
+      if (line.count > 0 && weight.lte(0)) {
+        throw new BadRequestException(
+          `${group[0].material.name}: có viên thừa thì phải cân TL gói thừa`,
+        );
+      }
+      for (const [id, value] of splitReturnedCount(
+        counted.map((hold) => ({
+          id: hold.id,
+          stoneCount: hold.stoneCount!,
+          returnedWeight: split.get(hold.id) ?? new Prisma.Decimal(0),
+        })),
+        line.count,
+      )) {
+        backCount.set(id, value);
+      }
+    }
   }
 
   const legacyCount = legacyReturnedCount ?? 0;
@@ -155,7 +191,9 @@ export function planStoneReturn(
       return {
         id: hold.id,
         returnedWeight,
-        returnedCount: stoneReturnedCount(hold, returnedWeight),
+        // QC đếm số viên thừa thì lấy số đó; không thì suy theo tỷ lệ TL gói thừa.
+        returnedCount:
+          backCount.get(hold.id) ?? stoneReturnedCount(hold, returnedWeight),
       };
     }
     const count = hold.stoneCount ?? 0;
