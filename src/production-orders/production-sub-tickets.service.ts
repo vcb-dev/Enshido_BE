@@ -99,6 +99,7 @@ import {
 import {
   assertStoneFree,
   isCountUnit,
+  stoneQtyOf,
   packWeightOf,
   planEarlyReturn,
 } from './stone-holds';
@@ -3103,32 +3104,6 @@ async function assertCanTakeStage(
       `Bạn chưa được giao khâu ${STAGE_LABEL[stage]} — nhờ admin thêm khâu ở màn Nhân sự`,
     );
   }
-}
-
-/**
- * Số lượng đá theo đơn vị của mã: mã tính theo viên thì bằng số viên theo nhãn gói; mã tính
- * theo ct / gram suy từ TL gói (g) — 1 ct = 0,2 g.
- */
-function stoneQtyOf(
-  material: { name: string; unit: { name: string } },
-  stoneCount: number | null | undefined,
-  weight: Prisma.Decimal,
-) {
-  const unit = material.unit.name.trim().toLowerCase();
-  if (isCountUnit(unit)) {
-    // Tồn của mã trừ theo viên nên phải biết số viên — mã ct / g thì chỉ cần TL gói.
-    if (!stoneCount) {
-      throw new BadRequestException(
-        `${material.name} tính tồn theo viên — nhập số viên theo nhãn gói`,
-      );
-    }
-    return new Prisma.Decimal(stoneCount);
-  }
-  if (unit === 'ct') return weight.div(0.2).toDecimalPlaces(4);
-  if (['g', 'gr', 'gram', 'grams', 'gam'].includes(unit)) return weight;
-  throw new BadRequestException(
-    `${material.name} tính theo ${material.unit.name} — chưa hỗ trợ cấp đá theo đơn vị này`,
-  );
 }
 
 /**

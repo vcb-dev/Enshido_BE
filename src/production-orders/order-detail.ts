@@ -992,12 +992,14 @@ export function toDetail(order: OrderDetail) {
               order.castingSlipLine?.slip.restWeightGram != null
                 ? decStr(order.castingSlipLine.slip.restWeightGram)
                 : null,
-            restImages: (order.castingSlipLine?.slip.images ?? []).map((image) => ({
-              url: image.url,
-              publicId: image.publicId,
-              width: image.width,
-              height: image.height,
-            })),
+            restImages: (order.castingSlipLine?.slip.images ?? []).map(
+              (image) => ({
+                url: image.url,
+                publicId: image.publicId,
+                width: image.width,
+                height: image.height,
+              }),
+            ),
             ...blankLeftOf(order),
           }
         : null,
@@ -1565,6 +1567,7 @@ export function toMaterialRequest(
       warehouseName: request.material.warehouse.shortName,
     },
     requestedQty: decStr(request.requestedQty),
+    requestedWeight: dec(request.requestedWeight),
     note: request.note,
     requestedByUserId: request.requestedByUserId,
     requestedByName: request.requestedByName,

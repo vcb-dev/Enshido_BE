@@ -42,7 +42,7 @@ import {
   toMaterialRequest,
   blankLimitFor,
 } from './order-detail';
-import { assertStoneFree, packWeightOf } from './stone-holds';
+import { assertStoneFree, normalizeStoneLine } from './stone-holds';
 
 const BTP_WAREHOUSE_CODE = 'btp-cho-vao-da';
 const NVL_WAREHOUSE_CODE = 'nvl-chinh';
@@ -84,7 +84,6 @@ function assertStageWarehouse(stage: ProductionStage, warehouseCode: string) {
 }
 
 const STONE_UNITS = new Set(['viên', 'vien', 'ct']);
-const COUNT_UNITS = new Set(['viên', 'vien']);
 const GRAM_UNITS = new Set(['g', 'gr', 'gram', 'grams', 'gam']);
 const METALS: MetalKind[] = [
   MetalKind.SILVER,
@@ -197,7 +196,18 @@ export class ProductionMaterialRequestsService {
     actor: AuthUserPayload,
   ) {
     const material = await this.requestable(dto.materialId);
-    const qty = positive(dto.qty, 'Số lượng xin xuất phải lớn hơn 0');
+    const kind = suggestKind(material);
+    // Đá: mã ct / g chỉ cần TL (số lượng suy từ TL), mã viên bắt buộc cả số viên lẫn TL.
+    const stone =
+      kind === MaterialRequestKind.STONE
+        ? normalizeStoneLine(material, {
+            qty: decimalOrNull(dto.qty),
+            weight: decimalOrNull(dto.weight),
+          })
+        : null;
+    const qty =
+      stone?.qty ??
+      positive(dto.qty ?? '0', 'Số lượng xin xuất phải lớn hơn 0');
     return this.mutate(code, async (tx, order) => {
       const { entry, label } = openEntryOf(order, no);
       if (entry.submittedAt) {
@@ -211,7 +221,15 @@ export class ProductionMaterialRequestsService {
         );
       }
       assertStageWarehouse(entry.stage, material.warehouse.code);
-      const kind = suggestKind(material);
+      // Thợ Vào đá chỉ xin thêm đá — BTP đã nguội xuất lúc giao khâu, không xin lại.
+      if (
+        entry.stage === ProductionStage.STONE_SETTING &&
+        kind !== MaterialRequestKind.STONE
+      ) {
+        throw new BadRequestException(
+          `Khâu ${STAGE_LABEL[ProductionStage.STONE_SETTING]} chỉ xin xuất đá`,
+        );
+      }
       const created = await tx.productionMaterialRequest.create({
         data: {
           orderId: order.id,
@@ -220,6 +238,7 @@ export class ProductionMaterialRequestsService {
           materialId: material.id,
           kind,
           requestedQty: qty,
+          requestedWeight: stone?.weight ?? null,
           note: dto.note?.trim() || null,
           requestedByUserId: actor.id,
           requestedByName: actorName(actor),
@@ -234,6 +253,7 @@ export class ProductionMaterialRequestsService {
           sku: material.sku ?? material.name,
           name: material.name,
           qty,
+          weight: stone?.weight ?? null,
           unit: material.unit.name,
         },
         note: dto.note,
@@ -274,7 +294,8 @@ export class ProductionMaterialRequestsService {
     actor: AuthUserPayload,
   ) {
     const found = await this.requireRequest(id);
-    const qty = positive(dto.qty, 'Số lượng xuất phải lớn hơn 0');
+    // Đá tính theo ct / g chỉ gửi TL — số lượng suy ở checkLine; mã khác kiểm ở đó.
+    const qty = decimalOrNull(dto.qty) ?? new Prisma.Decimal(0);
     const detail = await this.mutate(found.order.code, async (tx, order) => {
       const request = pendingOf(order, id);
       const entry = order.stages.find(
@@ -323,7 +344,7 @@ export class ProductionMaterialRequestsService {
         data: {
           status: MaterialRequestStatus.ISSUED,
           kind: dto.kind,
-          issuedQty: qty,
+          issuedQty: issued.qty,
           issuedWeight: issued.weight,
           issuedStoneCount: issued.stoneCount,
           outboundId: issued.outboundId,
@@ -339,7 +360,7 @@ export class ProductionMaterialRequestsService {
         before: requestLog(request),
         after: {
           kind: dto.kind,
-          qty,
+          qty: issued.qty,
           unit: request.material.unit.name,
           weight: issued.weight,
           stoneCount: issued.stoneCount,
@@ -370,7 +391,7 @@ export class ProductionMaterialRequestsService {
     }
     const warehouses = new Set<string>();
     for (const line of lines) {
-      const qty = positive(line.qty, 'Số lượng xuất phải lớn hơn 0');
+      const qty = decimalOrNull(line.qty) ?? new Prisma.Decimal(0);
       const issued = await this.issueStock(tx, order, entry, actor, {
         materialId: line.materialId,
         kind: line.kind,
@@ -389,10 +410,12 @@ export class ProductionMaterialRequestsService {
           status: MaterialRequestStatus.ISSUED,
           kind: line.kind,
           atHandover: true,
-          requestedQty: qty,
+          requestedQty: issued.qty,
+          requestedWeight:
+            line.kind === MaterialRequestKind.STONE ? issued.weight : null,
           requestedByUserId: actor.id,
           requestedByName: actorName(actor),
-          issuedQty: qty,
+          issuedQty: issued.qty,
           issuedWeight: issued.weight,
           issuedStoneCount: issued.stoneCount,
           outboundId: issued.outboundId,
@@ -421,7 +444,8 @@ export class ProductionMaterialRequestsService {
     actor: AuthUserPayload,
     line: IssueLine,
   ) {
-    const { material, stoneCount } = await this.checkLine(
+    // Đá: qty / weight đã chuẩn hoá theo đơn vị của mã (ct / g suy từ TL, viên kèm TL).
+    const { material, stoneCount, qty, weight } = await this.checkLine(
       tx,
       order,
       entry,
@@ -435,21 +459,22 @@ export class ProductionMaterialRequestsService {
     await tx.$executeRaw`SELECT set_config('lock_timeout', '2000', true)`;
     // Đá xuất ngay (phiếu mẹ) không được lấy vào phần đang giữ chỗ cho phiếu Vào đá khác.
     if (line.kind === MaterialRequestKind.STONE) {
-      await assertStoneFree(tx, this.inventory, material, line.qty);
+      await assertStoneFree(tx, this.inventory, material, qty);
     }
     const outbound = await this.inventory.issueStockForOrder(tx, {
       orderId: order.id,
       orderCode: order.code,
       material,
-      qty: line.qty,
-      gramQty: line.weight,
+      qty,
+      gramQty: weight,
       issuedAt: todayVn(),
       issuedBy: actorName(actor),
       note: `Xuất cho phiếu ${label} · khâu ${STAGE_LABEL[entry.stage]} (${line.note})`,
     });
     return {
       outboundId: outbound?.id ?? null,
-      weight: line.weight,
+      qty,
+      weight,
       stoneCount,
       warehouseCode: material.warehouse.code,
     };
@@ -467,23 +492,28 @@ export class ProductionMaterialRequestsService {
     requestId: string,
     line: IssueLine,
   ) {
-    const weight = packWeightOf(line.weight ? decStr(line.weight) : null);
-    const { material, stoneCount } = await this.checkLine(tx, order, entry, {
-      ...line,
-      weight,
-    });
+    const { material, stoneCount, qty, weight } = await this.checkLine(
+      tx,
+      order,
+      entry,
+      line,
+    );
+    if (!weight) {
+      // checkLine đã bắt TL đá; chỗ này chỉ để thu hẹp kiểu.
+      throw new BadRequestException('Cân cả gói đá và nhập TL gói (ct)');
+    }
     if (material.warehouse.code !== NVL_WAREHOUSE_CODE) {
       throw new BadRequestException(
         'Đá cấp cho khâu Vào đá phải lấy ở kho NVL chính',
       );
     }
     await tx.$executeRaw`SELECT set_config('lock_timeout', '2000', true)`;
-    await assertStoneFree(tx, this.inventory, material, line.qty);
+    await assertStoneFree(tx, this.inventory, material, qty);
     // Phía kho: phiếu xuất nháp (chưa trừ tồn, trừ khả dụng). Phía sản xuất: chi tiết cấp đá.
     const no = ticketNoOf(order, entry.subTicketId);
     const draft = await this.inventory.createOutboundDraft(tx, {
       material,
-      qty: line.qty,
+      qty,
       gramQty: weight,
       productionOrderId: order.id,
       note: `Đá phiếu ${no != null ? subTicketCode(order.code, no, order.subTickets.length) : order.code} · khâu Vào đá — ${line.note}`,
@@ -497,13 +527,13 @@ export class ProductionMaterialRequestsService {
         requestId,
         draftId: draft.id,
         stageEntryId: entry.id,
-        qty: line.qty,
+        qty,
         stoneCount,
         weight,
         createdByName: actorName(actor),
       },
     });
-    return { weight, stoneCount };
+    return { qty, weight, stoneCount };
   }
 
   /** Kiểm tra mã theo kho của khâu, giới hạn phôi, số viên đá — dùng chung cho xuất và giữ chỗ. */
@@ -586,20 +616,25 @@ export class ProductionMaterialRequestsService {
         );
       }
     }
-    // Đá: số viên không bắt buộc (đá tấm / nhỏ cấp theo túi chỉ cân TL). Mã tính theo viên thì
-    // số lượng xuất chính là số viên.
-    let stoneCount: number | null = null;
+    // Đá: mã tính theo ct / g chỉ nhập TL (số lượng suy từ TL), mã tính theo viên nhập cả số
+    // viên lẫn TL — mọi đường cấp / xuất / giữ chỗ đều qua đây.
     if (line.kind === MaterialRequestKind.STONE) {
-      if (line.stoneCount != null) {
-        stoneCount = line.stoneCount;
-      } else if (
-        COUNT_UNITS.has(unitKey(material.unit.name)) &&
-        line.qty.isInteger()
-      ) {
-        stoneCount = line.qty.toNumber();
-      }
+      const stone = normalizeStoneLine(material, {
+        qty: line.qty,
+        weight: line.weight,
+        stoneCount: line.stoneCount,
+      });
+      return { material, ...stone };
     }
-    return { material, stoneCount };
+    if (line.qty.lte(0)) {
+      throw new BadRequestException('Số lượng xuất phải lớn hơn 0');
+    }
+    return {
+      material,
+      stoneCount: null as number | null,
+      qty: line.qty,
+      weight: line.weight,
+    };
   }
 
   async reject(
@@ -803,6 +838,7 @@ function requestLog(request: OrderDetail['materialRequests'][number]) {
     sku: request.material.sku ?? request.material.name,
     name: request.material.name,
     qty: request.requestedQty,
+    weight: request.requestedWeight,
     unit: request.material.unit.name,
     requestedByName: request.requestedByName,
   };

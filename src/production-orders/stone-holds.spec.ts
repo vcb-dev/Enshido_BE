@@ -1,6 +1,10 @@
 import { BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { planEarlyReturn, planStoneReturn } from './stone-holds';
+import {
+  normalizeStoneLine,
+  planEarlyReturn,
+  planStoneReturn,
+} from './stone-holds';
 
 const dec = (value: string) => new Prisma.Decimal(value);
 
@@ -190,5 +194,51 @@ describe('planStoneReturn — đá không đếm viên', () => {
     );
     expect(plan.returnedStoneCount).toBeNull();
     expect(plan.updates[0].returnedWeight?.toString()).toBe('0.5');
+  });
+});
+
+describe('normalizeStoneLine — ct / g chỉ TL, viên cả số viên lẫn TL', () => {
+  const ct = { name: 'MROW0.8', unit: { name: 'ct' } };
+  const gram = { name: 'Đá g', unit: { name: 'g' } };
+  const piece = { name: 'MROW4.0', unit: { name: 'viên' } };
+
+  it('mã ct: số lượng suy từ TL (1 ct = 0,2 g), bỏ qua số lượng client gửi', () => {
+    const line = normalizeStoneLine(ct, { qty: dec('99'), weight: dec('2') });
+    expect(line.qty.toString()).toBe('10');
+    expect(line.weight.toString()).toBe('2');
+    expect(line.stoneCount).toBeNull();
+  });
+
+  it('mã gram: số lượng bằng TL', () => {
+    expect(
+      normalizeStoneLine(gram, { weight: dec('1.5') }).qty.toString(),
+    ).toBe('1.5');
+  });
+
+  it('mã viên: số lượng là số viên, bắt buộc kèm TL', () => {
+    const line = normalizeStoneLine(piece, {
+      qty: dec('20'),
+      weight: dec('1'),
+    });
+    expect(line.qty.toString()).toBe('20');
+    expect(line.stoneCount).toBe(20);
+    expect(() => normalizeStoneLine(piece, { qty: dec('20') })).toThrow(
+      BadRequestException,
+    );
+    expect(() =>
+      normalizeStoneLine(piece, { qty: dec('2.5'), weight: dec('1') }),
+    ).toThrow(BadRequestException);
+    expect(() => normalizeStoneLine(piece, { weight: dec('1') })).toThrow(
+      BadRequestException,
+    );
+  });
+
+  it('mọi mã đá đều bắt TL', () => {
+    expect(() => normalizeStoneLine(ct, { qty: dec('5') })).toThrow(
+      BadRequestException,
+    );
+    expect(() => normalizeStoneLine(ct, { weight: dec('0') })).toThrow(
+      BadRequestException,
+    );
   });
 });

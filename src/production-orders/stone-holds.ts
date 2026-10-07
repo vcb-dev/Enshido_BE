@@ -217,6 +217,67 @@ export function planStoneReturn(
   };
 }
 
+/**
+ * Số lượng đá theo đơn vị của mã: mã tính theo viên thì bằng số viên theo nhãn gói; mã tính
+ * theo ct / gram suy từ TL gói (g) — 1 ct = 0,2 g.
+ */
+export function stoneQtyOf(
+  material: { name: string; unit: { name: string } },
+  stoneCount: number | null | undefined,
+  weight: Prisma.Decimal,
+) {
+  const unit = material.unit.name.trim().toLowerCase();
+  if (isCountUnit(unit)) {
+    // Tồn của mã trừ theo viên nên phải biết số viên — mã ct / g thì chỉ cần TL gói.
+    if (!stoneCount) {
+      throw new BadRequestException(
+        `${material.name} tính tồn theo viên — nhập số viên theo nhãn gói`,
+      );
+    }
+    return new Prisma.Decimal(stoneCount);
+  }
+  if (unit === 'ct') return weight.div(0.2).toDecimalPlaces(4);
+  if (['g', 'gr', 'gram', 'grams', 'gam'].includes(unit)) return weight;
+  throw new BadRequestException(
+    `${material.name} tính theo ${material.unit.name} — chưa hỗ trợ cấp đá theo đơn vị này`,
+  );
+}
+
+/**
+ * Chuẩn hoá một dòng đá cấp / xuất / xin theo đơn vị của mã (mọi đường dùng chung):
+ * - mã tính theo ct / g: chỉ cần TL (g) — số lượng suy từ TL, bỏ qua số lượng client gửi;
+ * - mã tính theo viên: bắt buộc cả số viên (số lượng) lẫn TL; số viên theo nhãn gói là số lượng.
+ */
+export function normalizeStoneLine(
+  material: { name: string; unit: { name: string } },
+  input: {
+    qty?: Prisma.Decimal | null;
+    weight?: Prisma.Decimal | null;
+    stoneCount?: number | null;
+  },
+) {
+  const weight = input.weight ?? null;
+  if (!weight || weight.lte(0)) {
+    throw new BadRequestException(
+      `${material.name}: đá phải cân TL (ct) — mã tính theo viên nhập cả số viên lẫn TL, mã ct / g chỉ nhập TL`,
+    );
+  }
+  if (isCountUnit(material.unit.name)) {
+    const qty = input.qty ?? null;
+    if (!qty || qty.lte(0) || !qty.isInteger()) {
+      throw new BadRequestException(
+        `${material.name} tính theo viên — nhập số viên (số nguyên lớn hơn 0)`,
+      );
+    }
+    return { qty, weight, stoneCount: qty.toNumber() };
+  }
+  return {
+    qty: stoneQtyOf(material, null, weight),
+    weight,
+    stoneCount: input.stoneCount ?? null,
+  };
+}
+
 /** TL gói đá lúc cấp — bắt buộc, là mốc chia tỷ lệ khi QC cân gói thừa. */
 export function packWeightOf(weight: string | null | undefined) {
   const value = weight ? new Prisma.Decimal(weight) : null;

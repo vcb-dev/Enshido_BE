@@ -972,6 +972,8 @@ model ProductionMaterialRequest {
   kind              MaterialRequestKind
   /// Số thợ xin, theo đơn vị của mã.
   requestedQty      Decimal               @map("requested_qty") @db.Decimal(18, 4)
+  /// Đá: TL thợ xin (g) — mã tính theo ct / g chỉ có số này, mã tính theo viên có cả số viên lẫn TL.
+  requestedWeight   Decimal?              @map("requested_weight") @db.Decimal(18, 4)
   note              String?
   requestedByUserId String?               @map("requested_by_user_id") @db.Uuid
   requestedByName   String                @map("requested_by_name")
