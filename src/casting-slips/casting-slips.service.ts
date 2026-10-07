@@ -9,6 +9,7 @@ import {
   CastingSlipImageKind,
   CastingSlipStatus,
   Prisma,
+  ProductionImageKind,
   ProductionStatus,
   RoleCode,
 } from '@prisma/client';
@@ -967,6 +968,8 @@ export class CastingSlipsService {
         where: { id },
         data: { restMaterialId, restInboundId },
       });
+    }
+    if (restImages.length) {
       await tx.castingSlipImage.createMany({
         data: restImages.map((image) => ({
           ...image,
@@ -1273,21 +1276,37 @@ const awaitingCutWhere: Prisma.CastingSlipWhereInput = {
   },
 };
 
-const slipOrderInclude = {
+const slipOrderSelect = {
+  id: true,
+  code: true,
+  intakeCode: true,
+  sxCode: true,
+  productName: true,
+  trackingCode: true,
+  qty: true,
+  status: true,
+  cutAt: true,
+} as const;
+
+const slipOrderListInclude = {
+  orders: {
+    orderBy: { sortOrder: 'asc' as const },
+    include: { order: { select: slipOrderSelect } },
+  },
+} as const;
+
+const slipOrderDetailInclude = {
   orders: {
     orderBy: { sortOrder: 'asc' as const },
     include: {
       order: {
         select: {
-          id: true,
-          code: true,
-          intakeCode: true,
-          sxCode: true,
-          productName: true,
-          trackingCode: true,
-          qty: true,
-          status: true,
-          cutAt: true,
+          ...slipOrderSelect,
+          images: {
+            where: { kind: ProductionImageKind.CUT_BLANK },
+            orderBy: { sortOrder: 'asc' as const },
+            select: { url: true, publicId: true, width: true, height: true },
+          },
         },
       },
     },
@@ -1295,17 +1314,16 @@ const slipOrderInclude = {
 } as const;
 
 const slipInclude = {
-  ...slipOrderInclude,
+  ...slipOrderDetailInclude,
   images: { orderBy: { sortOrder: 'asc' as const } },
 } satisfies Prisma.CastingSlipInclude;
 
-/** Danh sách: ảnh phiếu gốc (xem nhanh), phiếu làm lại không kéo ảnh. */
+/** Danh sách: không kéo ảnh phiếu / ảnh phôi — chỉ tải khi mở chi tiết. */
 const slipListInclude = {
-  ...slipOrderInclude,
-  images: { orderBy: { sortOrder: 'asc' as const } },
+  ...slipOrderListInclude,
   redos: {
     orderBy: { createdAt: 'asc' as const },
-    include: slipOrderInclude,
+    include: slipOrderListInclude,
   },
 } satisfies Prisma.CastingSlipInclude;
 
@@ -1337,6 +1355,15 @@ function waxWeightOf(order: {
 
 function dec(value: Prisma.Decimal | null | undefined) {
   return value != null ? value.toString() : null;
+}
+
+function blankWeightTotal(
+  orders: Array<{ blankWeightGram: Prisma.Decimal | null }>,
+) {
+  return orders.reduce(
+    (sum, line) => sum.add(line.blankWeightGram ?? 0),
+    new Prisma.Decimal(0),
+  );
 }
 
 /** 1 g sáp = 24 g bạc — ước tính S999 / Hội / S925. */
@@ -1468,6 +1495,10 @@ function slipRowBase(row: SlipRowBaseInput) {
       productionOrderCode: line.order.cutAt ? line.order.code : null,
       blankQty: line.blankQty,
       blankWeightGram: dec(line.blankWeightGram),
+      blankImages:
+        'images' in line.order && Array.isArray(line.order.images)
+          ? line.order.images.map(toImage)
+          : [],
       waxWeightGram: line.waxWeightGram.toString(),
     })),
     estimateS999Gram: dec(silverEstimateFromWax(row.waxWeightGram)),
@@ -1498,12 +1529,7 @@ function slipRowBase(row: SlipRowBaseInput) {
       row.restWeightGram != null && row.castTreeWeightGram != null
         ? row.castTreeWeightGram
             .sub(row.restWeightGram)
-            .sub(
-              row.orders.reduce(
-                (sum, line) => sum.add(line.blankWeightGram ?? 0),
-                new Prisma.Decimal(0),
-              ),
-            )
+            .sub(blankWeightTotal(row.orders))
             .toString()
         : null,
     rejectedAt: row.rejectedAt?.toISOString() ?? null,

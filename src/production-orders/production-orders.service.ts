@@ -2914,6 +2914,7 @@ function asCreatedDetail(
       laserEngraving: line.laserEngraving,
       otherRequirements: line.otherRequirements,
     })),
+    castingSlipLine: null,
     _count: { outbounds: issuedCount },
   };
 }

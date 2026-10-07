@@ -1,5 +1,6 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import {
+  CastingSlipImageKind,
   MaterialRequestKind,
   MaterialRequestStatus,
   Prisma,
@@ -168,6 +169,20 @@ export const detailInclude = {
     orderBy: { shipment: { seq: 'asc' } },
   },
   _count: { select: { outbounds: true } },
+  castingSlipLine: {
+    select: {
+      slip: {
+        select: {
+          restWeightGram: true,
+          images: {
+            where: { kind: CastingSlipImageKind.REST },
+            orderBy: { sortOrder: 'asc' },
+            select: { url: true, publicId: true, width: true, height: true },
+          },
+        },
+      },
+    },
+  },
 } satisfies Prisma.ProductionOrderInclude;
 
 export type OrderDetail = Prisma.ProductionOrderGetPayload<{
@@ -877,6 +892,18 @@ export function toDetail(order: OrderDetail) {
     returnedQty: order.returnedQty,
     model3dCode: order.model3dCode,
     model3dUrl: order.model3dUrl,
+    hasMold: order.hasMold,
+    productWeightGram:
+      order.productWeightGram != null ? decStr(order.productWeightGram) : null,
+    castingTreeWeightGram:
+      order.castingTreeWeightGram != null
+        ? decStr(order.castingTreeWeightGram)
+        : null,
+    waxCheckedWeightGram:
+      order.waxCheckedWeightGram != null
+        ? decStr(order.waxCheckedWeightGram)
+        : null,
+    waxCheckedByName: order.waxCheckedByName,
     leadTime: order.leadTime,
     trackingCode: order.trackingCode,
     closedBy: order.closedBy,
@@ -923,6 +950,16 @@ export function toDetail(order: OrderDetail) {
             cutAt: order.cutAt?.toISOString() ?? null,
             qty: order.blankQty,
             weight: decStr(order.blankWeight),
+            restWeightGram:
+              order.castingSlipLine?.slip.restWeightGram != null
+                ? decStr(order.castingSlipLine.slip.restWeightGram)
+                : null,
+            restImages: (order.castingSlipLine?.slip.images ?? []).map((image) => ({
+              url: image.url,
+              publicId: image.publicId,
+              width: image.width,
+              height: image.height,
+            })),
             ...blankLeftOf(order),
           }
         : null,
