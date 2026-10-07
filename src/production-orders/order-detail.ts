@@ -892,7 +892,7 @@ export function toDetail(order: OrderDetail) {
     mainMaterial: order.mainMaterial,
     platingColor: order.platingColor,
     btpCategory: order.btpCategory,
-    btpName: order.btpName,
+    productName: order.productName,
     productKind: order.productKind,
     laserEngraving: order.laserEngraving,
     otherRequirements: order.otherRequirements,

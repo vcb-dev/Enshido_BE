@@ -235,7 +235,7 @@ export class ProductionOrdersService {
         { model3dCode: contains },
         { closedBy: contains },
         { description: contains },
-        { btpName: contains },
+        { productName: contains },
         { customerName: contains },
       ];
     }
@@ -372,7 +372,7 @@ export class ProductionOrdersService {
           mainMaterial: true,
           platingColor: true,
           btpCategory: true,
-          btpName: true,
+          productName: true,
           productKind: true,
           askedUserName: true,
           receivedDate: true,
@@ -459,7 +459,7 @@ export class ProductionOrdersService {
           mainMaterial: row.mainMaterial,
           platingColor: row.platingColor,
           btpCategory: row.btpCategory,
-          btpName: row.btpName,
+          productName: row.productName,
           productKind: row.productKind,
           askedUserName: row.askedUserName,
           receivedDate: ymd(row.receivedDate),
@@ -676,7 +676,7 @@ export class ProductionOrdersService {
                 OR: [
                   { code: { contains: keyword, mode: 'insensitive' } },
                   { description: { contains: keyword, mode: 'insensitive' } },
-                  { btpName: { contains: keyword, mode: 'insensitive' } },
+                  { productName: { contains: keyword, mode: 'insensitive' } },
                   { trackingCode: { contains: keyword, mode: 'insensitive' } },
                 ],
               },
@@ -690,7 +690,7 @@ export class ProductionOrdersService {
           select: {
             code: true,
             description: true,
-            btpName: true,
+            productName: true,
             requestType: true,
             qty: true,
             qtyUnit: true,
@@ -765,7 +765,7 @@ export class ProductionOrdersService {
       items.push({
         code: receipt.order.code,
         description: receipt.order.description,
-        btpName: receipt.order.btpName,
+        productName: receipt.order.productName,
         requestType: receipt.order.requestType,
         qty: receipt.order.qty,
         size: receipt.order.size,
@@ -2460,7 +2460,7 @@ export class ProductionOrdersService {
       mainMaterial: optional(dto.mainMaterial),
       platingColor: optional(nvlLines[0]?.platingColor ?? dto.platingColor),
       btpCategory: optional(dto.btpCategory),
-      btpName: optional(dto.btpName) ?? optional(btpMaterial?.name),
+      productName: optional(dto.productName) ?? optional(btpMaterial?.name),
       productKind: optional(dto.productKind),
       laserEngraving: optional(
         nvlLines[0]?.laserEngraving ?? dto.laserEngraving,
