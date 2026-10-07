@@ -1255,7 +1255,7 @@ export class CastingSlipsService {
   }
 }
 
-/** Phiếu Đúc xong còn cắt được: đơn vẫn CAST_DONE, chưa có phôi / lệnh SX. */
+/** Phiếu Đúc xong còn cắt được: đơn vẫn CAST_DONE, chưa cắt cây (`cutAt` rỗng). */
 const awaitingCutWhere: Prisma.CastingSlipWhereInput = {
   status: CastingSlipStatus.DONE,
   restWeightGram: null,
@@ -1265,9 +1265,9 @@ const awaitingCutWhere: Prisma.CastingSlipWhereInput = {
     every: {
       blankQty: null,
       blankWeightGram: null,
-      intake: {
-        status: IntakeOrderStatus.CAST_DONE,
-        productionOrder: { is: null },
+      order: {
+        status: ProductionStatus.CAST_DONE,
+        cutAt: null,
       },
     },
   },
@@ -1462,6 +1462,8 @@ function slipRowBase(row: SlipRowBaseInput) {
       trackingCode: line.order.trackingCode,
       qty: line.order.qty,
       status: toIntakeStatus(line.order),
+      /** Trạng thái thật trên lệnh SX — sau cắt cây đi từ Chờ nguội theo lộ trình. */
+      orderStatus: line.order.status,
       // Cùng một bản ghi: mã A… có từ lúc tạo, "đã vào lệnh sản xuất" = đã cắt cây.
       productionOrderCode: line.order.cutAt ? line.order.code : null,
       blankQty: line.blankQty,
