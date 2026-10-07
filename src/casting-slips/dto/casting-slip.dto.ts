@@ -3,6 +3,7 @@ import {
   ArrayMaxSize,
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsDateString,
   IsIn,
   IsInt,
@@ -278,6 +279,12 @@ export class ListCastingSlipsQuery {
   @IsString()
   @MaxLength(50)
   issueTotal?: string;
+
+  /** Hàng đợi cắt cây: phiếu Đúc xong, đơn còn CAST_DONE, chưa chia phôi. */
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true')
+  @IsBoolean()
+  awaitingCut?: boolean;
 
   @IsOptional()
   @Type(() => Number)

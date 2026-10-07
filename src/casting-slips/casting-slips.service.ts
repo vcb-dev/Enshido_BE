@@ -1351,6 +1351,12 @@ export class CastingSlipsService {
       and.push({ id: { in: ids.length ? ids : [NO_MATCH_ID] } });
     }
 
+    if (query.awaitingCut) {
+      and.push({
+        OR: [awaitingCutWhere, { redos: { some: awaitingCutWhere } }],
+      });
+    }
+
     return and.length ? { AND: and } : {};
   }
 
@@ -1411,6 +1417,24 @@ export class CastingSlipsService {
       });
   }
 }
+
+/** Phiếu Đúc xong còn cắt được: đơn vẫn CAST_DONE, chưa có phôi / lệnh SX. */
+const awaitingCutWhere: Prisma.CastingSlipWhereInput = {
+  status: CastingSlipStatus.DONE,
+  restWeightGram: null,
+  castTreeWeightGram: { gt: 0 },
+  orders: {
+    some: {},
+    every: {
+      blankQty: null,
+      blankWeightGram: null,
+      intake: {
+        status: IntakeOrderStatus.CAST_DONE,
+        productionOrder: { is: null },
+      },
+    },
+  },
+};
 
 const slipOrderInclude = {
   orders: {
