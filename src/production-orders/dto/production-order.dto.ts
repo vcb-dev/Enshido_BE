@@ -325,11 +325,11 @@ export class UpsertProductionOrderDto {
   @MaxLength(120)
   btpCategory?: string;
 
-  /** Tên bán thành phẩm — điền sẵn khi chọn mã. */
+  /** Tên sản phẩm — điền sẵn khi chọn mã BTP. */
   @IsOptional()
   @IsString()
   @MaxLength(300)
-  btpName?: string;
+  productName?: string;
 
   /** Phân loại sản phẩm (kho BTP). */
   @IsOptional()

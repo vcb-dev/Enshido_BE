@@ -902,7 +902,7 @@ export class CastingSlipsService {
       });
       const materialId = await this.inventory.ensureNamedMaterial(tx, {
         warehouseCode: 'btp-cho-vao-da',
-        name: `Phôi ${order.trackingCode?.trim() || order.code}`,
+        name: `Phôi ${order.productName?.trim() || order.trackingCode?.trim() || order.code}`,
         unitCode: 'chiec',
         warehouse: btpWarehouse,
         unit: pieceUnit,
