@@ -653,6 +653,9 @@ model ProductionOrder {
   claimedByUserId       String?               @map("claimed_by_user_id") @db.Uuid
   claimedByName         String?               @map("claimed_by_name")
   claimedAt             DateTime?             @map("claimed_at")
+  /// Giao thợ ở Nguội / Vào đá trên phiếu mẹ: thủ kho chọn BTP, số lượng… lúc chỉ định thợ; chưa
+  /// xuất kho — thợ nhận hàng thì hệ thống mới ghi giao khâu và xuất theo đúng nội dung này.
+  pendingHandover       Json?                 @map("pending_handover")
   /// Phần "đơn tạo" (trước Nguội). `intakeSeq` có giá trị = đơn đi qua luồng tạo → đúc → cắt cây;
   /// đơn tạo tay (Đơn mới / Tồn) để trống. `code` (A…) cấp ngay lúc tạo, `intakeCode` (DH…) là mã đơn hàng.
   intakeSeq             Int?                  @unique @map("intake_seq")

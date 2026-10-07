@@ -1081,6 +1081,7 @@ export function toDetail(order: OrderDetail) {
             state: parentState.state,
             activeStage: parentState.activeStage,
             pendingStage: order.pendingStage,
+            receiptPrepared: Boolean(order.pendingHandover),
             pendingAt: order.pendingAt?.toISOString() ?? null,
             pendingByName: order.pendingByName,
             claimedByUserId: order.claimedByUserId,

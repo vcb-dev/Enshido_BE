@@ -387,6 +387,7 @@ export class ProductionOrdersService {
           updatedAt: true,
           pendingStage: true,
           claimedByUserId: true,
+          pendingHandover: true,
           receipt: { select: { id: true } },
           btpMaterial: { select: { sku: true } },
           intakeCode: true,
@@ -474,6 +475,7 @@ export class ProductionOrdersService {
           updatedAt: row.updatedAt.toISOString(),
           workState: workStage ? (parentProgress?.state ?? null) : null,
           workStage,
+          workReceiptPrepared: Boolean(parentProgress && row.pendingHandover),
           images: [],
           subTickets: row.subTickets.map((ticket) =>
             subTicketSummary(
