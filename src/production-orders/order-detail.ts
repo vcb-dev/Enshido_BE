@@ -361,6 +361,17 @@ type StateEntry = Pick<StageEntry, 'stage' | 'returnedAt' | 'submittedAt'> & {
   defectReportedAt?: Date | null;
 };
 
+/**
+ * Đơn bỏ khâu Vào đá: 0 viên đá trên 3D, hoặc thủ kho đánh dấu "Đơn không có đá" (mô tả luồng
+ * bước 17). Sau Nguội đi thẳng Chờ khắc.
+ */
+export function skipsStone(order: {
+  stoneCount?: number | null;
+  stoneSkipped?: boolean | null;
+}): boolean {
+  return order.stoneCount === 0 || order.stoneSkipped === true;
+}
+
 /** Khâu của phiếu con phải qua thủ kho xác nhận sau QC (mô tả luồng bước 13–18). */
 export const KEEPER_CONFIRM_STAGES: ProductionStage[] = [
   G.FILING,
@@ -419,6 +430,7 @@ export function ticketPosition(
 export function orderListStatuses(order: {
   status: ProductionStatus;
   stoneCount?: number | null;
+  stoneSkipped?: boolean | null;
   subTickets: readonly Pick<
     SubTicket,
     'id' | 'pendingStage' | 'claimedByUserId' | 'outcome'
@@ -448,12 +460,7 @@ export function orderListStatuses(order: {
     const entries = order.stages.filter(
       (entry) => entry.subTicketId === ticket.id,
     );
-    const status = ticketStatus(
-      ticket,
-      entries,
-      orderLast,
-      order.stoneCount === 0,
-    );
+    const status = ticketStatus(ticket, entries, orderLast, skipsStone(order));
     if (status) statuses.add(status);
   }
   if (statuses.size === 0) statuses.add(order.status);
@@ -563,6 +570,31 @@ export function outcomeStatus(
   return S.DEFECT;
 }
 
+/** Các trạng thái đơn đã chốt lỗi hết: Sản xuất lỗi chung hoặc lỗi riêng Nguội / Vào đá. */
+export const DEFECT_STATUSES: ProductionStatus[] = [
+  S.DEFECT,
+  S.FILING_DEFECT,
+  S.STONE_DEFECT,
+];
+
+/**
+ * Trạng thái đơn khi mọi phiếu đều lỗi: cùng lỗi ở Nguội → M Lỗi nguội, cùng ở Vào đá → Lỗi vào
+ * đá (mô tả luồng bước 15); lỗi lẫn nhiều khâu hoặc khâu khác → Sản xuất lỗi.
+ */
+export function defectStatusOf(
+  tickets: readonly { outcomeStage?: ProductionStage | null }[],
+): ProductionStatus {
+  const statuses = new Set(
+    tickets.map((ticket) =>
+      outcomeStatus({
+        outcome: SubTicketOutcome.DEFECT,
+        outcomeStage: ticket.outcomeStage,
+      }),
+    ),
+  );
+  return statuses.size === 1 ? [...statuses][0] : S.DEFECT;
+}
+
 /**
  * Trạng thái của một phiếu con (hoặc cả đơn chưa chia) suy từ khâu đang chạy:
  * - đang làm / đã báo xong → trạng thái khâu (K Đang nguội, N Đang vào đá…);
@@ -609,6 +641,8 @@ export function deriveOrderStatus(
     status: ProductionStatus;
     /** 0 = đơn không có đá (theo 3D) → sau Nguội đi thẳng sang Chờ khắc. */
     stoneCount?: number | null;
+    /** Thủ kho đánh dấu đơn không có đá. */
+    stoneSkipped?: boolean | null;
     pendingStage: ProductionStage | null;
     claimedByUserId: string | null;
     subTickets: readonly Pick<
@@ -617,7 +651,7 @@ export function deriveOrderStatus(
     >[];
     stages: readonly (StateEntry & Pick<StageEntry, 'subTicketId'>)[];
   },
-  skipStone = order.stoneCount === 0,
+  skipStone = skipsStone(order),
 ): ProductionStatus {
   if (!IN_STAGE_STATUSES.includes(order.status)) return order.status;
   const parentEntries = order.stages.filter((entry) => !entry.subTicketId);
@@ -912,6 +946,10 @@ export function toDetail(order: OrderDetail) {
     stoneColor: order.stoneColor,
     stoneTypes: order.stoneTypes,
     stoneCount: order.stoneCount,
+    /** Thủ kho đánh dấu đơn không có đá — bỏ khâu Vào đá. */
+    stoneSkipped: order.stoneSkipped,
+    stoneSkippedAt: order.stoneSkippedAt?.toISOString() ?? null,
+    stoneSkippedByName: order.stoneSkippedByName,
     stoneWeight: order.stoneWeight != null ? decStr(order.stoneWeight) : null,
     weight: order.weight != null ? decStr(order.weight) : null,
     size: order.size,
@@ -954,12 +992,14 @@ export function toDetail(order: OrderDetail) {
               order.castingSlipLine?.slip.restWeightGram != null
                 ? decStr(order.castingSlipLine.slip.restWeightGram)
                 : null,
-            restImages: (order.castingSlipLine?.slip.images ?? []).map((image) => ({
-              url: image.url,
-              publicId: image.publicId,
-              width: image.width,
-              height: image.height,
-            })),
+            restImages: (order.castingSlipLine?.slip.images ?? []).map(
+              (image) => ({
+                url: image.url,
+                publicId: image.publicId,
+                width: image.width,
+                height: image.height,
+              }),
+            ),
             ...blankLeftOf(order),
           }
         : null,
@@ -1114,7 +1154,7 @@ function toSubTicket(order: OrderDetail, ticket: SubTicket) {
         ticket,
         entries,
         orderEntries(order).slice(-1)[0]?.stage ?? null,
-        order.stoneCount === 0,
+        skipsStone(order),
       ) ?? outcomeStatus(ticket),
     /** Đá thủ kho đã cấp (giữ chỗ) cho khâu Vào đá đang chờ thợ nhận. */
     heldStoneCount: (ticket.stoneHolds ?? []).reduce(
@@ -1527,6 +1567,7 @@ export function toMaterialRequest(
       warehouseName: request.material.warehouse.shortName,
     },
     requestedQty: decStr(request.requestedQty),
+    requestedWeight: dec(request.requestedWeight),
     note: request.note,
     requestedByUserId: request.requestedByUserId,
     requestedByName: request.requestedByName,

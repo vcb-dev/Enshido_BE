@@ -603,6 +603,11 @@ model ProductionOrder {
   sizeLabel             String?               @map("size_label")
   stoneCount            Int?                  @map("stone_count")
   stoneWeight           Decimal?              @map("stone_weight") @db.Decimal(18, 4)
+  /// Thủ kho đánh dấu đơn không có đá (mô tả luồng bước 17): sau Nguội đi thẳng Chờ khắc, bỏ Vào
+  /// đá — như đơn có 0 viên đá trên 3D.
+  stoneSkipped          Boolean               @default(false) @map("stone_skipped")
+  stoneSkippedAt        DateTime?             @map("stone_skipped_at")
+  stoneSkippedByName    String?               @map("stone_skipped_by_name")
   /// Trọng lượng NVL / thành phẩm (g) — lấy từ NVL khi lên đơn.
   weight                Decimal?              @map("weight") @db.Decimal(18, 4)
   laserEngraving        String?               @map("laser_engraving")
@@ -967,6 +972,8 @@ model ProductionMaterialRequest {
   kind              MaterialRequestKind
   /// Số thợ xin, theo đơn vị của mã.
   requestedQty      Decimal               @map("requested_qty") @db.Decimal(18, 4)
+  /// Đá: TL thợ xin (g) — mã tính theo ct / g chỉ có số này, mã tính theo viên có cả số viên lẫn TL.
+  requestedWeight   Decimal?              @map("requested_weight") @db.Decimal(18, 4)
   note              String?
   requestedByUserId String?               @map("requested_by_user_id") @db.Uuid
   requestedByName   String                @map("requested_by_name")

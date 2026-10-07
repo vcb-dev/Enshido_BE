@@ -4,6 +4,7 @@ import type { InventoryService } from '../inventory/inventory.service';
 import { ctStr, decStr } from '../util/money';
 import {
   shrinkHold,
+  splitReturnedCount,
   splitReturnedWeight,
   stoneReturnedCount,
   stoneUsedByHold,
@@ -95,7 +96,11 @@ export function planEarlyReturn<
  */
 export function planStoneReturn(
   holds: readonly HoldForReturn[],
-  returnedStones: readonly { materialId: string; weight: string }[],
+  returnedStones: readonly {
+    materialId: string;
+    weight: string;
+    count?: number | null;
+  }[],
   legacyReturnedCount: number | null,
 ) {
   const weighed = holds.filter(
@@ -104,6 +109,8 @@ export function planStoneReturn(
   const legacy = holds.filter((hold) => !weighed.includes(hold));
   const seen = new Set<string>();
   const back = new Map<string, Prisma.Decimal>();
+  /** Số viên thừa QC đếm, đã chia về từng dòng cấp của mã. */
+  const backCount = new Map<string, number>();
   for (const line of returnedStones) {
     if (seen.has(line.materialId)) {
       throw new BadRequestException('Mỗi mã đá thừa chỉ nhập một dòng');
@@ -130,6 +137,35 @@ export function planStoneReturn(
       weight,
     );
     for (const [id, value] of split) back.set(id, value);
+    if (line.count != null) {
+      const counted = group.filter((hold) => hold.stoneCount != null);
+      const total = counted.reduce((sum, hold) => sum + hold.stoneCount!, 0);
+      if (counted.length === 0) {
+        throw new BadRequestException(
+          `${group[0].material.name}: đá cấp theo ct, không có số viên — chỉ nhập TL gói thừa`,
+        );
+      }
+      if (line.count > total) {
+        throw new BadRequestException(
+          `${group[0].material.name}: số viên thừa ${line.count} nhiều hơn số viên đã cấp ${total}`,
+        );
+      }
+      if (line.count > 0 && weight.lte(0)) {
+        throw new BadRequestException(
+          `${group[0].material.name}: có viên thừa thì phải cân TL gói thừa`,
+        );
+      }
+      for (const [id, value] of splitReturnedCount(
+        counted.map((hold) => ({
+          id: hold.id,
+          stoneCount: hold.stoneCount!,
+          returnedWeight: split.get(hold.id) ?? new Prisma.Decimal(0),
+        })),
+        line.count,
+      )) {
+        backCount.set(id, value);
+      }
+    }
   }
 
   const legacyCount = legacyReturnedCount ?? 0;
@@ -155,7 +191,9 @@ export function planStoneReturn(
       return {
         id: hold.id,
         returnedWeight,
-        returnedCount: stoneReturnedCount(hold, returnedWeight),
+        // QC đếm số viên thừa thì lấy số đó; không thì suy theo tỷ lệ TL gói thừa.
+        returnedCount:
+          backCount.get(hold.id) ?? stoneReturnedCount(hold, returnedWeight),
       };
     }
     const count = hold.stoneCount ?? 0;
@@ -176,6 +214,67 @@ export function planStoneReturn(
       (sum, item) => sum.add(item.returnedWeight ?? 0),
       new Prisma.Decimal(0),
     ),
+  };
+}
+
+/**
+ * Số lượng đá theo đơn vị của mã: mã tính theo viên thì bằng số viên theo nhãn gói; mã tính
+ * theo ct / gram suy từ TL gói (g) — 1 ct = 0,2 g.
+ */
+export function stoneQtyOf(
+  material: { name: string; unit: { name: string } },
+  stoneCount: number | null | undefined,
+  weight: Prisma.Decimal,
+) {
+  const unit = material.unit.name.trim().toLowerCase();
+  if (isCountUnit(unit)) {
+    // Tồn của mã trừ theo viên nên phải biết số viên — mã ct / g thì chỉ cần TL gói.
+    if (!stoneCount) {
+      throw new BadRequestException(
+        `${material.name} tính tồn theo viên — nhập số viên theo nhãn gói`,
+      );
+    }
+    return new Prisma.Decimal(stoneCount);
+  }
+  if (unit === 'ct') return weight.div(0.2).toDecimalPlaces(4);
+  if (['g', 'gr', 'gram', 'grams', 'gam'].includes(unit)) return weight;
+  throw new BadRequestException(
+    `${material.name} tính theo ${material.unit.name} — chưa hỗ trợ cấp đá theo đơn vị này`,
+  );
+}
+
+/**
+ * Chuẩn hoá một dòng đá cấp / xuất / xin theo đơn vị của mã (mọi đường dùng chung):
+ * - mã tính theo ct / g: chỉ cần TL (g) — số lượng suy từ TL, bỏ qua số lượng client gửi;
+ * - mã tính theo viên: bắt buộc cả số viên (số lượng) lẫn TL; số viên theo nhãn gói là số lượng.
+ */
+export function normalizeStoneLine(
+  material: { name: string; unit: { name: string } },
+  input: {
+    qty?: Prisma.Decimal | null;
+    weight?: Prisma.Decimal | null;
+    stoneCount?: number | null;
+  },
+) {
+  const weight = input.weight ?? null;
+  if (!weight || weight.lte(0)) {
+    throw new BadRequestException(
+      `${material.name}: đá phải cân TL (ct) — mã tính theo viên nhập cả số viên lẫn TL, mã ct / g chỉ nhập TL`,
+    );
+  }
+  if (isCountUnit(material.unit.name)) {
+    const qty = input.qty ?? null;
+    if (!qty || qty.lte(0) || !qty.isInteger()) {
+      throw new BadRequestException(
+        `${material.name} tính theo viên — nhập số viên (số nguyên lớn hơn 0)`,
+      );
+    }
+    return { qty, weight, stoneCount: qty.toNumber() };
+  }
+  return {
+    qty: stoneQtyOf(material, null, weight),
+    weight,
+    stoneCount: input.stoneCount ?? null,
   };
 }
 

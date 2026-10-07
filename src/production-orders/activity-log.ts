@@ -52,6 +52,9 @@ export const ACTIVITY = {
   TICKET_CLEAR_OUTCOME: 'TICKET_CLEAR_OUTCOME',
   TICKET_PRINT: 'TICKET_PRINT',
   TICKET_REWORK: 'TICKET_REWORK',
+  /** Thủ kho đánh dấu / bỏ đánh dấu đơn không có đá (bỏ khâu Vào đá). */
+  STONE_SKIP: 'STONE_SKIP',
+  STONE_UNSKIP: 'STONE_UNSKIP',
 } as const;
 
 export type ActivityAction = (typeof ACTIVITY)[keyof typeof ACTIVITY];

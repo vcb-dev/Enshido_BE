@@ -1,6 +1,10 @@
 import { BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { planEarlyReturn, planStoneReturn } from './stone-holds';
+import {
+  normalizeStoneLine,
+  planEarlyReturn,
+  planStoneReturn,
+} from './stone-holds';
 
 const dec = (value: string) => new Prisma.Decimal(value);
 
@@ -53,6 +57,48 @@ describe('planStoneReturn — QC cân gói đá thừa theo mã', () => {
     expect(byId.get('a2')?.returnedCount).toBe(50);
     expect(byId.get('a1')?.returnedWeight?.toString()).toBe('0.5');
     expect(byId.get('a1')?.returnedCount).toBe(25);
+  });
+
+  it('QC đếm số viên thừa thì dùng đúng số đó, không suy theo TL', () => {
+    const plan = planStoneReturn(
+      holds,
+      [{ materialId: 'B', weight: '0.3', count: 12 }],
+      null,
+    );
+    expect(plan.updates.find((item) => item.id === 'b1')?.returnedCount).toBe(
+      12,
+    );
+    expect(plan.returnedStoneCount).toBe(12);
+  });
+
+  it('cùng mã cấp nhiều lần: số viên đếm chia theo TL thừa từng lần cấp', () => {
+    const plan = planStoneReturn(
+      holds,
+      [{ materialId: 'A', weight: '1.5', count: 70 }],
+      null,
+    );
+    const byId = new Map(plan.updates.map((item) => [item.id, item]));
+    // a2 thừa 1 g / 1,5 g, a1 thừa 0,5 g / 1,5 g — a2 đầy ở 50 viên, phần dư dồn sang a1.
+    expect(byId.get('a2')?.returnedCount).toBe(47);
+    expect(byId.get('a1')?.returnedCount).toBe(23);
+    expect(plan.returnedStoneCount).toBe(70);
+  });
+
+  it('chặn số viên thừa quá số cấp, hoặc có viên thừa mà không cân gói', () => {
+    expect(() =>
+      planStoneReturn(
+        holds,
+        [{ materialId: 'B', weight: '0.1', count: 21 }],
+        null,
+      ),
+    ).toThrow(BadRequestException);
+    expect(() =>
+      planStoneReturn(
+        holds,
+        [{ materialId: 'B', weight: '0', count: 3 }],
+        null,
+      ),
+    ).toThrow(BadRequestException);
   });
 
   it('chặn gói thừa nặng hơn TL đã cấp, mã không cấp, mã nhập hai lần', () => {
@@ -148,5 +194,51 @@ describe('planStoneReturn — đá không đếm viên', () => {
     );
     expect(plan.returnedStoneCount).toBeNull();
     expect(plan.updates[0].returnedWeight?.toString()).toBe('0.5');
+  });
+});
+
+describe('normalizeStoneLine — ct / g chỉ TL, viên cả số viên lẫn TL', () => {
+  const ct = { name: 'MROW0.8', unit: { name: 'ct' } };
+  const gram = { name: 'Đá g', unit: { name: 'g' } };
+  const piece = { name: 'MROW4.0', unit: { name: 'viên' } };
+
+  it('mã ct: số lượng suy từ TL (1 ct = 0,2 g), bỏ qua số lượng client gửi', () => {
+    const line = normalizeStoneLine(ct, { qty: dec('99'), weight: dec('2') });
+    expect(line.qty.toString()).toBe('10');
+    expect(line.weight.toString()).toBe('2');
+    expect(line.stoneCount).toBeNull();
+  });
+
+  it('mã gram: số lượng bằng TL', () => {
+    expect(
+      normalizeStoneLine(gram, { weight: dec('1.5') }).qty.toString(),
+    ).toBe('1.5');
+  });
+
+  it('mã viên: số lượng là số viên, bắt buộc kèm TL', () => {
+    const line = normalizeStoneLine(piece, {
+      qty: dec('20'),
+      weight: dec('1'),
+    });
+    expect(line.qty.toString()).toBe('20');
+    expect(line.stoneCount).toBe(20);
+    expect(() => normalizeStoneLine(piece, { qty: dec('20') })).toThrow(
+      BadRequestException,
+    );
+    expect(() =>
+      normalizeStoneLine(piece, { qty: dec('2.5'), weight: dec('1') }),
+    ).toThrow(BadRequestException);
+    expect(() => normalizeStoneLine(piece, { weight: dec('1') })).toThrow(
+      BadRequestException,
+    );
+  });
+
+  it('mọi mã đá đều bắt TL', () => {
+    expect(() => normalizeStoneLine(ct, { qty: dec('5') })).toThrow(
+      BadRequestException,
+    );
+    expect(() => normalizeStoneLine(ct, { weight: dec('0') })).toThrow(
+      BadRequestException,
+    );
   });
 });

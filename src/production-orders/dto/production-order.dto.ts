@@ -3,6 +3,7 @@ import {
   ArrayMaxSize,
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsDateString,
   IsEnum,
   IsIn,
@@ -409,17 +410,19 @@ export class HandoverMaterialDto {
   @IsEnum(MaterialRequestKind)
   kind!: MaterialRequestKind;
 
+  /** Đá tính theo ct / g để trống (chỉ nhập TL), mã khác bắt buộc. */
+  @IsOptional()
   @Transform(emptyToNull)
   @Matches(DECIMAL, { message: 'Số lượng xuất không hợp lệ' })
-  qty!: string;
+  qty?: string | null;
 
-  /** TL cân lúc xuất (g) — bắt buộc với bạc / kim loại. */
+  /** TL cân lúc xuất (g) — bắt buộc với bạc / kim loại và với mọi mã đá. */
   @IsOptional()
   @Transform(emptyToNull)
   @Matches(DECIMAL, { message: 'Trọng lượng xuất không hợp lệ' })
   weight?: string | null;
 
-  /** Đá: số viên theo nhãn gói — không bắt buộc (đá tấm / nhỏ chỉ cân TL). */
+  /** Đá: số viên theo nhãn gói — mã tính theo viên lấy từ `qty`; mã ct / g không bắt buộc. */
   @IsOptional()
   @Transform(emptyToNull)
   @Type(() => Number)
@@ -501,6 +504,17 @@ export class ReturnedStoneDto {
   @Transform(emptyToNull)
   @Matches(DECIMAL, { message: 'TL đá thừa không hợp lệ' })
   weight!: string;
+
+  /**
+   * Số viên thừa — QC đếm khi mã được cấp kèm số viên (mã chỉ cấp theo ct thì bỏ trống). Có số
+   * này thì dùng đúng số QC đếm thay vì suy theo tỷ lệ TL.
+   */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  count?: number | null;
 }
 
 /** Một ảnh QC chụp lúc nhận lại khâu (đã tải lên Cloudinary). */
@@ -745,6 +759,12 @@ export class OpenOrderStageDto {
   stage!: ProductionStage;
 }
 
+/** Thủ kho đánh dấu / bỏ đánh dấu đơn không có đá (bỏ khâu Vào đá). */
+export class SkipStoneDto {
+  @IsBoolean()
+  skip!: boolean;
+}
+
 /** Chốt phiếu con ở nhánh Lỗi (bắt buộc lý do) hoặc Hoàn thiện. */
 export class SubTicketOutcomeDto {
   @IsOptional()
@@ -758,9 +778,17 @@ export class MaterialRequestDto {
   @IsUUID('all', { message: 'Chọn mã NVL cần xuất' })
   materialId!: string;
 
+  /** Số lượng xin — đá tính theo ct / g để trống (chỉ nhập TL), mã khác bắt buộc. */
+  @IsOptional()
   @Transform(emptyToNull)
   @Matches(DECIMAL, { message: 'Số lượng xin xuất không hợp lệ' })
-  qty!: string;
+  qty?: string | null;
+
+  /** Đá: TL xin (g) — bắt buộc với mọi mã đá (viên: kèm số viên ở `qty`; ct / g: chỉ TL). */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @Matches(DECIMAL, { message: 'Trọng lượng xin không hợp lệ' })
+  weight?: string | null;
 
   @IsOptional()
   @IsString()
@@ -773,17 +801,19 @@ export class IssueMaterialRequestDto {
   @IsEnum(MaterialRequestKind)
   kind!: MaterialRequestKind;
 
+  /** Đá tính theo ct / g để trống (chỉ nhập TL), mã khác bắt buộc. */
+  @IsOptional()
   @Transform(emptyToNull)
   @Matches(DECIMAL, { message: 'Số lượng xuất không hợp lệ' })
-  qty!: string;
+  qty?: string | null;
 
-  /** TL cân lúc xuất (g) — bắt buộc với bạc / kim loại. */
+  /** TL cân lúc xuất (g) — bắt buộc với bạc / kim loại và với mọi mã đá. */
   @IsOptional()
   @Transform(emptyToNull)
   @Matches(DECIMAL, { message: 'Trọng lượng xuất không hợp lệ' })
   weight?: string | null;
 
-  /** Đá: số viên xuất — đơn vị không phải viên (ct…) thì bắt buộc nhập. */
+  /** Đá: số viên theo nhãn gói — mã tính theo viên lấy từ `qty`; mã ct / g không bắt buộc. */
   @IsOptional()
   @Transform(emptyToNull)
   @Type(() => Number)

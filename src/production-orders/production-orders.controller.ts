@@ -25,6 +25,7 @@ import {
   ChangeStatusDto,
   FinishOrderDto,
   AssignSubTicketDto,
+  SkipStoneDto,
   StageDefectDto,
   HandoverInfoDto,
   ListProductionOrdersQuery,
@@ -368,6 +369,18 @@ export class ProductionOrdersController {
     @CurrentUser() user: AuthUserPayload,
   ) {
     return this.subTickets.createRework(code, stageId, user);
+  }
+
+  /** Thủ kho đánh dấu / bỏ đánh dấu đơn không có đá — các phiếu nguội xong sang thẳng Chờ khắc. */
+  @Post(':code/skip-stone')
+  @BlockWorker()
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
+  setStoneSkipped(
+    @Param('code') code: string,
+    @Body() dto: SkipStoneDto,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.subTickets.setStoneSkipped(code, dto.skip, user);
   }
 
   @Delete(':code/stages/:stageId/return')
