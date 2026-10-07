@@ -85,17 +85,14 @@ export class CloudinaryService {
     if (ids.length === 0) return [];
     const where = { publicId: { in: ids } };
     const select = { publicId: true } as const;
-    const [materials, orders, intake, slips, stages] = await Promise.all([
+    const [materials, orders, slips, stages] = await Promise.all([
       this.prisma.materialImage.findMany({ where, select }),
       this.prisma.productionOrderImage.findMany({ where, select }),
-      this.prisma.intakeOrderImage.findMany({ where, select }),
       this.prisma.castingSlipImage.findMany({ where, select }),
       this.prisma.productionStageImage.findMany({ where, select }),
     ]);
     const used = new Set(
-      [...materials, ...orders, ...intake, ...slips, ...stages].map(
-        (row) => row.publicId,
-      ),
+      [...materials, ...orders, ...slips, ...stages].map((row) => row.publicId),
     );
     return ids.filter((id) => !used.has(id));
   }

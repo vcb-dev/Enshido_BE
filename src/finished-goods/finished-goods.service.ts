@@ -16,7 +16,7 @@ import { recordEditLog } from '../edit-logs/edit-log';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProductionCostingService } from '../production-orders/production-costing.service';
 import { randomUUID } from 'node:crypto';
-import { orderCode } from '../production-orders/production-orders.service';
+import { nextOrderSeq, orderCode } from '../production-orders/intake-order';
 import { availabilityOf, decStr, METAL_KIND_LABEL } from '../util/money';
 import {
   ListShipmentsQuery,
@@ -660,10 +660,7 @@ export class FinishedGoodsService {
     for (let attempt = 1; ; attempt += 1) {
       try {
         await this.prisma.runTx(async (tx) => {
-          const last = await tx.productionOrder.aggregate({
-            _max: { seq: true },
-          });
-          const seq = (last._max.seq ?? 0) + 1;
+          const seq = await nextOrderSeq(tx);
           const code = orderCode(seq);
           await tx.productionOrder.create({
             data: {

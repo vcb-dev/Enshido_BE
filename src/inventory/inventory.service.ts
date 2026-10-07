@@ -1865,9 +1865,9 @@ export class InventoryService {
     if (!normalized) return null;
     const order = await this.prisma.productionOrder.findUnique({
       where: { code: normalized },
-      select: { id: true, status: true },
+      select: { id: true, status: true, intakeSeq: true, cutAt: true },
     });
-    if (!order) {
+    if (!order || (order.intakeSeq != null && !order.cutAt)) {
       throw new BadRequestException(
         `Không tìm thấy đơn sản xuất ${normalized}`,
       );
@@ -2353,7 +2353,12 @@ export class InventoryService {
       },
       select: { id: true },
     });
-    await this.addStockIn(tx, material.warehouseId, params.materialId, params.qty);
+    await this.addStockIn(
+      tx,
+      material.warehouseId,
+      params.materialId,
+      params.qty,
+    );
     return row.id;
   }
 

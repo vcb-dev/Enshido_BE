@@ -23,6 +23,11 @@ import {
 import { dbTable } from '../prisma/database-url';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProductionSubTicketsService } from './production-sub-tickets.service';
+import {
+  EXCLUDE_PRE_PRODUCTION,
+  nextOrderSeq,
+  orderCode,
+} from './intake-order';
 import { recordEditLog } from '../edit-logs/edit-log';
 import { CloudinaryService } from '../uploads/cloudinary.service';
 import { ctStr, decStr, METAL_KIND_LABEL } from '../util/money';
@@ -211,6 +216,8 @@ export class ProductionOrdersService {
             { NOT: { trackingCode: { startsWith: 'KHO-' } } },
           ],
         },
+        // Đơn chưa cắt cây thông còn ở luồng tạo đơn, chưa thuộc lệnh sản xuất.
+        EXCLUDE_PRE_PRODUCTION,
       ],
     };
     if (query.requestType) base.requestType = query.requestType;
@@ -222,7 +229,8 @@ export class ProductionOrdersService {
       const contains = { contains: search, mode: 'insensitive' as const };
       base.OR = [
         { code: contains },
-        { intakeOrder: { sxCode: contains } },
+        { sxCode: contains },
+        { intakeCode: contains },
         { trackingCode: contains },
         { model3dCode: contains },
         { closedBy: contains },
@@ -376,7 +384,8 @@ export class ProductionOrdersService {
           claimedByUserId: true,
           receipt: { select: { id: true } },
           btpMaterial: { select: { sku: true } },
-          intakeOrder: { select: { code: true, sxCode: true } },
+          intakeCode: true,
+          sxCode: true,
           // Phiếu con kèm các khâu của chúng — vừa đủ để tính trạng thái từng phiếu cho cột
           // "Phiếu con" ở danh sách, không kéo cả chi tiết đơn.
           subTickets: {
@@ -438,8 +447,8 @@ export class ProductionOrdersService {
           model3dUrl: row.model3dUrl,
           leadTime: row.leadTime,
           trackingCode: row.trackingCode,
-          intakeOrderCode: row.intakeOrder?.code ?? null,
-          intakeSxCode: row.intakeOrder?.sxCode ?? null,
+          intakeOrderCode: row.intakeCode,
+          intakeSxCode: row.sxCode,
           closedBy: row.closedBy,
           customerName: row.customerName,
           description: row.description,
@@ -572,6 +581,7 @@ export class ProductionOrdersService {
     const rows = await this.prisma.productionOrder.findMany({
       where: {
         status: { not: S.DELIVERED },
+        ...EXCLUDE_PRE_PRODUCTION,
         ...(keyword
           ? {
               OR: [
@@ -1087,11 +1097,7 @@ export class ProductionOrdersService {
     for (let attempt = 1; ; attempt += 1) {
       try {
         const created = await this.prisma.runTx(async (tx) => {
-          const last = await tx.productionOrder.findFirst({
-            orderBy: { seq: 'desc' },
-            select: { seq: true },
-          });
-          const seq = (last?.seq ?? 0) + 1;
+          const seq = await nextOrderSeq(tx);
           const initialStatus =
             data.source === ProductionSource.BTP ? S.WAIT_FILING : S.NEW;
           const row = await tx.productionOrder.create({
@@ -2884,7 +2890,6 @@ function asCreatedDetail(
 ): OrderDetail {
   return {
     ...row,
-    intakeOrder: null,
     btpMaterial: btpMaterial
       ? { id: btpMaterial.id, sku: btpMaterial.sku, name: btpMaterial.name }
       : null,
@@ -2893,7 +2898,7 @@ function asCreatedDetail(
       : null,
     stages: [],
     subTickets: [],
-    reworkIntakes: [],
+    reworkOrders: [],
     materialRequests: [],
     stoneHolds: [],
     parent: null,
@@ -2940,9 +2945,7 @@ function joinNotes(previous: string | null, next: string | undefined) {
   return previous ? `${previous}\n${added}` : added;
 }
 
-export function orderCode(seq: number) {
-  return `A${String(seq).padStart(3, '0')}`;
-}
+export { orderCode } from './intake-order';
 
 function fgShipmentCode(seq: number) {
   return `PX${String(seq).padStart(4, '0')}`;
