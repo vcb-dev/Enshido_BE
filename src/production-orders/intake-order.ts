@@ -87,7 +87,7 @@ export async function nextOrderSeq(tx: Prisma.TransactionClient) {
   return (last?.seq ?? 0) + 1;
 }
 
-/** Cấp seq mã DH… cho đơn tạo mới (khoá riêng, đồng bộ với đơn bù). */
+/** Cấp seq mã DH… cho đơn hàng mới; lệnh bù dùng lại seq / mã DH của đơn gốc. */
 export async function nextIntakeSeq(tx: Prisma.TransactionClient) {
   await tx.$queryRaw`
     WITH sequence_lock AS MATERIALIZED (
@@ -96,7 +96,7 @@ export async function nextIntakeSeq(tx: Prisma.TransactionClient) {
     SELECT 1::int AS locked FROM sequence_lock
   `;
   const last = await tx.productionOrder.findFirst({
-    where: { intakeSeq: { not: null } },
+    where: { intakeSeq: { not: null }, reworkOfOrderId: null },
     orderBy: { intakeSeq: 'desc' },
     select: { intakeSeq: true },
   });

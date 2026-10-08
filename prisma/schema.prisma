@@ -658,8 +658,9 @@ model ProductionOrder {
   pendingHandover       Json?                 @map("pending_handover")
   /// Phần "đơn tạo" (trước Nguội). `intakeSeq` có giá trị = đơn đi qua luồng tạo → đúc → cắt cây;
   /// đơn tạo tay (Đơn mới / Tồn) để trống. `code` (A…) cấp ngay lúc tạo, `intakeCode` (DH…) là mã đơn hàng.
-  intakeSeq             Int?                  @unique @map("intake_seq")
-  intakeCode            String?               @unique @map("intake_code")
+  /// Lệnh bù dùng lại mã / seq DH của đơn gốc; unique cho đơn gốc được giữ bằng partial index trong migration.
+  intakeSeq             Int?                  @map("intake_seq")
+  intakeCode            String?               @map("intake_code")
   /// Mã lệnh sản xuất (random) — hiển thị cột Mã SX.
   sxCode                String?               @unique @map("sx_code")
   productName           String?               @map("product_name")
@@ -718,6 +719,8 @@ model ProductionOrder {
   @@index([nvlMaterialId])
   @@index([pendingStage, claimedByUserId])
   @@index([claimedByUserId])
+  @@index([intakeSeq])
+  @@index([intakeCode])
   @@index([reworkOfOrderId])
   @@map("production_orders")
 }

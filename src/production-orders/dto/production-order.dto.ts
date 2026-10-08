@@ -46,6 +46,11 @@ export const ORDER_SORT_KEYS = [
 
 export class ListProductionOrdersQuery {
   @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true')
+  @IsBoolean()
+  groupReworks?: boolean;
+
+  @IsOptional()
   @IsEnum(ProductionStatus)
   status?: ProductionStatus;
 
