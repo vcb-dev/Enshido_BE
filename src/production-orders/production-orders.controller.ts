@@ -30,6 +30,7 @@ import {
   HandoverInfoDto,
   ListProductionOrdersQuery,
   OpenOrderStageDto,
+  AssignOrderDto,
   OrderCostDto,
   OrderOptionsQuery,
   ReturnStageDto,
@@ -419,6 +420,45 @@ export class ProductionOrdersController {
     @CurrentUser() user: AuthUserPayload,
   ) {
     return this.subTickets.openOrderStage(code, dto, user);
+  }
+
+  /** Thủ kho giao Nguội / Vào đá cho thợ: chọn thợ + BTP một bước, thợ nhận hàng mới xuất kho. */
+  @Post(':code/work/assign')
+  @BlockWorker()
+  assignOrder(
+    @Param('code') code: string,
+    @Body() dto: AssignOrderDto,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.subTickets.assignOrder(code, dto, user);
+  }
+
+  /** Báo lỗi ở khâu đang làm trên phiếu mẹ: thợ giữ khâu, QC hoặc admin. */
+  @Post(':code/work/stage-defect')
+  reportOrderStageDefect(
+    @Param('code') code: string,
+    @Body() dto: StageDefectDto,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.subTickets.reportStageDefect(code, null, dto, user);
+  }
+
+  @Delete(':code/work/stage-defect')
+  clearOrderStageDefect(
+    @Param('code') code: string,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.subTickets.clearStageDefect(code, null, user);
+  }
+
+  /** Thợ được chỉ định quét QR nhận hàng trên phiếu mẹ. */
+  @Post(':code/work/accept')
+  @RequirePermissions(Permission.PRODUCTION_WORKER)
+  acceptOrder(
+    @Param('code') code: string,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.subTickets.acceptOrder(code, user);
   }
 
   @Delete(':code/work/pending')

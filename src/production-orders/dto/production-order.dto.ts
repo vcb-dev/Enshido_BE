@@ -433,8 +433,10 @@ export class HandoverMaterialDto {
 
 /** Thông tin một lần giao khâu — người giao là tài khoản đăng nhập. */
 export class HandoverInfoDto {
+  /** Máy chủ tự lấy thời điểm hiện tại nếu không gửi. */
+  @IsOptional()
   @IsDateString()
-  handedAt!: string;
+  handedAt?: string;
 
   /** Số lượng giao cho thợ; bỏ trống thì hiểu là giao cả đơn. */
   @IsOptional()
@@ -479,6 +481,19 @@ export class HandoverInfoDto {
   @ValidateNested({ each: true })
   @Type(() => HandoverMaterialDto)
   materials?: HandoverMaterialDto[];
+}
+
+/**
+ * Giao thợ ở Nguội / Vào đá trên phiếu mẹ: chọn thợ + BTP (và đá) xuất kho trong một bước.
+ * Chưa xuất kho — thợ nhận hàng thì hệ thống mới xuất theo đúng nội dung này.
+ */
+export class AssignOrderDto extends HandoverInfoDto {
+  @IsEnum(ProductionStage)
+  stage!: ProductionStage;
+
+  @Transform(emptyToNull)
+  @IsUUID()
+  craftsmanUserId!: string;
 }
 
 /** Thủ kho nhận lại túi đá thợ trả giữa khâu Vào đá (đổi size) — cân cả túi. */
@@ -537,8 +552,10 @@ export class StageImageDto {
 
 /** QC nhận lại hàng từ thợ và cân lại bạc — người QC là tài khoản đăng nhập. */
 export class ReturnStageDto {
+  /** Tương thích client cũ; thời gian nhận lại luôn do server ghi khi lưu QC. */
+  @IsOptional()
   @IsDateString()
-  returnedAt!: string;
+  returnedAt?: string;
 
   /** Số lượng sản phẩm đạt; bỏ trống thì hiểu là đạt đủ số đã giao. */
   @IsOptional()

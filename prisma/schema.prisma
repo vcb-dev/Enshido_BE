@@ -653,6 +653,9 @@ model ProductionOrder {
   claimedByUserId       String?               @map("claimed_by_user_id") @db.Uuid
   claimedByName         String?               @map("claimed_by_name")
   claimedAt             DateTime?             @map("claimed_at")
+  /// Giao thợ ở Nguội / Vào đá trên phiếu mẹ: thủ kho chọn BTP, số lượng… lúc chỉ định thợ; chưa
+  /// xuất kho — thợ nhận hàng thì hệ thống mới ghi giao khâu và xuất theo đúng nội dung này.
+  pendingHandover       Json?                 @map("pending_handover")
   /// Phần "đơn tạo" (trước Nguội). `intakeSeq` có giá trị = đơn đi qua luồng tạo → đúc → cắt cây;
   /// đơn tạo tay (Đơn mới / Tồn) để trống. `code` (A…) cấp ngay lúc tạo, `intakeCode` (DH…) là mã đơn hàng.
   intakeSeq             Int?                  @unique @map("intake_seq")
@@ -913,9 +916,10 @@ model ProductionSubTicket {
 model ProductionStoneHold {
   id                  String   @id @default(uuid()) @db.Uuid
   orderId             String   @map("order_id") @db.Uuid
-  subTicketId         String   @map("sub_ticket_id") @db.Uuid
+  /// null = dòng đá của khâu trên phiếu mẹ.
+  subTicketId         String?  @map("sub_ticket_id") @db.Uuid
   materialId          String   @map("material_id") @db.Uuid
-  /// Yêu cầu xin thêm của thợ; null = đá cấp lúc chỉ định thợ.
+  /// Yêu cầu cấp đá liên quan; null = đá chỉ định trực tiếp cho phiếu con.
   requestId           String?  @unique @map("request_id") @db.Uuid
   /// Phiếu xuất nháp kho của dòng cấp này.
   draftId             String?  @unique @map("draft_id") @db.Uuid
@@ -945,7 +949,7 @@ model ProductionStoneHold {
   updatedAt           DateTime @updatedAt @map("updated_at")
 
   order     ProductionOrder            @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  subTicket ProductionSubTicket        @relation(fields: [subTicketId], references: [id], onDelete: Cascade)
+  subTicket ProductionSubTicket?       @relation(fields: [subTicketId], references: [id], onDelete: Cascade)
   request   ProductionMaterialRequest? @relation(fields: [requestId], references: [id], onDelete: Cascade)
   /// Phiếu xuất nháp kho tương ứng (SL / TL đang giữ, trạng thái phía kho).
   draft     StockOutboundDraft?        @relation(fields: [draftId], references: [id], onDelete: SetNull)

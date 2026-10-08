@@ -387,6 +387,7 @@ export class ProductionOrdersService {
           updatedAt: true,
           pendingStage: true,
           claimedByUserId: true,
+          pendingHandover: true,
           receipt: { select: { id: true } },
           btpMaterial: { select: { sku: true } },
           intakeCode: true,
@@ -474,6 +475,7 @@ export class ProductionOrdersService {
           updatedAt: row.updatedAt.toISOString(),
           workState: workStage ? (parentProgress?.state ?? null) : null,
           workStage,
+          workReceiptPrepared: Boolean(parentProgress && row.pendingHandover),
           images: [],
           subTickets: row.subTickets.map((ticket) =>
             subTicketSummary(
@@ -1603,10 +1605,7 @@ export class ProductionOrdersService {
       if (!entry.returnedAt) {
         throw new BadRequestException('QC chưa nhận lại khâu này');
       }
-      if (
-        entry.subTicketId == null ||
-        !KEEPER_CONFIRM_STAGES.includes(entry.stage)
-      ) {
+      if (!KEEPER_CONFIRM_STAGES.includes(entry.stage)) {
         throw new BadRequestException(
           `Khâu ${STAGE_LABEL[entry.stage]} không có bước sửa lại kết quả QC`,
         );
@@ -1640,7 +1639,8 @@ export class ProductionOrdersService {
       );
     }
     const issued = issuedOf(requests);
-    const returnedAt = new Date(dto.returnedAt);
+    // Ghi thời gian hiện tại khi lưu QC (cả lần nhận đầu và sửa lại kết quả).
+    const returnedAt = new Date();
     if (returnedAt < entry.handedAt) {
       throw new BadRequestException(
         'Thời gian nhận lại không được trước thời gian giao',
@@ -1653,9 +1653,8 @@ export class ProductionOrdersService {
         `Số lượng sản phẩm đạt không được nhiều hơn số đã giao (${handedQty})`,
       );
     }
-    // Nguội / Vào đá của phiếu con: QC tách hàng đạt và hàng lỗi, thủ kho xác nhận sau.
-    const needsKeeper =
-      entry.subTicketId != null && KEEPER_CONFIRM_STAGES.includes(entry.stage);
+    // Nguội / Vào đá: phiếu mẹ và phiếu con cùng tách hàng đạt / lỗi, xác nhận kho sau QC.
+    const needsKeeper = KEEPER_CONFIRM_STAGES.includes(entry.stage);
     const defectQty = needsKeeper ? (dto.defectQty ?? 0) : null;
     if (
       !needsKeeper &&
@@ -1981,30 +1980,9 @@ export class ProductionOrdersService {
       });
     });
     await this.cloudinary.destroy(replacedImages);
-    // Nguội: thủ kho chỉ kiểm tra khi QC báo hàng lỗi. Không có hàng lỗi thì tự xác nhận ngay —
-    // nhập hàng đạt vào kho BTP, nguyên liệu thừa vào kho NVL như thủ kho bấm. Vào đá luôn chờ
-    // thủ kho nhận hàng + túi đá thừa rồi bấm xác nhận (mô tả luồng bước 18).
-    if (
-      needsKeeper &&
-      entry.stage === ProductionStage.FILING &&
-      (defectQty ?? 0) === 0 &&
-      returnedQty > 0
-    ) {
-      try {
-        return await this.subTickets.confirmStage(
-          order.code,
-          entry.id,
-          actor,
-          true,
-        );
-      } catch (error) {
-        // Kết quả QC đã lưu; tự nhập kho lỗi thì để thủ kho xác nhận tay như cũ.
-        this.logger.warn(
-          `Không tự xác nhận được khâu ${entry.id}: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
-    // QC nhận lại xong thì phiếu sang "Chờ" khâu kế (Nguội → L Chờ vào đá…); đơn theo phiếu xa nhất.
+    // Nguội / Vào đá luôn chờ thủ kho xác nhận, kể cả không có hàng lỗi. Chưa xác nhận thì
+    // giữ phiếu ở khâu hiện tại; chỉ nhập kho và chuyển khâu ở confirmStage.
+    // Khâu không qua thủ kho thì QC nhận lại xong, phiếu sang "Chờ" khâu kế; đơn theo phiếu xa nhất.
     // Đơn không chia phiếu mà lỗi hết ở một khâu thì cả đơn lỗi: Lỗi nguội / Lỗi vào đá theo
     // khâu, khâu khác là Sản xuất lỗi.
     const parentDefect = closesAsDefect && !ticket;
@@ -2185,9 +2163,9 @@ export class ProductionOrdersService {
     if (!entry.returnedAt) {
       throw new BadRequestException('QC chưa nhận lại khâu này');
     }
-    // Nguội / Vào đá của phiếu con: QC tự sửa lại (tối đa 3 lần) trước khi thủ kho xác nhận;
+    // Nguội / Vào đá: QC tự sửa lại (tối đa 3 lần) trước khi thủ kho xác nhận;
     // thủ kho xác nhận rồi thì khoá hẳn — không gỡ nhận lại, không gỡ xác nhận.
-    if (entry.subTicketId && KEEPER_CONFIRM_STAGES.includes(entry.stage)) {
+    if (KEEPER_CONFIRM_STAGES.includes(entry.stage)) {
       throw new BadRequestException(
         entry.confirmedAt
           ? 'Thủ kho đã xác nhận khâu này — không gỡ được nữa'
