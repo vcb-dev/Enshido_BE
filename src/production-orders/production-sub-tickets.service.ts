@@ -177,6 +177,13 @@ type PendingOrderHandover = {
     qty: string | null;
     weight: string | null;
     stoneCount: number | null;
+    /** Đá: ảnh gói đá thủ kho chụp lúc chỉ định — ghi vào dòng cấp đá khi thợ nhận hàng. */
+    images?: Array<{
+      url: string;
+      publicId: string;
+      width: number | null;
+      height: number | null;
+    }>;
   }>;
   handedByUserId: string;
   handedByName: string;
@@ -421,8 +428,10 @@ export class ProductionSubTicketsService {
   }
 
   async cancelOrderPending(code: string, actor: AuthUserPayload) {
-    return this.mutate(code, async (tx, order) => {
+    const orphaned: string[] = [];
+    const detail = await this.mutate(code, async (tx, order) => {
       assertHandoverManager(order, actor);
+      orphaned.push(...pendingImageIds(order));
       const { state } = orderTicketState(order, orderEntries(order));
       if (state !== 'WAITING' && state !== 'CLAIMED') {
         throw new BadRequestException(
@@ -443,6 +452,9 @@ export class ProductionSubTicketsService {
         },
       });
     });
+    // Lượt giao chưa thành dòng cấp đá nào — ảnh gói đá đã chụp không còn ai trỏ tới.
+    await this.materials.discardImages(orphaned);
+    return detail;
   }
 
   async claimOrder(code: string, actor: AuthUserPayload) {
@@ -489,7 +501,8 @@ export class ProductionSubTicketsService {
   }
 
   async unclaimOrder(code: string, actor: AuthUserPayload) {
-    return this.mutate(code, async (tx, order) => {
+    const orphaned: string[] = [];
+    const detail = await this.mutate(code, async (tx, order) => {
       const { state } = orderTicketState(order, orderEntries(order));
       if (state !== 'CLAIMED') {
         throw new BadRequestException(`Phiếu ${order.code} chưa có thợ nhận`);
@@ -500,6 +513,7 @@ export class ProductionSubTicketsService {
         );
       }
       // Giao theo chỉ định (Nguội / Vào đá): thợ trả lại thì huỷ cả lượt giao, thủ kho giao lại.
+      orphaned.push(...pendingImageIds(order));
       await tx.productionOrder.update({
         where: { id: order.id },
         data: order.pendingHandover
@@ -520,6 +534,8 @@ export class ProductionSubTicketsService {
         },
       });
     });
+    await this.materials.discardImages(orphaned);
+    return detail;
   }
 
   /**
@@ -641,6 +657,19 @@ export class ProductionSubTicketsService {
           qty: line.qty ?? null,
           weight: line.weight ?? null,
           stoneCount: line.stoneCount ?? null,
+          // Kiểm ảnh gói đá ngay lúc chỉ định — đừng để thợ nhận hàng mới gặp lỗi thiếu ảnh.
+          ...(line.kind === MaterialRequestKind.STONE
+            ? {
+                images: this.materials
+                  .stoneImages(line.images)
+                  .map(({ url, publicId, width, height }) => ({
+                    url,
+                    publicId,
+                    width,
+                    height,
+                  })),
+              }
+            : {}),
         })),
         handedByUserId: actor.id,
         handedByName: actorName(actor),
@@ -1435,6 +1464,7 @@ export class ProductionSubTicketsService {
       }
       const weight = packWeightOf(line.weight);
       const qty = stoneQtyOf(material, line.stoneCount, weight);
+      const images = this.materials.stoneImages(line.images);
       await assertStoneFree(tx, this.inventory, material, qty);
       // Phía kho: phiếu xuất nháp (chưa trừ tồn, trừ khả dụng). Phía sản xuất: chi tiết cấp đá.
       const draft = await this.inventory.createOutboundDraft(tx, {
@@ -1455,6 +1485,7 @@ export class ProductionSubTicketsService {
           stoneCount: line.stoneCount ?? null,
           weight,
           createdByName: by,
+          images: { create: images },
         },
       });
     }
@@ -2223,7 +2254,9 @@ export class ProductionSubTicketsService {
           closedBy: actorName(actor),
           createdBy: actorName(actor),
           createdByUserId: actor.id,
-          description: `[Bù cho ${label}] ${order.description}`.trim(),
+          // Phiếu bù là bù cho đơn hàng (mã DH…), không phải cho mã lệnh sản xuất.
+          description:
+            `[Bù cho ${order.intakeCode ?? label}] ${order.description}`.trim(),
           receivedDate: todayVn(),
           dueDate: order.dueDate,
           hasMold: order.hasMold,
@@ -3503,6 +3536,14 @@ function castingSlipMyItem(row: {
 
 function isAdmin(actor: AuthUserPayload) {
   return userHasRole(actor.roleCode, actor.extraRoles ?? [], RoleCode.ADMIN);
+}
+
+/** Ảnh gói đá đang nằm trong lượt giao chờ thợ nhận của phiếu mẹ. */
+function pendingImageIds(order: Pick<OrderDetail, 'pendingHandover'>) {
+  const pending = order.pendingHandover as PendingOrderHandover | null;
+  return (pending?.materials ?? []).flatMap((line) =>
+    (line.images ?? []).map((image) => image.publicId),
+  );
 }
 
 function assertCanReportStageDefect(actor: AuthUserPayload) {

@@ -434,6 +434,14 @@ export class HandoverMaterialDto {
   @IsInt()
   @Min(1)
   stoneCount?: number | null;
+
+  /** Đá: ảnh gói đá trên cân thủ kho chụp lúc cấp — bắt buộc với mọi dòng đá. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => StageImageDto)
+  images?: StageImageDto[];
 }
 
 /** Thông tin một lần giao khâu — người giao là tài khoản đăng nhập. */
@@ -740,6 +748,14 @@ export class StoneHoldLineDto {
   @Transform(emptyToNull)
   @Matches(DECIMAL, { message: 'Cân cả gói đá và nhập TL gói (g)' })
   weight!: string;
+
+  /** Đá: ảnh gói đá trên cân thủ kho chụp lúc cấp — bắt buộc. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => StageImageDto)
+  images?: StageImageDto[];
 }
 
 /**
@@ -842,6 +858,14 @@ export class IssueMaterialRequestDto {
   @IsInt()
   @Min(1)
   stoneCount?: number | null;
+
+  /** Đá: ảnh gói đá trên cân thủ kho chụp lúc cấp — bắt buộc với mọi dòng đá. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => StageImageDto)
+  images?: StageImageDto[];
 }
 
 export class RejectMaterialRequestDto {

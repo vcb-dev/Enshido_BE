@@ -128,6 +128,7 @@ export const detailInclude = {
     where: { stageEntryId: { not: null } },
     orderBy: { createdAt: 'asc' },
     include: {
+      images: { orderBy: { sortOrder: 'asc' } },
       material: {
         select: {
           id: true,
@@ -1282,6 +1283,7 @@ function stoneLinesOf(
       usedCount: number | null;
       extra: number;
       done: boolean;
+      images: StoneHold['images'];
     }
   >();
   const add = (a: Prisma.Decimal | null, b: Prisma.Decimal | null) =>
@@ -1312,6 +1314,7 @@ function stoneLinesOf(
         usedCount: hold.usedCount,
         extra,
         done,
+        images: [...hold.images],
       });
       continue;
     }
@@ -1334,6 +1337,7 @@ function stoneLinesOf(
         : line.usedCount + hold.usedCount;
     line.extra += extra;
     line.done = line.done && done;
+    line.images.push(...hold.images);
   }
   return [...lines.values()].map((line) => ({
     materialId: line.materialId,
@@ -1354,6 +1358,13 @@ function stoneLinesOf(
     usedCount: line.done ? line.usedCount : null,
     /** Số lần thợ xin thêm mã này trong khâu. */
     extraCount: line.extra,
+    /** Ảnh gói đá thủ kho chụp lúc cấp (mọi lần cấp của mã này trong khâu). */
+    images: line.images.map((image) => ({
+      url: image.url,
+      publicId: image.publicId,
+      width: image.width,
+      height: image.height,
+    })),
   }));
 }
 

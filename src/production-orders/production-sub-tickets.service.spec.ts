@@ -30,6 +30,11 @@ const actor = (
 const manager = actor('creator');
 const worker = actor('worker', RoleCode.WORKER);
 const admin = actor('admin', RoleCode.ADMIN);
+const stonePhoto = {
+  url: 'https://res.cloudinary.com/demo/image/upload/enshido/stone.jpg',
+  publicId: 'enshido/stone',
+};
+
 const assignment: AssignOrderDto = {
   stage: ProductionStage.FILING,
   craftsmanUserId: worker.id,
@@ -110,6 +115,17 @@ function setup(order = makeOrder()) {
       >()
       .mockResolvedValue(['btp-cho-vao-da']),
     bustStock: jest.fn(),
+    stoneImages: jest.fn((images?: Array<{ publicId: string }> | null) => {
+      if (!images?.length) throw new BadRequestException('thiếu ảnh gói đá');
+      return images.map((image, sortOrder) => ({
+        url: 'https://res.cloudinary.com/x.jpg',
+        width: null,
+        height: null,
+        ...image,
+        sortOrder,
+      }));
+    }),
+    discardImages: jest.fn().mockResolvedValue(undefined),
   };
   const tx = {
     productionOrder: {
@@ -412,6 +428,7 @@ describe('phiếu mẹ: giao → nhận hàng → xuất kho → nộp QC', () =
             qty: '20',
             weight: '2',
             stoneCount: 20,
+            images: [stonePhoto],
           },
         ],
       },
@@ -425,8 +442,61 @@ describe('phiếu mẹ: giao → nhận hàng → xuất kho → nộp QC', () =
       handedStoneCount: 20,
     });
     expect(materials.issueAtHandover.mock.calls[0][3]).toEqual([
-      expect.objectContaining({ kind: 'STONE', weight: '2' }),
+      expect.objectContaining({
+        kind: 'STONE',
+        weight: '2',
+        images: [expect.objectContaining({ publicId: stonePhoto.publicId })],
+      }),
     ]);
+  });
+
+  it('Vào đá: dòng đá không có ảnh gói đá thì không giao được', async () => {
+    const { service, order } = setup(
+      makeOrder({ status: 'WAIT_STONE', stages: [returnedFiling()] }),
+    );
+    await expect(
+      service.assignOrder(
+        order.code,
+        {
+          ...assignment,
+          stage: 'STONE_SETTING',
+          handedQty: 10,
+          handedSilverWeight: '18',
+          materials: [
+            { materialId: 'stones', kind: 'STONE', qty: '20', weight: '2' },
+          ],
+        },
+        manager,
+      ),
+    ).rejects.toThrow('thiếu ảnh gói đá');
+    expect(order.pendingStage).toBeNull();
+  });
+
+  it('huỷ lượt giao Vào đá thì dọn ảnh gói đá đã chụp', async () => {
+    const { service, order, materials } = setup(
+      makeOrder({ status: 'WAIT_STONE', stages: [returnedFiling()] }),
+    );
+    await service.assignOrder(
+      order.code,
+      {
+        ...assignment,
+        stage: 'STONE_SETTING',
+        handedQty: 10,
+        handedSilverWeight: '18',
+        materials: [
+          {
+            materialId: 'stones',
+            kind: 'STONE',
+            qty: '20',
+            weight: '2',
+            images: [stonePhoto],
+          },
+        ],
+      },
+      manager,
+    );
+    await service.cancelOrderPending(order.code, manager);
+    expect(materials.discardImages).toHaveBeenCalledWith([stonePhoto.publicId]);
   });
 
   it('không cho Vào đá nếu đơn bỏ đá', async () => {

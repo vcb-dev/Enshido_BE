@@ -509,19 +509,11 @@ export class ProductionOrdersService {
           workReceiptPrepared: Boolean(parentProgress && row.pendingHandover),
           images: [],
           reworks: query.groupReworks
-            ? row.reworkOrders.map((rework) => {
-                const sourceTicket = row.subTickets.find(
-                  (ticket) => ticket.id === rework.reworkOfSubTicketId,
-                );
-                return {
-                  intake: toIntakeRow(rework),
-                  orderCode: rework.code,
-                  productionStatus: rework.status,
-                  sourceTicketCode: sourceTicket
-                    ? `${row.code}-${sourceTicket.no}`
-                    : row.code,
-                };
-              })
+            ? row.reworkOrders.map((rework) => ({
+                intake: toIntakeRow(rework),
+                orderCode: rework.code,
+                productionStatus: rework.status,
+              }))
             : [],
           subTickets: row.subTickets.map((ticket) =>
             subTicketSummary(

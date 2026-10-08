@@ -957,10 +957,29 @@ model ProductionStoneHold {
   /// Phiếu xuất nháp kho tương ứng (SL / TL đang giữ, trạng thái phía kho).
   draft     StockOutboundDraft?        @relation(fields: [draftId], references: [id], onDelete: SetNull)
   material  Material                   @relation(fields: [materialId], references: [id], onDelete: Restrict)
+  /// Ảnh gói đá trên cân thủ kho chụp lúc cấp — bắt buộc với dòng cấp mới.
+  images    ProductionStoneHoldImage[]
 
   @@index([materialId, status])
   @@index([subTicketId, status])
   @@map("production_stone_holds")
+}
+
+/// Ảnh làm chứng thủ kho chụp lúc cấp một gói đá cho khâu Vào đá (đã tải lên Cloudinary).
+model ProductionStoneHoldImage {
+  id        String   @id @default(uuid()) @db.Uuid
+  holdId    String   @map("hold_id") @db.Uuid
+  url       String
+  publicId  String   @map("public_id")
+  width     Int?
+  height    Int?
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  hold ProductionStoneHold @relation(fields: [holdId], references: [id], onDelete: Cascade)
+
+  @@index([holdId, sortOrder])
+  @@map("production_stone_hold_images")
 }
 
 /// Thợ xin xuất thêm NVL (bạc, đá…) trong lúc đang làm một khâu — xuất đến đâu làm đến đó.

@@ -20,6 +20,7 @@ import {
 } from '../inventory/inventory.service';
 import { dbTable } from '../prisma/database-url';
 import { PrismaService } from '../prisma/prisma.service';
+import { CloudinaryService } from '../uploads/cloudinary.service';
 import { decStr } from '../util/money';
 import { ACTIVITY, logActivity } from './activity-log';
 import {
@@ -27,6 +28,7 @@ import {
   IssueMaterialRequestDto,
   MaterialRequestDto,
   RejectMaterialRequestDto,
+  StageImageDto,
 } from './dto/production-order.dto';
 import {
   actorName,
@@ -109,6 +111,8 @@ type IssueLine = {
   weight: Prisma.Decimal | null;
   stoneCount: number | null;
   note: string;
+  /** Đá: ảnh gói đá trên cân thủ kho chụp lúc cấp. */
+  images?: StageImageDto[] | null;
 };
 
 /** Ngày hôm nay theo giờ Việt Nam — ngày trên phiếu xuất. */
@@ -186,7 +190,49 @@ export class ProductionMaterialRequestsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly inventory: InventoryService,
+    private readonly cloudinary: CloudinaryService,
   ) {}
+
+  /**
+   * Ảnh gói đá thủ kho chụp lúc cấp (mọi đường cấp đá dùng chung): bỏ ảnh trùng, chỉ nhận ảnh
+   * trong kho Cloudinary của hệ thống, bắt buộc ít nhất một ảnh cho mỗi dòng đá.
+   */
+  stoneImages(images: readonly StageImageDto[] | null | undefined) {
+    const seen = new Set<string>();
+    const result = (images ?? [])
+      .filter((image) => {
+        if (seen.has(image.publicId)) return false;
+        seen.add(image.publicId);
+        return true;
+      })
+      .map((image, sortOrder) => {
+        const host = new URL(image.url).hostname;
+        if (
+          host !== 'res.cloudinary.com' ||
+          !this.cloudinary.ownsPublicId(image.publicId)
+        ) {
+          throw new BadRequestException('Ảnh không thuộc kho ảnh của hệ thống');
+        }
+        return {
+          url: image.url,
+          publicId: image.publicId,
+          width: image.width ?? null,
+          height: image.height ?? null,
+          sortOrder,
+        };
+      });
+    if (result.length === 0) {
+      throw new BadRequestException(
+        'Chụp ít nhất một ảnh gói đá trên cân cho mỗi dòng đá cấp',
+      );
+    }
+    return result;
+  }
+
+  /** Ảnh đã tải lên nhưng lượt giao bị huỷ trước khi ghi vào dòng cấp đá — dọn khỏi Cloudinary. */
+  discardImages(publicIds: string[]) {
+    return this.cloudinary.destroy(publicIds);
+  }
 
   /** Thợ xin xuất NVL cho phiếu mình đang làm. `no` null = phiếu mẹ (đơn chưa chia). */
   async create(
@@ -319,6 +365,7 @@ export class ProductionMaterialRequestsService {
         weight: decimalOrNull(dto.weight),
         stoneCount: dto.stoneCount ?? null,
         note: `thợ ${request.requestedByName} xin`,
+        images: dto.images,
       };
       // Vào đá của cả phiếu mẹ / con giữ chỗ đá, thủ kho xác nhận sau QC mới xuất phần dùng.
       const holds =
@@ -390,6 +437,7 @@ export class ProductionMaterialRequestsService {
         weight: decimalOrNull(line.weight),
         stoneCount: line.stoneCount ?? null,
         note: 'xuất lúc giao khâu',
+        images: line.images,
       };
       const holds =
         line.kind === MaterialRequestKind.STONE &&
@@ -515,6 +563,7 @@ export class ProductionMaterialRequestsService {
         'Đá cấp cho khâu Vào đá phải lấy ở kho NVL chính',
       );
     }
+    const images = this.stoneImages(line.images);
     await tx.$executeRaw`SELECT set_config('lock_timeout', '2000', true)`;
     await assertStoneFree(tx, this.inventory, material, qty);
     // Phía kho: phiếu xuất nháp (chưa trừ tồn, trừ khả dụng). Phía sản xuất: chi tiết cấp đá.
@@ -539,6 +588,7 @@ export class ProductionMaterialRequestsService {
         stoneCount,
         weight,
         createdByName: actorName(actor),
+        images: { create: images },
       },
       select: { id: true },
     });
