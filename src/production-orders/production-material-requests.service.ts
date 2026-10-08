@@ -439,18 +439,19 @@ export class ProductionMaterialRequestsService {
         note: 'xuất lúc giao khâu',
         images: line.images,
       };
-      const holds =
+      // Đá Vào đá lúc giao chỉ giữ chỗ, và là "đá giao" của khâu (cộng từ các dòng giữ chỗ) —
+      // không ghi thêm thành yêu cầu đã xuất, nếu không đá vào khâu bị cộng hai lần.
+      if (
         line.kind === MaterialRequestKind.STONE &&
-        entry.stage === ProductionStage.STONE_SETTING;
-      const issued = holds
-        ? {
-            ...(await this.holdStone(tx, order, entry, actor, null, issueLine)),
-            outboundId: null,
-            warehouseCode: NVL_WAREHOUSE_CODE,
-          }
-        : await this.issueStock(tx, order, entry, actor, issueLine);
+        entry.stage === ProductionStage.STONE_SETTING
+      ) {
+        await this.holdStone(tx, order, entry, actor, null, issueLine);
+        warehouses.add(NVL_WAREHOUSE_CODE);
+        continue;
+      }
+      const issued = await this.issueStock(tx, order, entry, actor, issueLine);
       warehouses.add(issued.warehouseCode);
-      const request = await tx.productionMaterialRequest.create({
+      await tx.productionMaterialRequest.create({
         data: {
           orderId: order.id,
           subTicketId: entry.subTicketId,
@@ -472,14 +473,7 @@ export class ProductionMaterialRequestsService {
           handledByName: actorName(actor),
           handledAt: new Date(),
         },
-        select: { id: true },
       });
-      if ('holdId' in issued) {
-        await tx.productionStoneHold.update({
-          where: { id: issued.holdId },
-          data: { requestId: request.id },
-        });
-      }
     }
     return [...warehouses];
   }

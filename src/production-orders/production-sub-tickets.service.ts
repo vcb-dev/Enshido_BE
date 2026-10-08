@@ -28,6 +28,7 @@ import {
   AssignSubTicketDto,
   EarlyStoneReturnDto,
   HandoverInfoDto,
+  HandoverMaterialDto,
   StoneHoldLineDto,
   OpenOrderStageDto,
   SplitSubTicketsDto,
@@ -161,6 +162,67 @@ function filingBtpLine(order: OrderDetail, qty: number) {
     weight: leftQty.eq(qty)
       ? leftWeight
       : leftWeight.mul(qty).div(leftQty).toDecimalPlaces(4),
+  };
+}
+
+/**
+ * BTP đã nguội của phiếu mẹ cho khâu Vào đá: hàng đạt thủ kho nhập kho BTP lúc xác nhận khâu
+ * trước (SL + TL QC nhận lại). Trả null khi khâu trước làm theo luồng cũ, không nhập kho BTP —
+ * lúc đó thủ kho tự chọn BTP như trước.
+ */
+function filedBtpLine(
+  order: OrderDetail,
+  previous: StageEntry | undefined,
+  handedQty: number,
+  availableQty: number,
+) {
+  if (!previous?.outputMaterialId) return null;
+  const weight = previous.returnedSilverWeight;
+  if (!weight || weight.lte(0)) {
+    throw new BadRequestException('Khâu trước chưa có TL hàng nhận lại');
+  }
+  if (handedQty !== availableQty) {
+    throw new BadRequestException(
+      `Vào đá giao cả ${availableQty} sp QC nhận lại ở khâu trước của đơn ${order.code} — không giao lẻ`,
+    );
+  }
+  return { materialId: previous.outputMaterialId, weight };
+}
+
+/** Dòng xuất BTP tự gắn lúc giao (phôi đã cắt ở Nguội, BTP đã nguội ở Vào đá). */
+function btpHandoverLine(
+  btp: { materialId: string; weight: Prisma.Decimal },
+  qty: number,
+): HandoverMaterialDto {
+  return {
+    materialId: btp.materialId,
+    kind: MaterialRequestKind.METAL,
+    qty: String(qty),
+    weight: decStr(btp.weight),
+  };
+}
+
+/**
+ * Đá giao của một khâu Vào đá = tổng các dòng đá giữ chỗ. Đá tính theo ct / g có thể không đếm
+ * viên: chỉ cộng các dòng có số viên. Không có dòng nào thì null.
+ */
+function heldStoneTotals(
+  holds: readonly {
+    stoneCount: number | null;
+    weight: Prisma.Decimal | null;
+  }[],
+) {
+  if (holds.length === 0) return null;
+  return {
+    handedStoneCount: holds.some((hold) => hold.stoneCount != null)
+      ? holds.reduce((sum, hold) => sum + (hold.stoneCount ?? 0), 0)
+      : null,
+    handedStoneWeight: holds.every((hold) => hold.weight != null)
+      ? holds.reduce(
+          (sum, hold) => sum.add(hold.weight ?? 0),
+          new Prisma.Decimal(0),
+        )
+      : null,
   };
 }
 
@@ -623,33 +685,56 @@ export class ProductionSubTicketsService {
         dto.stage === ProductionStage.FILING && order.blankMaterialId
           ? filingBtpLine(order, handedQty)
           : null;
+      // Vào đá: BTP đã nguội thủ kho nhập kho lúc xác nhận khâu trước tự xuất khi thợ nhận hàng
+      // (giống phiếu con) — thủ kho chỉ chọn đá, không chọn lại BTP hay nhập TL bạc.
+      const filedBtp =
+        dto.stage === ProductionStage.STONE_SETTING
+          ? filedBtpLine(order, last, handedQty, available.qty)
+          : null;
+      const picked = dto.materials ?? [];
+      if (dto.stage === ProductionStage.STONE_SETTING) {
+        if (!picked.some((line) => line.kind === MaterialRequestKind.STONE)) {
+          throw new BadRequestException(
+            'Khâu Vào đá: chọn đá cấp cho thợ (số viên, TL)',
+          );
+        }
+        if (
+          filedBtp &&
+          picked.some((line) => line.kind !== MaterialRequestKind.STONE)
+        ) {
+          throw new BadRequestException(
+            `BTP đã nguội của đơn ${order.code} tự xuất khi thợ nhận hàng — chỉ chọn đá cấp cho thợ`,
+          );
+        }
+      }
+      const autoBtp = cutBtp ?? filedBtp;
       const materials = cutBtp
-        ? [
-            {
-              materialId: cutBtp.materialId,
-              kind: MaterialRequestKind.METAL,
-              qty: String(handedQty),
-              weight: decStr(cutBtp.weight),
-            },
-          ]
-        : (dto.materials ?? []);
+        ? [btpHandoverLine(cutBtp, handedQty)]
+        : filedBtp
+          ? [btpHandoverLine(filedBtp, handedQty), ...picked]
+          : picked;
       if (materials.length === 0) {
         throw new BadRequestException(
           `Khâu ${STAGE_LABEL[dto.stage]} phải chọn BTP xuất cho thợ`,
         );
       }
+      // Bạc vào khâu lấy từ dòng BTP xuất kho; TL chuyển tay chỉ còn dùng khi khâu trước làm theo
+      // luồng cũ (không nhập kho BTP) — ghi cả hai là cộng đôi bạc vào khâu.
+      const handedSilverWeight = autoBtp
+        ? null
+        : (dto.handedSilverWeight ?? null);
       assertHandedSilverWithin(
         order,
         null,
-        handedSilverOf({ ...dto, materials }, entries),
+        handedSilverOf({ ...dto, handedSilverWeight, materials }, entries),
       );
-      handedStoneOf(dto.stage, dto, order);
       const now = new Date();
       const pending: PendingOrderHandover = {
         handedQty,
-        handedSilverWeight: dto.handedSilverWeight ?? null,
-        handedStoneCount: dto.handedStoneCount ?? null,
-        handedStoneWeight: dto.handedStoneWeight ?? null,
+        handedSilverWeight,
+        // Đá giao tính từ các dòng đá giữ chỗ lúc thợ nhận hàng, không nhận tổng client gửi.
+        handedStoneCount: null,
+        handedStoneWeight: null,
         note: dto.note?.trim() || null,
         materials: materials.map((line) => ({
           materialId: line.materialId,
@@ -871,7 +956,12 @@ export class ProductionSubTicketsService {
         handedAt,
         handedQty,
         handedSilverWeight: handedSilver,
-        ...handedStoneOf(stage, dto, order),
+        // Vào đá: đá giao ghi sau, từ các dòng đá giữ chỗ (bên dưới) — không nhận tổng gửi kèm.
+        ...handedStoneOf(
+          stage,
+          stage === ProductionStage.STONE_SETTING ? {} : dto,
+          order,
+        ),
         craftsmanUserId: craftsman.id,
         craftsmanName: craftsman.name,
         note: dto.note?.trim() || null,
@@ -905,10 +995,29 @@ export class ProductionSubTicketsService {
         issuer,
       )),
     );
+    // Đá giao của khâu = tổng các dòng đá vừa giữ chỗ — cùng cách với phiếu con.
+    const stones =
+      stage === ProductionStage.STONE_SETTING
+        ? heldStoneTotals(
+            await tx.productionStoneHold.findMany({
+              where: { stageEntryId: created.id, status: 'HELD' },
+              select: { stoneCount: true, weight: true },
+            }),
+          )
+        : null;
+    if (stones) {
+      await tx.productionStageEntry.update({
+        where: { id: created.id },
+        data: stones,
+      });
+    }
     await logActivity(tx, order.id, actor, ACTIVITY.STAGE_HANDOVER, {
       orderCode: order.code,
       stage,
-      after: { ...entrySnapshot(created), materials: dto.materials ?? [] },
+      after: {
+        ...entrySnapshot({ ...created, ...stones }),
+        materials: dto.materials ?? [],
+      },
     });
   }
 
@@ -1601,16 +1710,8 @@ export class ProductionSubTicketsService {
 
       const handedAt = new Date();
       const handedByName = ticket.pendingByName ?? 'Thủ kho';
-      // Đá tính theo ct / g có thể không đếm viên: chỉ cộng các dòng có số viên.
-      const stoneCount = holds.some((hold) => hold.stoneCount != null)
-        ? holds.reduce((sum, hold) => sum + (hold.stoneCount ?? 0), 0)
-        : null;
-      const stoneWeight = holds.every((hold) => hold.weight != null)
-        ? holds.reduce(
-            (sum, hold) => sum.add(hold.weight ?? 0),
-            new Prisma.Decimal(0),
-          )
-        : null;
+      const heldStones = heldStoneTotals(holds);
+      const stoneCount = heldStones?.handedStoneCount ?? null;
       await tx.productionSubTicket.update({
         where: { id: ticket.id },
         data: CLEAR_PENDING,
@@ -1625,12 +1726,7 @@ export class ProductionSubTicketsService {
           handedAt,
           handedQty,
           handedSilverWeight,
-          ...(holds.length > 0
-            ? {
-                handedStoneCount: stoneCount,
-                handedStoneWeight: holds.length > 0 ? stoneWeight : null,
-              }
-            : {}),
+          ...heldStones,
           craftsmanUserId: craftsman.id,
           craftsmanName: actorName(craftsman),
         },
