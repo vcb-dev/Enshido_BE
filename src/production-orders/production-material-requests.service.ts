@@ -320,22 +320,13 @@ export class ProductionMaterialRequestsService {
         stoneCount: dto.stoneCount ?? null,
         note: `thợ ${request.requestedByName} xin`,
       };
-      const { subTicketId } = entry;
-      // Đá ở Vào đá của phiếu con chỉ giữ chỗ; phiếu mẹ không có bước thủ kho xác nhận nên xuất luôn.
+      // Vào đá của cả phiếu mẹ / con giữ chỗ đá, thủ kho xác nhận sau QC mới xuất phần dùng.
       const holds =
         dto.kind === MaterialRequestKind.STONE &&
-        entry.stage === ProductionStage.STONE_SETTING &&
-        subTicketId;
+        entry.stage === ProductionStage.STONE_SETTING;
       const issued = holds
         ? {
-            ...(await this.holdStone(
-              tx,
-              order,
-              { ...entry, subTicketId },
-              actor,
-              id,
-              line,
-            )),
+            ...(await this.holdStone(tx, order, entry, actor, id, line)),
             outboundId: null,
           }
         : await this.issueStock(tx, order, entry, actor, line);
@@ -392,16 +383,26 @@ export class ProductionMaterialRequestsService {
     const warehouses = new Set<string>();
     for (const line of lines) {
       const qty = decimalOrNull(line.qty) ?? new Prisma.Decimal(0);
-      const issued = await this.issueStock(tx, order, entry, actor, {
+      const issueLine: IssueLine = {
         materialId: line.materialId,
         kind: line.kind,
         qty,
         weight: decimalOrNull(line.weight),
         stoneCount: line.stoneCount ?? null,
         note: 'xuất lúc giao khâu',
-      });
+      };
+      const holds =
+        line.kind === MaterialRequestKind.STONE &&
+        entry.stage === ProductionStage.STONE_SETTING;
+      const issued = holds
+        ? {
+            ...(await this.holdStone(tx, order, entry, actor, null, issueLine)),
+            outboundId: null,
+            warehouseCode: NVL_WAREHOUSE_CODE,
+          }
+        : await this.issueStock(tx, order, entry, actor, issueLine);
       warehouses.add(issued.warehouseCode);
-      await tx.productionMaterialRequest.create({
+      const request = await tx.productionMaterialRequest.create({
         data: {
           orderId: order.id,
           subTicketId: entry.subTicketId,
@@ -423,7 +424,14 @@ export class ProductionMaterialRequestsService {
           handledByName: actorName(actor),
           handledAt: new Date(),
         },
+        select: { id: true },
       });
+      if ('holdId' in issued) {
+        await tx.productionStoneHold.update({
+          where: { id: issued.holdId },
+          data: { requestId: request.id },
+        });
+      }
     }
     return [...warehouses];
   }
@@ -481,15 +489,15 @@ export class ProductionMaterialRequestsService {
   }
 
   /**
-   * Đá thợ xin thêm ở Vào đá của phiếu con: chỉ giữ chỗ trong tồn như đá cấp lúc chỉ định, chưa
+   * Đá Vào đá của phiếu mẹ / con: chỉ giữ chỗ trong tồn, chưa
    * xuất kho. QC cân gói thừa theo mã, thủ kho xác nhận thì mới xuất phần đã dùng.
    */
   private async holdStone(
     tx: Prisma.TransactionClient,
     order: OrderDetail,
-    entry: HandoverEntry & { subTicketId: string },
+    entry: HandoverEntry,
     actor: AuthUserPayload,
-    requestId: string,
+    requestId: string | null,
     line: IssueLine,
   ) {
     const { material, stoneCount, qty, weight } = await this.checkLine(
@@ -519,7 +527,7 @@ export class ProductionMaterialRequestsService {
       note: `Đá phiếu ${no != null ? subTicketCode(order.code, no, order.subTickets.length) : order.code} · khâu Vào đá — ${line.note}`,
       createdByName: actorName(actor),
     });
-    await tx.productionStoneHold.create({
+    const hold = await tx.productionStoneHold.create({
       data: {
         orderId: order.id,
         subTicketId: entry.subTicketId,
@@ -532,8 +540,9 @@ export class ProductionMaterialRequestsService {
         weight,
         createdByName: actorName(actor),
       },
+      select: { id: true },
     });
-    return { qty, weight, stoneCount };
+    return { qty, weight, stoneCount, holdId: hold.id };
   }
 
   /** Kiểm tra mã theo kho của khâu, giới hạn phôi, số viên đá — dùng chung cho xuất và giữ chỗ. */

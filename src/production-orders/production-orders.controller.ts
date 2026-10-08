@@ -433,6 +433,24 @@ export class ProductionOrdersController {
     return this.subTickets.assignOrder(code, dto, user);
   }
 
+  /** Báo lỗi ở khâu đang làm trên phiếu mẹ: thợ giữ khâu, QC hoặc admin. */
+  @Post(':code/work/stage-defect')
+  reportOrderStageDefect(
+    @Param('code') code: string,
+    @Body() dto: StageDefectDto,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.subTickets.reportStageDefect(code, null, dto, user);
+  }
+
+  @Delete(':code/work/stage-defect')
+  clearOrderStageDefect(
+    @Param('code') code: string,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.subTickets.clearStageDefect(code, null, user);
+  }
+
   /** Thợ được chỉ định quét QR nhận hàng trên phiếu mẹ. */
   @Post(':code/work/accept')
   @RequirePermissions(Permission.PRODUCTION_WORKER)

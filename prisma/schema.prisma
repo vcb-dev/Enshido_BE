@@ -916,9 +916,10 @@ model ProductionSubTicket {
 model ProductionStoneHold {
   id                  String   @id @default(uuid()) @db.Uuid
   orderId             String   @map("order_id") @db.Uuid
-  subTicketId         String   @map("sub_ticket_id") @db.Uuid
+  /// null = dòng đá của khâu trên phiếu mẹ.
+  subTicketId         String?  @map("sub_ticket_id") @db.Uuid
   materialId          String   @map("material_id") @db.Uuid
-  /// Yêu cầu xin thêm của thợ; null = đá cấp lúc chỉ định thợ.
+  /// Yêu cầu cấp đá liên quan; null = đá chỉ định trực tiếp cho phiếu con.
   requestId           String?  @unique @map("request_id") @db.Uuid
   /// Phiếu xuất nháp kho của dòng cấp này.
   draftId             String?  @unique @map("draft_id") @db.Uuid
@@ -948,7 +949,7 @@ model ProductionStoneHold {
   updatedAt           DateTime @updatedAt @map("updated_at")
 
   order     ProductionOrder            @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  subTicket ProductionSubTicket        @relation(fields: [subTicketId], references: [id], onDelete: Cascade)
+  subTicket ProductionSubTicket?       @relation(fields: [subTicketId], references: [id], onDelete: Cascade)
   request   ProductionMaterialRequest? @relation(fields: [requestId], references: [id], onDelete: Cascade)
   /// Phiếu xuất nháp kho tương ứng (SL / TL đang giữ, trạng thái phía kho).
   draft     StockOutboundDraft?        @relation(fields: [draftId], references: [id], onDelete: SetNull)

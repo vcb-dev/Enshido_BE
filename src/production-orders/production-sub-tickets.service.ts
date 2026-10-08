@@ -690,13 +690,13 @@ export class ProductionSubTicketsService {
       // Chỉ chính thợ được chỉ định nhận hàng — không ai nhận thay, kể cả admin.
       if (order.claimedByUserId !== actor.id) {
         throw new ForbiddenException(
-          `Phiếu ${order.code} giao cho ${order.claimedByName ?? 'thợ khác'} — chỉ thợ đó nhận hàng`,
+          `Phiếu ${order.code} giao cho ${order.claimedByName ?? 'thợ khác'} — chỉ thợ đó được xác nhận`,
         );
       }
       const pending = order.pendingHandover as PendingOrderHandover | null;
       if (!isReceiptStage(stage) || !pending) {
         throw new BadRequestException(
-          `Khâu ${STAGE_LABEL[stage]} không nhận hàng qua QR — nhờ người giao bấm "Xác nhận giao"`,
+          `Khâu ${STAGE_LABEL[stage]} không dùng bước thợ xác nhận — nhờ người giao bấm "Xác nhận giao"`,
         );
       }
       const craftsman = await tx.user.findFirst({
@@ -768,7 +768,7 @@ export class ProductionSubTicketsService {
       }
       if (isReceiptStage(stage) && order.pendingHandover) {
         throw new BadRequestException(
-          `Khâu ${STAGE_LABEL[stage]} không xác nhận giao tay — thủ kho giao thợ rồi thợ quét QR bấm "Nhận hàng"`,
+          `Khâu ${STAGE_LABEL[stage]} không xác nhận giao tay — thủ kho giao thợ rồi thợ quét QR bấm "Xác nhận"`,
         );
       }
       if (order.claimedByUserId === actor.id && !isAdmin(actor)) {
@@ -1505,7 +1505,7 @@ export class ProductionSubTicketsService {
       // Chỉ chính thợ được chỉ định nhận hàng — không ai nhận thay, kể cả admin.
       if (ticket.claimedByUserId !== actor.id) {
         throw new ForbiddenException(
-          `Phiếu ${ticketCode(order, ticket)} giao cho ${ticket.claimedByName ?? 'thợ khác'} — chỉ thợ đó nhận hàng`,
+          `Phiếu ${ticketCode(order, ticket)} giao cho ${ticket.claimedByName ?? 'thợ khác'} — chỉ thợ đó được xác nhận`,
         );
       }
       if (
@@ -1513,7 +1513,7 @@ export class ProductionSubTicketsService {
         stage !== ProductionStage.STONE_SETTING
       ) {
         throw new BadRequestException(
-          `Khâu ${STAGE_LABEL[stage]} không nhận hàng qua QR — nhờ người giao bấm "Xác nhận giao"`,
+          `Khâu ${STAGE_LABEL[stage]} không dùng bước thợ xác nhận — nhờ người giao bấm "Xác nhận giao"`,
         );
       }
       const craftsman = await tx.user.findFirst({
@@ -1679,18 +1679,26 @@ export class ProductionSubTicketsService {
    */
   async reportStageDefect(
     code: string,
-    no: number,
+    no: number | null,
     dto: StageDefectDto,
     actor: AuthUserPayload,
   ) {
     return this.mutate(code, async (tx, order) => {
       assertOrderActive(order);
-      const ticket = requireSubTicket(order, no);
-      const entries = entriesOf(order, ticket.id);
+      const ticket = no == null ? null : requireSubTicket(order, no);
+      if (!ticket && order.subTickets.length > 0) {
+        throw new BadRequestException(
+          'Đơn đã chia phiếu con — báo lỗi trên phiếu con đang làm',
+        );
+      }
+      const label = ticket ? ticketCode(order, ticket) : order.code;
+      const entries = ticket
+        ? entriesOf(order, ticket.id)
+        : orderEntries(order);
       const open = entries.find((entry) => !entry.returnedAt);
       if (!open) {
         throw new BadRequestException(
-          `Phiếu ${ticketCode(order, ticket)} không có khâu nào đang làm để báo lỗi`,
+          `Phiếu ${label} không có khâu nào đang làm để báo lỗi`,
         );
       }
       const isHolder = open.craftsmanUserId === actor.id;
@@ -1717,7 +1725,7 @@ export class ProductionSubTicketsService {
       });
       await logActivity(tx, order.id, actor, ACTIVITY.STAGE_DEFECT, {
         orderCode: order.code,
-        subTicketNo: ticket.no,
+        subTicketNo: ticket?.no ?? null,
         stage: open.stage,
         note: dto.note,
       });
@@ -1726,12 +1734,21 @@ export class ProductionSubTicketsService {
   }
 
   /** Bỏ báo lỗi (báo nhầm): người đã báo, QC hoặc admin — chỉ khi QC chưa nhận lại. */
-  async clearStageDefect(code: string, no: number, actor: AuthUserPayload) {
+  async clearStageDefect(
+    code: string,
+    no: number | null,
+    actor: AuthUserPayload,
+  ) {
     return this.mutate(code, async (tx, order) => {
-      const ticket = requireSubTicket(order, no);
-      const open = entriesOf(order, ticket.id).find(
-        (entry) => !entry.returnedAt,
-      );
+      const ticket = no == null ? null : requireSubTicket(order, no);
+      if (!ticket && order.subTickets.length > 0) {
+        throw new BadRequestException(
+          'Đơn đã chia phiếu con — bỏ báo lỗi trên phiếu con đang làm',
+        );
+      }
+      const open = (
+        ticket ? entriesOf(order, ticket.id) : orderEntries(order)
+      ).find((entry) => !entry.returnedAt);
       if (!open?.defectReportedAt) {
         throw new BadRequestException('Khâu này chưa báo lỗi');
       }
@@ -1755,7 +1772,7 @@ export class ProductionSubTicketsService {
       });
       await logActivity(tx, order.id, actor, ACTIVITY.STAGE_CLEAR_DEFECT, {
         orderCode: order.code,
-        subTicketNo: ticket.no,
+        subTicketNo: ticket?.no ?? null,
         stage: open.stage,
       });
       await touch(tx, order.id);
@@ -1766,27 +1783,18 @@ export class ProductionSubTicketsService {
    * Bước 13–15, 18: thủ kho xác nhận sau khi QC nhận lại khâu Nguội / Vào đá. Lúc này mới nhập
    * kho: hàng đạt → kho BTP (mã riêng của đơn, khâu sau lấy hàng từ đây), hàng lỗi + nguyên liệu
    * thừa S925 / S999 → kho NVL. Cả phiếu lỗi 100% thì phiếu tự chốt Lỗi (M Lỗi nguội…).
-   *
-   * Thủ kho chỉ kiểm tra khi QC báo có hàng lỗi. QC cân không có hàng lỗi thì `auto`: hệ thống tự
-   * xác nhận ngay sau khi QC lưu (người xác nhận ghi là QC) — các bước nhập kho y như thủ kho bấm.
+   * Cả phiếu mẹ / con đều chờ thủ kho xác nhận, kể cả QC không báo hàng lỗi.
    */
-  async confirmStage(
-    code: string,
-    stageId: string,
-    actor: AuthUserPayload,
-    auto = false,
-  ) {
+  async confirmStage(code: string, stageId: string, actor: AuthUserPayload) {
     return this.mutate(code, async (tx, order) => {
       const entry = requireStage(order, stageId);
-      if (auto && (entry.defectQty ?? 0) > 0) {
-        throw new BadRequestException(
-          'Có hàng lỗi — chờ thủ kho kiểm tra và xác nhận lỗi',
-        );
-      }
       const ticket = order.subTickets.find(
         (item) => item.id === entry.subTicketId,
       );
-      if (!ticket || !KEEPER_CONFIRM_STAGES.includes(entry.stage)) {
+      if (
+        (entry.subTicketId && !ticket) ||
+        !KEEPER_CONFIRM_STAGES.includes(entry.stage)
+      ) {
         throw new BadRequestException(
           `Khâu ${STAGE_LABEL[entry.stage]} không có bước thủ kho xác nhận`,
         );
@@ -1797,7 +1805,7 @@ export class ProductionSubTicketsService {
       if (entry.confirmedAt) {
         throw new BadRequestException('Thủ kho đã xác nhận khâu này');
       }
-      const label = ticketCode(order, ticket);
+      const label = ticket ? ticketCode(order, ticket) : order.code;
       const stageName = STAGE_LABEL[entry.stage];
       const by = actorName(actor);
       const now = new Date();
@@ -1879,7 +1887,7 @@ export class ProductionSubTicketsService {
       });
 
       const allDefect = goodQty === 0;
-      if (allDefect) {
+      if (allDefect && ticket) {
         // 100% hàng lỗi: phiếu chốt Lỗi ngay, hàng đã về kho NVL; phiếu bù ở bước sau.
         await tx.productionSubTicket.update({
           where: { id: ticket.id },
@@ -1895,9 +1903,28 @@ export class ProductionSubTicketsService {
           },
         });
       }
+      if (allDefect && !ticket) {
+        const status = defectStatusOf([{ outcomeStage: entry.stage }]);
+        await tx.productionOrder.update({
+          where: { id: order.id },
+          data: {
+            ...CLEAR_ORDER_PENDING,
+            status,
+            dataChangedAt: now,
+            statusLogs: {
+              create: {
+                fromStatus: order.status,
+                toStatus: status,
+                changedBy: by,
+                note: `Lỗi hết hàng ở khâu ${stageName}: ${defectNoteOf(entry, stageName)}`,
+              },
+            },
+          },
+        });
+      }
       await logActivity(tx, order.id, actor, ACTIVITY.STAGE_CONFIRM, {
         orderCode: order.code,
-        subTicketNo: ticket.no,
+        subTicketNo: ticket?.no ?? null,
         stage: entry.stage,
         after: {
           goodQty,
@@ -1905,9 +1932,6 @@ export class ProductionSubTicketsService {
           defectQty: entry.defectQty,
           stockInboundCount: inboundIds.length,
         },
-        note: auto
-          ? 'Tự xác nhận — QC không báo hàng lỗi, không cần thủ kho kiểm tra'
-          : undefined,
       });
       await this.syncOrderAfterStage(tx, order.id, actor, allDefect);
     }).then((detail) => {
@@ -1946,6 +1970,10 @@ export class ProductionSubTicketsService {
         )
       : null;
     for (const hold of holds) {
+      const extra =
+        hold.requestId &&
+        !order.materialRequests.find((request) => request.id === hold.requestId)
+          ?.atHandover;
       const count = hold.stoneCount ?? 0;
       const returnedCount = legacyUsed
         ? count - (legacyUsed.get(hold.id) ?? count)
@@ -1998,7 +2026,7 @@ export class ProductionSubTicketsService {
             : null,
         issuedAt: todayVn(),
         issuedBy: by,
-        note: `Đá khâu Vào đá${hold.requestId ? ' (thợ xin thêm)' : ''} — ${packNote}`,
+        note: `Đá khâu Vào đá${extra ? ' (thợ xin thêm)' : ''} — ${packNote}`,
       });
       await tx.productionStoneHold.update({
         where: { id: hold.id },
@@ -2043,9 +2071,12 @@ export class ProductionSubTicketsService {
       const ticket = order.subTickets.find(
         (item) => item.id === entry.subTicketId,
       );
-      if (entry.stage !== ProductionStage.STONE_SETTING || !ticket) {
+      if (
+        entry.stage !== ProductionStage.STONE_SETTING ||
+        (entry.subTicketId && !ticket)
+      ) {
         throw new BadRequestException(
-          'Chỉ khâu Vào đá của phiếu con mới nhận lại túi đá giữa khâu',
+          'Chỉ khâu Vào đá mới nhận lại túi đá giữa khâu',
         );
       }
       if (entry.returnedAt) {
@@ -2123,7 +2154,7 @@ export class ProductionSubTicketsService {
       const counted = plan.filter((item) => item.returnedCount != null);
       await logActivity(tx, order.id, actor, ACTIVITY.STONE_RETURN_EARLY, {
         orderCode: order.code,
-        subTicketNo: ticket.no,
+        subTicketNo: ticket?.no ?? null,
         stage: entry.stage,
         after: {
           name: material.name,
@@ -2145,9 +2176,8 @@ export class ProductionSubTicketsService {
 
   /**
    * Thủ kho bấm "Tạo phiếu bù" cho hàng lỗi QC đã tách ở Nguội / Vào đá (đã được xác nhận): sinh
-   * một đơn tạo bù SL = số lỗi, đi lại từ bước sáp (sao chép khuôn / 3D / đá từ đơn tạo gốc). Đúc
-   * xong thì hệ thống tạo phiếu con mới trên đơn này, không sinh đơn A mới. Mỗi lần QC nhận lại
-   * chỉ bù một lần.
+   * một đơn tạo bù SL = số lỗi, đi lại từ bước sáp (sao chép khuôn / 3D / đá từ đơn tạo gốc).
+   * Phiếu bù giữ liên kết với đơn, phiếu mẹ / con và lần QC gốc. Mỗi lần QC chỉ bù một lần.
    */
   async createRework(code: string, stageId: string, actor: AuthUserPayload) {
     return this.mutate(code, async (tx, order) => {
@@ -2156,7 +2186,10 @@ export class ProductionSubTicketsService {
       const ticket = order.subTickets.find(
         (item) => item.id === entry.subTicketId,
       );
-      if (!ticket || !KEEPER_CONFIRM_STAGES.includes(entry.stage)) {
+      if (
+        (entry.subTicketId && !ticket) ||
+        !KEEPER_CONFIRM_STAGES.includes(entry.stage)
+      ) {
         throw new BadRequestException(
           'Chỉ tạo phiếu bù cho hàng lỗi ở khâu Nguội / Vào đá',
         );
@@ -2187,7 +2220,7 @@ export class ProductionSubTicketsService {
 
       const seq = await nextOrderSeq(tx);
       const intakeSeq = await nextIntakeSeq(tx);
-      const label = ticketCode(order, ticket);
+      const label = ticket ? ticketCode(order, ticket) : order.code;
       // Đá theo 3D chia theo tỷ lệ số lượng bù trên số lượng đơn gốc.
       const ratio = order.qty > 0 ? defectQty / order.qty : 1;
       const rework = await tx.productionOrder.create({
@@ -2222,14 +2255,14 @@ export class ProductionSubTicketsService {
             ? order.stoneWeight.mul(ratio).toDecimalPlaces(4)
             : null,
           reworkOfOrderId: order.id,
-          reworkOfSubTicketId: ticket.id,
+          reworkOfSubTicketId: ticket?.id ?? null,
           reworkOfEntryId: entry.id,
         },
         select: { code: true, intakeCode: true },
       });
       await logActivity(tx, order.id, actor, ACTIVITY.TICKET_REWORK, {
         orderCode: order.code,
-        subTicketNo: ticket.no,
+        subTicketNo: ticket?.no ?? null,
         stage: entry.stage,
         after: { qty: defectQty, intakeCode: rework.intakeCode },
         note: `Tạo phiếu bù ${rework.intakeCode} cho ${defectQty} sp lỗi — đi lại từ bước sáp`,
@@ -2347,9 +2380,10 @@ export class ProductionSubTicketsService {
       });
     let fresh = await load();
     if (
-      outcomeChanged ||
-      DEFECT_STATUSES.includes(fresh.status) ||
-      fresh.status === S.FINISHING
+      fresh.subTickets.length > 0 &&
+      (outcomeChanged ||
+        DEFECT_STATUSES.includes(fresh.status) ||
+        fresh.status === S.FINISHING)
     ) {
       await this.syncOrder(tx, fresh, actor);
       fresh = await load();
@@ -2436,14 +2470,14 @@ export class ProductionSubTicketsService {
           `Phiếu ${ticketCode(order, ticket)} chưa sẵn sàng để giao việc`,
         );
       }
-      // Nguội / Vào đá đi theo luồng mới: thủ kho chỉ định thợ, thợ quét QR bấm "Nhận hàng" —
+      // Nguội / Vào đá đi theo luồng mới: thủ kho chỉ định thợ, thợ quét QR bấm "Xác nhận" —
       // hệ thống tự xuất BTP (và đá đã giữ chỗ ở Vào đá) nên không còn bước chọn NVL tay ở đây.
       if (
         stage === ProductionStage.FILING ||
         stage === ProductionStage.STONE_SETTING
       ) {
         throw new BadRequestException(
-          `Khâu ${STAGE_LABEL[stage]} không xác nhận giao tay — thủ kho chỉ định thợ rồi thợ quét QR bấm "Nhận hàng"`,
+          `Khâu ${STAGE_LABEL[stage]} không xác nhận giao tay — thủ kho chỉ định thợ rồi thợ quét QR bấm "Xác nhận"`,
         );
       }
       // Cân bạc lúc giao cần hai người: người giao và thợ nhận. Riêng admin được tự xác
@@ -3182,15 +3216,17 @@ export class ProductionSubTicketsService {
 
     const [
       working,
+      parentWorking,
       subPending,
       parentPending,
+      parentConfirming,
       confirming,
       finishTickets,
       finishOrders,
       subRecent,
       parentRecent,
     ] = await Promise.all([
-      // Thợ còn đang làm ở phiếu con — QC thấy hàng hỏng thì báo lỗi luôn (stage-defect theo phiếu con).
+      // QC thấy hàng hỏng thì báo lỗi trên phiếu đang làm, cả phiếu mẹ và phiếu con.
       this.prisma.productionStageEntry.findMany({
         where: {
           returnedAt: null,
@@ -3200,6 +3236,18 @@ export class ProductionSubTicketsService {
           order: notDelivered,
         },
         include: subInclude,
+        orderBy: { handedAt: 'asc' },
+        take: AVAILABLE_LIMIT,
+      }),
+      this.prisma.productionStageEntry.findMany({
+        where: {
+          returnedAt: null,
+          submittedAt: null,
+          defectReportedAt: null,
+          subTicketId: null,
+          order: { ...notDelivered, subTickets: { none: {} } },
+        },
+        select: parentSelect,
         orderBy: { handedAt: 'asc' },
         take: AVAILABLE_LIMIT,
       }),
@@ -3221,6 +3269,18 @@ export class ProductionSubTicketsService {
         },
         select: parentSelect,
         orderBy: { handedAt: 'asc' },
+        take: AVAILABLE_LIMIT,
+      }),
+      this.prisma.productionStageEntry.findMany({
+        where: {
+          subTicketId: null,
+          stage: { in: KEEPER_CONFIRM_STAGES },
+          returnedAt: { not: null },
+          confirmedAt: null,
+          order: { ...notDelivered, subTickets: { none: {} } },
+        },
+        select: parentSelect,
+        orderBy: { returnedAt: 'asc' },
         take: AVAILABLE_LIMIT,
       }),
       this.prisma.productionStageEntry.findMany({
@@ -3298,12 +3358,15 @@ export class ProductionSubTicketsService {
     });
 
     return {
-      working: working.flatMap(subItem),
+      working: [...parentWorking.map(parentItem), ...working.flatMap(subItem)],
       pending: [
         ...parentPending.map(parentItem),
         ...subPending.flatMap(subItem),
       ],
-      confirming: confirming.flatMap(subItem),
+      confirming: [
+        ...parentConfirming.map(parentItem),
+        ...confirming.flatMap(subItem),
+      ],
       finishable: [
         ...finishOrders
           .filter((order) => lastStageDone(order.stages))

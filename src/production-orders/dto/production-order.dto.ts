@@ -552,8 +552,10 @@ export class StageImageDto {
 
 /** QC nhận lại hàng từ thợ và cân lại bạc — người QC là tài khoản đăng nhập. */
 export class ReturnStageDto {
+  /** Tương thích client cũ; thời gian nhận lại luôn do server ghi khi lưu QC. */
+  @IsOptional()
   @IsDateString()
-  returnedAt!: string;
+  returnedAt?: string;
 
   /** Số lượng sản phẩm đạt; bỏ trống thì hiểu là đạt đủ số đã giao. */
   @IsOptional()

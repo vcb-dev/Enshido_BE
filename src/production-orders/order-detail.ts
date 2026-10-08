@@ -357,6 +357,8 @@ export function lastStageDone(
 type StateEntry = Pick<StageEntry, 'stage' | 'returnedAt' | 'submittedAt'> & {
   /** null = QC đã nhận lại nhưng thủ kho chưa xác nhận; bỏ trống = không có bước này. */
   confirmedAt?: Date | null;
+  /** Đạt 0 sau xác nhận thì phiếu mẹ dừng ở nhánh lỗi. */
+  returnedQty?: number | null;
   /** Đã báo lỗi ở khâu đang làm — khâu coi như đã nộp cho QC cân lại. */
   defectReportedAt?: Date | null;
 };
@@ -372,7 +374,7 @@ export function skipsStone(order: {
   return order.stoneCount === 0 || order.stoneSkipped === true;
 }
 
-/** Khâu của phiếu con phải qua thủ kho xác nhận sau QC (mô tả luồng bước 13–18). */
+/** Khâu của phiếu mẹ / con phải qua thủ kho xác nhận sau QC (mô tả luồng bước 13–18). */
 export const KEEPER_CONFIRM_STAGES: ProductionStage[] = [
   G.FILING,
   G.STONE_SETTING,
@@ -743,11 +745,21 @@ export function orderTicketState(
   },
   entries: readonly StateEntry[],
 ) {
+  const last = entries[entries.length - 1];
+  const defect =
+    !order.pendingStage &&
+    last?.returnedAt &&
+    last.confirmedAt &&
+    last.returnedQty === 0;
   return subTicketState(
     {
       pendingStage: order.pendingStage,
       claimedByUserId: order.claimedByUserId,
-      outcome: order.receipt ? SubTicketOutcome.FINISH : null,
+      outcome: order.receipt
+        ? SubTicketOutcome.FINISH
+        : defect
+          ? SubTicketOutcome.DEFECT
+          : null,
     },
     entries,
   );
@@ -1222,7 +1234,15 @@ export type StoneHold = OrderDetail['stoneHolds'][number];
  * Đá giữ chỗ của một khâu Vào đá, gộp theo mã: SL / viên / TL gói đã cấp, TL gói thừa QC cân,
  * viên thừa quy đổi và viên đã xuất (sau khi thủ kho xác nhận).
  */
-function stoneLinesOf(holds: readonly StoneHold[]) {
+function stoneLinesOf(
+  holds: readonly StoneHold[],
+  requests: readonly MaterialRequest[],
+) {
+  const handoverRequestIds = new Set(
+    requests
+      .filter((request) => request.atHandover)
+      .map((request) => request.id),
+  );
   const lines = new Map<
     string,
     {
@@ -1250,6 +1270,8 @@ function stoneLinesOf(holds: readonly StoneHold[]) {
   const sumInt = (a: number | null, b: number | null) =>
     a == null && b == null ? null : (a ?? 0) + (b ?? 0);
   for (const hold of holds) {
+    const extra =
+      hold.requestId && !handoverRequestIds.has(hold.requestId) ? 1 : 0;
     const done = hold.status !== 'HELD';
     const line = lines.get(hold.materialId);
     if (!line) {
@@ -1266,7 +1288,7 @@ function stoneLinesOf(holds: readonly StoneHold[]) {
         returnedWeight: hold.returnedWeight,
         returnedCount: hold.returnedCount,
         usedCount: hold.usedCount,
-        extra: hold.requestId ? 1 : 0,
+        extra,
         done,
       });
       continue;
@@ -1288,7 +1310,7 @@ function stoneLinesOf(holds: readonly StoneHold[]) {
       line.usedCount == null || hold.usedCount == null
         ? null
         : line.usedCount + hold.usedCount;
-    line.extra += hold.requestId ? 1 : 0;
+    line.extra += extra;
     line.done = line.done && done;
   }
   return [...lines.values()].map((line) => ({
@@ -1397,9 +1419,10 @@ export function toStage(
     stoneCount: entry.stoneCount,
     stoneWeight: dec(entry.stoneWeight),
     returnedStoneCount: entry.returnedStoneCount,
-    /** Khâu Vào đá của phiếu con: đá giữ chỗ theo mã — QC cân gói thừa từng mã. */
+    /** Khâu Vào đá: đá giữ chỗ theo mã — QC cân gói thừa từng mã. */
     stoneLines: stoneLinesOf(
       holds.filter((hold) => hold.stageEntryId === entry.id),
+      requests,
     ),
     btpRecoveredWeight: dec(entry.btpRecoveredWeight),
     silverRecoveredWeight: dec(entry.silverRecoveredWeight),
