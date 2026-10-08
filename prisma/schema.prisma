@@ -1370,3 +1370,78 @@ model CastingOrderLine {
   @@index([materialId])
   @@map("casting_order_lines")
 }
+
+/// Chi nhánh / kho Sapo — GET /admin/locations.json (Private App, header X-Sapo-Access-Token).
+model LocationDraft {
+  id            String    @id @default(uuid()) @db.Uuid
+  sapoId        BigInt    @unique @map("sapo_id")
+  name          String
+  address1      String?
+  address2      String?
+  city          String?
+  province      String?
+  country       String?
+  zip           String?
+  phone         String?
+  active        Boolean   @default(true)
+  sapoCreatedOn DateTime? @map("sapo_created_on")
+  sapoModifiedOn DateTime? @map("sapo_modified_on")
+  syncedAt      DateTime  @default(now()) @map("synced_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  inventories InventoryDraft[]
+
+  @@index([active, name])
+  @@map("location_draft")
+}
+
+/// Tồn kho Sapo theo variant × location. Màn Tồn kho:
+/// GET /admin/products.json (tên, ảnh, giá, SKU) + GET /admin/inventory_levels.json
+/// (on_hand / packed / available / committed).
+model InventoryDraft {
+  id                  String   @id @default(uuid()) @db.Uuid
+  sapoId              BigInt   @unique @map("sapo_id")
+  sapoVariantId       BigInt   @map("sapo_variant_id")
+  sapoInventoryItemId BigInt   @map("sapo_inventory_item_id")
+  sapoLocationId      BigInt   @map("sapo_location_id")
+  sapoStoreId         BigInt?  @map("sapo_store_id")
+  sapoProductId       BigInt?  @map("sapo_product_id")
+  /// GET /admin/products.json → product.name
+  productName         String?  @map("product_name")
+  /// GET /admin/products.json → variant.title
+  variantTitle        String?  @map("variant_title")
+  /// GET /admin/products.json → image.src / images[].src
+  imageSrc            String?  @map("image_src")
+  /// GET /admin/products.json → variant.price — Giá bán
+  price               Decimal  @default(0) @db.Decimal(18, 2)
+  /// GET /admin/products.json → variant.sku
+  sku                 String?
+  barcode             String?
+  /// GET /admin/inventory_levels.json → on_hand — Tồn kho
+  onHand              Decimal  @default(0) @map("on_hand") @db.Decimal(18, 4)
+  /// GET /admin/inventory_levels.json → packed — Đang đóng gói
+  packed              Decimal  @default(0) @db.Decimal(18, 4)
+  /// GET /admin/inventory_levels.json → available — Có thể bán
+  available           Decimal  @default(0) @db.Decimal(18, 4)
+  /// GET /admin/inventory_levels.json → committed — Đang giao
+  committed           Decimal  @default(0) @db.Decimal(18, 4)
+  incoming            Decimal  @default(0) @db.Decimal(18, 4)
+  incomingOwned       Decimal  @default(0) @map("incoming_owned") @db.Decimal(18, 4)
+  incomingNotOwned    Decimal  @default(0) @map("incoming_not_owned") @db.Decimal(18, 4)
+  reserved            Decimal  @default(0) @db.Decimal(18, 4)
+  unavailable         Decimal  @default(0) @db.Decimal(18, 4)
+  sapoCreatedAt       DateTime? @map("sapo_created_at")
+  sapoUpdatedAt       DateTime? @map("sapo_updated_at")
+  syncedAt            DateTime @default(now()) @map("synced_at")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  location LocationDraft @relation(fields: [sapoLocationId], references: [sapoId], onDelete: Restrict)
+
+  @@unique([sapoVariantId, sapoLocationId])
+  @@index([sku])
+  @@index([sapoLocationId])
+  @@index([sapoProductId])
+  @@map("inventory_draft")
+}

@@ -31,7 +31,7 @@ import {
 import {
   actorName,
   decimalOrNull,
-  detailInclude,
+  workInclude,
   materialRequestMaterial,
   normalizeCode,
   type OrderDetail,
@@ -762,10 +762,10 @@ export class ProductionMaterialRequestsService {
     if (!found) throw new NotFoundException('Không tìm thấy đơn sản xuất');
     await this.prisma.runTx(async (tx) => {
       await tx.$queryRaw`SELECT id FROM ${dbTable('production_orders')} WHERE id = ${found.id}::uuid FOR UPDATE`;
-      const order = await tx.productionOrder.findUniqueOrThrow({
+      const order = (await tx.productionOrder.findUniqueOrThrow({
         where: { id: found.id },
-        include: detailInclude,
-      });
+        include: workInclude,
+      })) as OrderDetail;
       await apply(tx, order);
       await tx.productionOrder.update({
         where: { id: found.id },
@@ -775,7 +775,7 @@ export class ProductionMaterialRequestsService {
     return toDetail(
       await this.prisma.productionOrder.findUniqueOrThrow({
         where: { id: found.id },
-        include: detailInclude,
+        include: workInclude,
       }),
     );
   }

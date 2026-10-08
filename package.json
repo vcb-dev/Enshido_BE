@@ -19,6 +19,7 @@
     "prisma:deploy": "prisma migrate deploy",
     "prisma:status": "prisma migrate status",
     "prisma:seed": "prisma db seed",
+    "sapo:sync-drafts": "ts-node prisma/sync-sapo-drafts.ts",
     "test": "jest",
     "test:watch": "jest --watch"
   },

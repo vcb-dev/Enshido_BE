@@ -1,4 +1,4 @@
-import { RoleCode } from '@prisma/client';
+import { ProductionStage, RoleCode } from '@prisma/client';
 import {
   Permission,
   type PermissionCode,
@@ -15,6 +15,7 @@ export type StaffJobPreset =
   | 'worker_3d'
   | 'worker_wax'
   | 'worker_casting'
+  | 'worker_filing'
   | 'warehouse'
   | 'kcs';
 
@@ -61,6 +62,14 @@ export function roleAndScreensForPreset(preset: StaffJobPreset): {
           Permission.SCREEN_MY_TICKETS,
         ],
       };
+    case 'worker_filing':
+      return {
+        roleCode: RoleCode.WORKER,
+        allowedScreens: [
+          Permission.SCREEN_MY_TICKETS,
+          Permission.PRODUCTION_WORKER,
+        ],
+      };
     case 'warehouse':
       return {
         roleCode: RoleCode.USER,
@@ -84,9 +93,16 @@ export function roleAndScreensForPreset(preset: StaffJobPreset): {
   }
 }
 
+export function workerStagesForPreset(preset: StaffJobPreset): ProductionStage[] {
+  if (preset === 'worker_filing') return [ProductionStage.FILING];
+  if (preset === 'worker_sx') return Object.values(ProductionStage);
+  return [];
+}
+
 export function inferStaffJobPreset(user: {
   roleCode: RoleCode;
   allowedScreens?: readonly string[];
+  workerStages?: readonly ProductionStage[];
 }): StaffJobPreset {
   if (user.roleCode === RoleCode.ADMIN) return 'admin';
   const screens = new Set(user.allowedScreens ?? []);
@@ -103,6 +119,10 @@ export function inferStaffJobPreset(user: {
       granted.includes(Permission.PRODUCTION_CAST)
     ) {
       return 'worker_casting';
+    }
+    const stages = user.workerStages ?? [];
+    if (stages.length === 1 && stages[0] === ProductionStage.FILING) {
+      return 'worker_filing';
     }
     return 'worker_sx';
   }
@@ -133,6 +153,7 @@ const STAFF_JOB_LABELS: Record<StaffJobPreset, string> = {
   worker_3d: 'Thợ 3D',
   worker_wax: 'Thợ sáp',
   worker_casting: 'Thợ đúc',
+  worker_filing: 'Thợ nguội',
   warehouse: 'Thủ kho',
   kcs: 'QC',
 };
@@ -140,6 +161,7 @@ const STAFF_JOB_LABELS: Record<StaffJobPreset, string> = {
 export function staffJobLabelFor(user: {
   roleCode: RoleCode;
   allowedScreens?: readonly string[];
+  workerStages?: readonly ProductionStage[];
 }): string {
   return STAFF_JOB_LABELS[inferStaffJobPreset(user)];
 }

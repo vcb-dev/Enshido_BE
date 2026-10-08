@@ -40,4 +40,12 @@ describe('resolveDatabaseUrl', () => {
     expect(params.get('schema')).toBe('enshido');
     expect(params.get('options')).toBe('-csearch_path=enshido');
   });
+
+  it('đợi pool lâu hơn mặc định để poll workflow không văng P2024', () => {
+    const url = resolveDatabaseUrl(
+      'postgresql://u:p@h:5432/postgres?schema=enshido',
+    );
+    const params = new URLSearchParams(url.split('?')[1]);
+    expect(params.get('pool_timeout')).toBe('30');
+  });
 });

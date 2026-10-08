@@ -40,7 +40,7 @@ export function resolveDatabaseUrl(raw = process.env.DATABASE_URL): string {
     params.set('connection_limit', process.env.PRISMA_CONNECTION_LIMIT ?? '10');
   }
   if (!params.has('pool_timeout')) {
-    params.set('pool_timeout', process.env.PRISMA_POOL_TIMEOUT ?? '20');
+    params.set('pool_timeout', process.env.PRISMA_POOL_TIMEOUT ?? '30');
   }
   if (!params.has('connect_timeout')) {
     params.set('connect_timeout', '10');

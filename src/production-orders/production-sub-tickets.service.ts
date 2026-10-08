@@ -18,6 +18,7 @@ import {
 import { Permission, userCan, userHasRole } from '../auth/permissions';
 import type { AuthUserPayload } from '../auth/types';
 import { dbTable } from '../prisma/database-url';
+import { poolAll } from '../prisma/pool-all';
 import { InventoryService } from '../inventory/inventory.service';
 import {
   intakeCode,
@@ -44,6 +45,7 @@ import {
   actorName,
   assertCastingReady,
   detailInclude,
+  workInclude,
   entriesOf,
   handedStoneOf,
   IN_STAGE_STATUSES,
@@ -2376,8 +2378,8 @@ export class ProductionSubTicketsService {
     const load = () =>
       tx.productionOrder.findUniqueOrThrow({
         where: { id: orderId },
-        include: detailInclude,
-      });
+        include: workInclude,
+      }) as Promise<OrderDetail>;
     let fresh = await load();
     if (
       fresh.subTickets.length > 0 &&
@@ -3013,6 +3015,8 @@ export class ProductionSubTicketsService {
       _count: { select: { orders: true } },
     } as const;
 
+    const needCasting =
+      adminView || userCan(actor, Permission.PRODUCTION_CAST);
     const [
       claimed,
       working,
@@ -3024,7 +3028,8 @@ export class ProductionSubTicketsService {
       castingAvailable,
       castingMine,
       castingRecent,
-    ] = await Promise.all([
+    ] = await poolAll([
+      () =>
       this.prisma.productionSubTicket.findMany({
         // Thủ kho chỉ định thợ (không có phiếu mở để thợ tự nhận); admin thấy mọi phiếu đang giữ.
         where: adminView
@@ -3034,6 +3039,7 @@ export class ProductionSubTicketsService {
         orderBy: { claimedAt: 'asc' },
         ...(adminView ? { take: MINE_LIMIT } : {}),
       }),
+      () =>
       this.prisma.productionStageEntry.findMany({
         where: adminView
           ? { subTicketId: { not: null }, returnedAt: null }
@@ -3049,6 +3055,7 @@ export class ProductionSubTicketsService {
         orderBy: { handedAt: 'asc' },
         ...(adminView ? { take: MINE_LIMIT } : {}),
       }),
+      () =>
       this.prisma.productionStageEntry.findMany({
         where: adminView
           ? { subTicketId: { not: null }, returnedAt: { not: null } }
@@ -3064,6 +3071,7 @@ export class ProductionSubTicketsService {
         orderBy: { returnedAt: 'desc' },
         take: RECENT_LIMIT,
       }),
+      () =>
       this.prisma.productionOrder.findMany({
         where: {
           subTickets: { none: {} },
@@ -3075,6 +3083,7 @@ export class ProductionSubTicketsService {
         orderBy: { pendingAt: 'asc' },
         take: AVAILABLE_LIMIT,
       }),
+      () =>
       this.prisma.productionOrder.findMany({
         where: adminView
           ? {
@@ -3091,6 +3100,7 @@ export class ProductionSubTicketsService {
         orderBy: { claimedAt: 'asc' },
         ...(adminView ? { take: MINE_LIMIT } : {}),
       }),
+      () =>
       this.prisma.productionStageEntry.findMany({
         where: adminView
           ? {
@@ -3109,6 +3119,7 @@ export class ProductionSubTicketsService {
         orderBy: { handedAt: 'asc' },
         ...(adminView ? { take: MINE_LIMIT } : {}),
       }),
+      () =>
       this.prisma.productionStageEntry.findMany({
         where: adminView
           ? {
@@ -3126,37 +3137,46 @@ export class ProductionSubTicketsService {
         orderBy: { returnedAt: 'desc' },
         take: RECENT_LIMIT,
       }),
-      this.prisma.castingSlip.findMany({
-        where: adminView
-          ? { status: CastingSlipStatus.WAIT_CASTING, startedAt: null }
-          : {
-              startedByUserId: actor.id,
-              status: CastingSlipStatus.WAIT_CASTING,
-              startedAt: null,
-            },
-        select: castingSlipSelect,
-        orderBy: [{ slipDate: 'desc' }, { code: 'desc' }],
-        ...(adminView ? { take: AVAILABLE_LIMIT } : {}),
-      }),
-      this.prisma.castingSlip.findMany({
-        where: adminView
-          ? { status: { in: castingHeldStatuses } }
-          : {
-              startedByUserId: actor.id,
-              status: { in: castingHeldStatuses },
-            },
-        select: castingSlipSelect,
-        orderBy: [{ slipDate: 'desc' }, { code: 'desc' }],
-        ...(adminView ? { take: AVAILABLE_LIMIT } : {}),
-      }),
-      this.prisma.castingSlip.findMany({
-        where: adminView
-          ? { status: CastingSlipStatus.DONE }
-          : { startedByUserId: actor.id, status: CastingSlipStatus.DONE },
-        select: castingSlipSelect,
-        orderBy: { confirmedAt: 'desc' },
-        take: RECENT_LIMIT,
-      }),
+      () =>
+        needCasting
+        ? this.prisma.castingSlip.findMany({
+            where: adminView
+              ? { status: CastingSlipStatus.WAIT_CASTING, startedAt: null }
+              : {
+                  startedByUserId: actor.id,
+                  status: CastingSlipStatus.WAIT_CASTING,
+                  startedAt: null,
+                },
+            select: castingSlipSelect,
+            orderBy: [{ slipDate: 'desc' }, { code: 'desc' }],
+            ...(adminView ? { take: AVAILABLE_LIMIT } : {}),
+          })
+        : Promise.resolve([]),
+      () =>
+        needCasting
+        ? this.prisma.castingSlip.findMany({
+            where: adminView
+              ? { status: { in: castingHeldStatuses } }
+              : {
+                  startedByUserId: actor.id,
+                  status: { in: castingHeldStatuses },
+                },
+            select: castingSlipSelect,
+            orderBy: [{ slipDate: 'desc' }, { code: 'desc' }],
+            ...(adminView ? { take: AVAILABLE_LIMIT } : {}),
+          })
+        : Promise.resolve([]),
+      () =>
+        needCasting
+        ? this.prisma.castingSlip.findMany({
+            where: adminView
+              ? { status: CastingSlipStatus.DONE }
+              : { startedByUserId: actor.id, status: CastingSlipStatus.DONE },
+            select: castingSlipSelect,
+            orderBy: { confirmedAt: 'desc' },
+            take: RECENT_LIMIT,
+          })
+        : Promise.resolve([]),
     ]);
 
     return {
@@ -3225,127 +3245,137 @@ export class ProductionSubTicketsService {
       finishOrders,
       subRecent,
       parentRecent,
-    ] = await Promise.all([
+    ] = await poolAll([
       // QC thấy hàng hỏng thì báo lỗi trên phiếu đang làm, cả phiếu mẹ và phiếu con.
-      this.prisma.productionStageEntry.findMany({
-        where: {
-          returnedAt: null,
-          submittedAt: null,
-          defectReportedAt: null,
-          subTicketId: { not: null },
-          order: notDelivered,
-        },
-        include: subInclude,
-        orderBy: { handedAt: 'asc' },
-        take: AVAILABLE_LIMIT,
-      }),
-      this.prisma.productionStageEntry.findMany({
-        where: {
-          returnedAt: null,
-          submittedAt: null,
-          defectReportedAt: null,
-          subTicketId: null,
-          order: { ...notDelivered, subTickets: { none: {} } },
-        },
-        select: parentSelect,
-        orderBy: { handedAt: 'asc' },
-        take: AVAILABLE_LIMIT,
-      }),
-      this.prisma.productionStageEntry.findMany({
-        where: {
-          ...waitingQc,
-          subTicketId: { not: null },
-          order: notDelivered,
-        },
-        include: subInclude,
-        orderBy: { handedAt: 'asc' },
-        take: AVAILABLE_LIMIT,
-      }),
-      this.prisma.productionStageEntry.findMany({
-        where: {
-          ...waitingQc,
-          subTicketId: null,
-          order: { ...notDelivered, subTickets: { none: {} } },
-        },
-        select: parentSelect,
-        orderBy: { handedAt: 'asc' },
-        take: AVAILABLE_LIMIT,
-      }),
-      this.prisma.productionStageEntry.findMany({
-        where: {
-          subTicketId: null,
-          stage: { in: KEEPER_CONFIRM_STAGES },
-          returnedAt: { not: null },
-          confirmedAt: null,
-          order: { ...notDelivered, subTickets: { none: {} } },
-        },
-        select: parentSelect,
-        orderBy: { returnedAt: 'asc' },
-        take: AVAILABLE_LIMIT,
-      }),
-      this.prisma.productionStageEntry.findMany({
-        where: {
-          subTicketId: { not: null },
-          stage: { in: KEEPER_CONFIRM_STAGES },
-          returnedAt: { not: null },
-          confirmedAt: null,
-          order: notDelivered,
-        },
-        include: subInclude,
-        orderBy: { returnedAt: 'asc' },
-        take: AVAILABLE_LIMIT,
-      }),
-      this.prisma.productionSubTicket.findMany({
-        where: {
-          outcome: null,
-          pendingStage: null,
-          order: notDelivered,
-          stages: doneLastStage,
-        },
-        include: myTicketInclude,
-        orderBy: { updatedAt: 'asc' },
-        take: AVAILABLE_LIMIT,
-      }),
-      this.prisma.productionOrder.findMany({
-        where: {
-          subTickets: { none: {} },
-          receipt: { is: null },
-          pendingStage: null,
-          status: { notIn: [S.DELIVERED, S.NEW, S.REDO_3D] },
-          stages: doneLastStage,
-        },
-        select: {
-          ...myOrderCardSelect,
-          stages: {
-            where: { subTicketId: null },
-            orderBy: { createdAt: 'asc' },
-            select: { stage: true, returnedAt: true, returnedQty: true },
+      () =>
+        this.prisma.productionStageEntry.findMany({
+          where: {
+            returnedAt: null,
+            submittedAt: null,
+            defectReportedAt: null,
+            subTicketId: { not: null },
+            order: notDelivered,
           },
-        },
-        orderBy: { updatedAt: 'asc' },
-        take: AVAILABLE_LIMIT,
-      }),
-      this.prisma.productionStageEntry.findMany({
-        where: {
-          ...mine,
-          subTicketId: { not: null },
-          returnedAt: { not: null },
-        },
-        include: subInclude,
-        orderBy: { returnedAt: 'desc' },
-        take: RECENT_LIMIT,
-      }),
-      this.prisma.productionStageEntry.findMany({
-        where: {
-          ...mine,
-          subTicketId: null,
-          returnedAt: { not: null },
-          order: { subTickets: { none: {} } },
-        },
-        select: parentSelect,
-        orderBy: { returnedAt: 'desc' },
-        take: RECENT_LIMIT,
-      }),
+          include: subInclude,
+          orderBy: { handedAt: 'asc' },
+          take: AVAILABLE_LIMIT,
+        }),
+      () =>
+        this.prisma.productionStageEntry.findMany({
+          where: {
+            returnedAt: null,
+            submittedAt: null,
+            defectReportedAt: null,
+            subTicketId: null,
+            order: { ...notDelivered, subTickets: { none: {} } },
+          },
+          select: parentSelect,
+          orderBy: { handedAt: 'asc' },
+          take: AVAILABLE_LIMIT,
+        }),
+      () =>
+        this.prisma.productionStageEntry.findMany({
+          where: {
+            ...waitingQc,
+            subTicketId: { not: null },
+            order: notDelivered,
+          },
+          include: subInclude,
+          orderBy: { handedAt: 'asc' },
+          take: AVAILABLE_LIMIT,
+        }),
+      () =>
+        this.prisma.productionStageEntry.findMany({
+          where: {
+            ...waitingQc,
+            subTicketId: null,
+            order: { ...notDelivered, subTickets: { none: {} } },
+          },
+          select: parentSelect,
+          orderBy: { handedAt: 'asc' },
+          take: AVAILABLE_LIMIT,
+        }),
+      () =>
+        this.prisma.productionStageEntry.findMany({
+          where: {
+            subTicketId: null,
+            stage: { in: KEEPER_CONFIRM_STAGES },
+            returnedAt: { not: null },
+            confirmedAt: null,
+            order: { ...notDelivered, subTickets: { none: {} } },
+          },
+          select: parentSelect,
+          orderBy: { returnedAt: 'asc' },
+          take: AVAILABLE_LIMIT,
+        }),
+      () =>
+        this.prisma.productionStageEntry.findMany({
+          where: {
+            subTicketId: { not: null },
+            stage: { in: KEEPER_CONFIRM_STAGES },
+            returnedAt: { not: null },
+            confirmedAt: null,
+            order: notDelivered,
+          },
+          include: subInclude,
+          orderBy: { returnedAt: 'asc' },
+          take: AVAILABLE_LIMIT,
+        }),
+      () =>
+        this.prisma.productionSubTicket.findMany({
+          where: {
+            outcome: null,
+            pendingStage: null,
+            order: notDelivered,
+            stages: doneLastStage,
+          },
+          include: myTicketInclude,
+          orderBy: { updatedAt: 'asc' },
+          take: AVAILABLE_LIMIT,
+        }),
+      () =>
+        this.prisma.productionOrder.findMany({
+          where: {
+            subTickets: { none: {} },
+            receipt: { is: null },
+            pendingStage: null,
+            status: { notIn: [S.DELIVERED, S.NEW, S.REDO_3D] },
+            stages: doneLastStage,
+          },
+          select: {
+            ...myOrderCardSelect,
+            stages: {
+              where: { subTicketId: null },
+              orderBy: { createdAt: 'asc' },
+              select: { stage: true, returnedAt: true, returnedQty: true },
+            },
+          },
+          orderBy: { updatedAt: 'asc' },
+          take: AVAILABLE_LIMIT,
+        }),
+      () =>
+        this.prisma.productionStageEntry.findMany({
+          where: {
+            ...mine,
+            subTicketId: { not: null },
+            returnedAt: { not: null },
+          },
+          include: subInclude,
+          orderBy: { returnedAt: 'desc' },
+          take: RECENT_LIMIT,
+        }),
+      () =>
+        this.prisma.productionStageEntry.findMany({
+          where: {
+            ...mine,
+            subTicketId: null,
+            returnedAt: { not: null },
+            order: { subTickets: { none: {} } },
+          },
+          select: parentSelect,
+          orderBy: { returnedAt: 'desc' },
+          take: RECENT_LIMIT,
+        }),
     ]);
 
     const subItem = (entry: (typeof subPending)[number]) =>
@@ -3408,17 +3438,17 @@ export class ProductionSubTicketsService {
     if (!found) throw new NotFoundException('Không tìm thấy đơn sản xuất');
     const updated = await this.prisma.runTx(async (tx) => {
       await tx.$queryRaw`SELECT id FROM ${dbTable('production_orders')} WHERE id = ${found.id}::uuid FOR UPDATE`;
-      const order = await tx.productionOrder.findUniqueOrThrow({
+      const order = (await tx.productionOrder.findUniqueOrThrow({
         where: { id: found.id },
-        include: detailInclude,
-      });
+        include: workInclude,
+      })) as OrderDetail;
       await apply(tx, order);
       return found.id;
     });
     return toDetail(
       await this.prisma.productionOrder.findUniqueOrThrow({
         where: { id: updated },
-        include: detailInclude,
+        include: workInclude,
       }),
     );
   }

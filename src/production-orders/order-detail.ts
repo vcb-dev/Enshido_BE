@@ -185,6 +185,16 @@ export const detailInclude = {
   },
 } satisfies Prisma.ProductionOrderInclude;
 
+/**
+ * Include lúc chuyển trạng thái: không kéo ảnh QC từng khâu (nặng). GET chi tiết
+ * đơn vẫn dùng `detailInclude`.
+ */
+export const workInclude = {
+  ...detailInclude,
+  stages: { orderBy: { createdAt: 'asc' as const } },
+  statusLogs: { orderBy: { changedAt: 'desc' as const }, take: 20 },
+} as typeof detailInclude;
+
 export type OrderDetail = Prisma.ProductionOrderGetPayload<{
   include: typeof detailInclude;
 }>;
@@ -906,6 +916,24 @@ function decOrNull(value: Prisma.Decimal | null) {
   return value != null ? decStr(value) : null;
 }
 
+function mediaList(
+  images:
+    | {
+        url: string;
+        publicId: string;
+        width: number | null;
+        height: number | null;
+      }[]
+    | undefined,
+) {
+  return (images ?? []).map((image) => ({
+    url: image.url,
+    publicId: image.publicId,
+    width: image.width,
+    height: image.height,
+  }));
+}
+
 export function toDetail(order: OrderDetail) {
   // Phân đơn: đơn con đánh số theo thứ tự tạo trong các đơn con của cùng đơn mẹ.
   const siblings = order.parent?.children ?? [];
@@ -1004,14 +1032,7 @@ export function toDetail(order: OrderDetail) {
               order.castingSlipLine?.slip.restWeightGram != null
                 ? decStr(order.castingSlipLine.slip.restWeightGram)
                 : null,
-            restImages: (order.castingSlipLine?.slip.images ?? []).map(
-              (image) => ({
-                url: image.url,
-                publicId: image.publicId,
-                width: image.width,
-                height: image.height,
-              }),
-            ),
+            restImages: mediaList(order.castingSlipLine?.slip.images),
             ...blankLeftOf(order),
           }
         : null,
@@ -1064,13 +1085,10 @@ export function toDetail(order: OrderDetail) {
           requestsOf(order, entry.id),
           order.stoneHolds,
         ),
-        /** Ảnh làm chứng QC chụp lúc nhận lại. */
-        images: entry.images.map((image) => ({
-          url: image.url,
-          publicId: image.publicId,
-          width: image.width,
-          height: image.height,
-        })),
+        /** Ảnh làm chứng QC chụp lúc nhận lại — mutation không tải kèm. */
+        images: mediaList(
+          (entry as { images?: Parameters<typeof mediaList>[0] }).images,
+        ),
       };
     }),
     materialRequests: order.materialRequests.map((request) => ({

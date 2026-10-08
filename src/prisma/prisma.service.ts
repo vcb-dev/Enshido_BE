@@ -14,7 +14,13 @@ export const PRISMA_TX = {
 function isTxRetryable(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
   const e = err as { code?: string; message?: string };
-  if (e.code === 'P2028' || e.code === 'P2034' || e.code === 'P1017')
+  if (
+    e.code === 'P2028' ||
+    e.code === 'P2034' ||
+    e.code === 'P1017' ||
+    e.code === 'P2024' ||
+    e.code === 'P1001'
+  )
     return true;
   const msg = e.message ?? '';
   return (

@@ -1,7 +1,7 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { RoleCode } from '@prisma/client';
+import { ProductionStage, RoleCode } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { createHash, randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
@@ -25,6 +25,7 @@ const userSessionSelect = {
   extraRoles: true,
   allowedScreens: true,
   department: true,
+  workerStages: true,
   isActive: true,
 } as const;
 
@@ -39,6 +40,7 @@ type DbUser = {
   extraRoles: RoleCode[];
   allowedScreens?: string[];
   department: string | null;
+  workerStages?: ProductionStage[];
   passwordHash?: string;
   isActive?: boolean;
 };

@@ -1,44 +1,84 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import {
   INTAKE_ORDER_WHERE,
   toIntakeStatus,
 } from '../production-orders/intake-order';
+import { dbTable } from '../prisma/database-url';
 import { PrismaService } from '../prisma/prisma.service';
 
 function iso(value: Date | null | undefined) {
   return value?.toISOString() ?? '';
 }
 
+type Revision = { intake: string; production: string; casting: string };
+
+const REVISION_CACHE_MS = 8_000;
+
 @Injectable()
 export class WorkflowService {
   constructor(private readonly prisma: PrismaService) {}
 
-  private revisionCache: {
-    at: number;
-    value: { intake: string; production: string; casting: string };
-  } | null = null;
+  private revisionCache: { at: number; value: Revision } | null = null;
+  private revisionInflight: Promise<Revision> | null = null;
 
-  /** 3 MAX — FE poll để biết tab/chip cần làm mới, không kéo cả danh sách. */
+  /**
+   * 1 câu MAX (không 3 aggregate song song) — FE poll để biết tab/chip cần làm mới.
+   * Nhiều tab cùng lúc dùng một kết quả; pool hết chỗ thì trả bản cache cũ.
+   */
   async revision() {
     const now = Date.now();
-    if (this.revisionCache && now - this.revisionCache.at < 2_500) {
+    if (this.revisionCache && now - this.revisionCache.at < REVISION_CACHE_MS) {
       return this.revisionCache.value;
     }
-    const [intake, production, casting] = await Promise.all([
-      this.prisma.productionOrder.aggregate({
-        where: INTAKE_ORDER_WHERE,
-        _max: { updatedAt: true },
-      }),
-      this.prisma.productionOrder.aggregate({ _max: { dataChangedAt: true } }),
-      this.prisma.castingSlip.aggregate({ _max: { updatedAt: true } }),
-    ]);
-    const value = {
-      intake: iso(intake._max.updatedAt),
-      production: iso(production._max.dataChangedAt),
-      casting: iso(casting._max.updatedAt),
-    };
-    this.revisionCache = { at: now, value };
-    return value;
+    if (this.revisionInflight) return this.revisionInflight;
+    this.revisionInflight = this.loadRevision()
+      .then((value) => {
+        this.revisionCache = { at: Date.now(), value };
+        return value;
+      })
+      .catch((err: unknown) => {
+        if (this.revisionCache) return this.revisionCache.value;
+        throw err;
+      })
+      .finally(() => {
+        this.revisionInflight = null;
+      });
+    return this.revisionInflight;
+  }
+
+  private async loadRevision(): Promise<Revision> {
+    let last: unknown;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const [row] = await this.prisma.$queryRaw<
+          Array<{
+            intake: Date | null;
+            production: Date | null;
+            casting: Date | null;
+          }>
+        >(Prisma.sql`
+          SELECT
+            (SELECT MAX(updated_at) FROM ${dbTable('production_orders')} WHERE intake_seq IS NOT NULL) AS intake,
+            (SELECT MAX(data_changed_at) FROM ${dbTable('production_orders')}) AS production,
+            (SELECT MAX(updated_at) FROM ${dbTable('casting_slips')}) AS casting
+        `);
+        return {
+          intake: iso(row?.intake),
+          production: iso(row?.production),
+          casting: iso(row?.casting),
+        };
+      } catch (err) {
+        last = err;
+        const code =
+          err && typeof err === 'object' && 'code' in err
+            ? (err as { code?: string }).code
+            : undefined;
+        if ((code !== 'P2024' && code !== 'P1001') || attempt === 3) throw err;
+        await new Promise((r) => setTimeout(r, 250 * attempt));
+      }
+    }
+    throw last;
   }
 
   /** Đơn tạo đang trong pipeline — đủ để vá chip/nút, không kèm ảnh. */
