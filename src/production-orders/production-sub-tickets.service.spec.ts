@@ -2,6 +2,7 @@ import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { Prisma, ProductionStage, RoleCode } from '@prisma/client';
 import type { AuthUserPayload } from '../auth/types';
 import { ProductionSubTicketsService } from './production-sub-tickets.service';
+import { Permission } from '../auth/permissions';
 import {
   orderTicketState,
   subTicketState,
@@ -473,6 +474,147 @@ describe('phiếu mẹ: giao → nhận hàng → xuất kho → nộp QC', () =
     expect(materials.bustStock).not.toHaveBeenCalled();
   });
 });
+
+describe.each(['parent', 'child'] as const)(
+  'quyền chọn thợ cho %s',
+  (scope) => {
+    function context() {
+      return setup(
+        makeOrder({
+          subTickets: scope === 'child' ? [makeTicket(1, 10)] : [],
+        }),
+      );
+    }
+
+    function assignSelected(
+      service: ProductionSubTicketsService,
+      order: OrderDetail,
+      by = manager,
+    ) {
+      return scope === 'parent'
+        ? service.assignOrder(order.code, assignment, by)
+        : service.assign(
+            order.code,
+            1,
+            {
+              stage: ProductionStage.FILING,
+              craftsmanUserId: worker.id,
+            },
+            by,
+          );
+    }
+
+    it.each([RoleCode.ADMIN, RoleCode.WORKER])(
+      'tài khoản thường không giao cho admin có role chính %s',
+      async (role) => {
+        const { service, order, tx } = context();
+        tx.user.findFirst.mockResolvedValueOnce({
+          ...actor(worker.id, role),
+          extraRoles: role === RoleCode.ADMIN ? [] : [RoleCode.ADMIN],
+          workerStages: ['FILING'],
+        });
+        await expect(assignSelected(service, order)).rejects.toThrow(
+          'Chỉ admin',
+        );
+        expect(tx.productionOrder.update).not.toHaveBeenCalled();
+        expect(tx.productionSubTicket.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it('admin được giao cho admin', async () => {
+      const { service, order, tx } = context();
+      tx.user.findFirst.mockResolvedValueOnce({
+        ...actor(worker.id, RoleCode.ADMIN),
+        workerStages: [],
+      });
+      await expect(
+        assignSelected(service, order, admin),
+      ).resolves.toBeDefined();
+    });
+
+    it('không giao cho nhân viên chỉ được gắn khâu nhưng chưa có quyền thợ', async () => {
+      const { service, order, tx } = context();
+      tx.user.findFirst.mockResolvedValueOnce({
+        ...actor(worker.id),
+        workerStages: ['FILING'],
+      });
+      await expect(assignSelected(service, order)).rejects.toThrow(
+        'không có quyền thợ',
+      );
+    });
+
+    it('nhân viên được cấp quyền thợ sản xuất có thể nhận việc', async () => {
+      const { service, order, tx } = context();
+      tx.user.findFirst.mockResolvedValueOnce({
+        ...actor(worker.id),
+        allowedScreens: [Permission.PRODUCTION_WORKER],
+        workerStages: ['FILING'],
+      });
+      await expect(assignSelected(service, order)).resolves.toBeDefined();
+    });
+  },
+);
+
+describe.each(['parent', 'child'] as const)(
+  'chặn thợ báo lỗi trên %s',
+  (scope) => {
+    it.each(Object.values(ProductionStage))(
+      'chặn báo / bỏ báo lỗi ở %s kể cả thợ có quyền QC',
+      async (stage) => {
+        const entry = {
+          ...returnedFiling(),
+          stage,
+          subTicketId: scope === 'child' ? 't1' : null,
+          returnedAt: null,
+          craftsmanUserId: worker.id,
+          defectReportedAt: new Date(),
+          defectReportedByUserId: worker.id,
+        } as OrderDetail['stages'][number];
+        const { service, order, tx } = setup(
+          makeOrder({
+            stages: [entry],
+            subTickets: scope === 'child' ? [makeTicket(1, 10)] : [],
+          }),
+        );
+        const by = { ...worker, allowedScreens: [Permission.PRODUCTION_QC] };
+        const no = scope === 'child' ? 1 : null;
+        await expect(
+          service.reportStageDefect(order.code, no, { note: 'Lỗi' }, by),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+        await expect(
+          service.clearStageDefect(order.code, no, by),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+        expect(tx.productionStageEntry.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(['qc', 'admin'] as const)(
+      '%s được báo lỗi và bỏ báo lỗi',
+      async (role) => {
+        const entry = {
+          ...returnedFiling(),
+          returnedAt: null,
+          subTicketId: scope === 'child' ? 't1' : null,
+        } as OrderDetail['stages'][number];
+        const { service, order } = setup(
+          makeOrder({
+            stages: [entry],
+            subTickets: scope === 'child' ? [makeTicket(1, 10)] : [],
+          }),
+        );
+        const by =
+          role === 'admin'
+            ? admin
+            : { ...manager, allowedScreens: [Permission.PRODUCTION_QC] };
+        const no = scope === 'child' ? 1 : null;
+        await service.reportStageDefect(order.code, no, { note: 'Lỗi' }, by);
+        expect(entry.defectReportedAt).toBeInstanceOf(Date);
+        await service.clearStageDefect(order.code, no, by);
+        expect(entry.defectReportedAt).toBeNull();
+      },
+    );
+  },
+);
 
 describe('phiếu con: số lượng và tự xuất BTP', () => {
   it('đổi một phiếu thành 500 thì chia 500 còn lại đều cho 4 phiếu', async () => {

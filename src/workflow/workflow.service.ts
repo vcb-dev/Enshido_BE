@@ -89,6 +89,7 @@ export class WorkflowService {
       take: 400,
       select: {
         id: true,
+        reworkOfOrderId: true,
         code: true,
         intakeCode: true,
         sxCode: true,
@@ -118,6 +119,8 @@ export class WorkflowService {
     return {
       items: rows.map((row) => ({
         id: row.id,
+        reworkOfOrderId: row.reworkOfOrderId,
+        productionOrderCode: row.cutAt ? row.code : null,
         code: row.intakeCode ?? row.code,
         sxCode: row.sxCode ?? row.code,
         status: toIntakeStatus(row),

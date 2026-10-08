@@ -256,6 +256,11 @@ export class IntakeCastingTreeSpecsDto {
 /** Lọc chung cho tab Tất cả (gộp nhiều trạng thái intake). */
 export class IntakePipelineListsQuery {
   @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true')
+  @IsBoolean()
+  rootsOnly?: boolean;
+
+  @IsOptional()
   @IsEnum(ProductionRequestType)
   requestType?: ProductionRequestType;
 
@@ -272,6 +277,11 @@ export class IntakePipelineListsQuery {
 }
 
 export class ListIntakeOrdersQuery {
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true')
+  @IsBoolean()
+  rootsOnly?: boolean;
+
   @IsOptional()
   @Transform(({ value }) => value === true || value === 'true')
   @IsBoolean()

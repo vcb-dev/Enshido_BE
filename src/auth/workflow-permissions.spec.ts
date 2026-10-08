@@ -13,6 +13,30 @@ const P = Permission;
 
 /** Endpoint → các quyền được phép (chỉ cần một). Khớp cột "Người thực hiện" trong file mô tả luồng. */
 const MATRIX: [string, object, string, PermissionCode[]][] = [
+  [
+    'báo lỗi phiếu mẹ',
+    ProductionOrdersController.prototype,
+    'reportOrderStageDefect',
+    [P.PRODUCTION_QC],
+  ],
+  [
+    'bỏ báo lỗi phiếu mẹ',
+    ProductionOrdersController.prototype,
+    'clearOrderStageDefect',
+    [P.PRODUCTION_QC],
+  ],
+  [
+    'báo lỗi phiếu con',
+    ProductionOrdersController.prototype,
+    'reportStageDefect',
+    [P.PRODUCTION_QC],
+  ],
+  [
+    'bỏ báo lỗi phiếu con',
+    ProductionOrdersController.prototype,
+    'clearStageDefect',
+    [P.PRODUCTION_QC],
+  ],
   ['B1 tạo đơn', IntakeOrdersController.prototype, 'create', [P.INTAKE_CREATE]],
   [
     'B2 duyệt đơn',

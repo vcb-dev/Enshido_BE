@@ -433,8 +433,10 @@ export class ProductionOrdersController {
     return this.subTickets.assignOrder(code, dto, user);
   }
 
-  /** Báo lỗi ở khâu đang làm trên phiếu mẹ: thợ giữ khâu, QC hoặc admin. */
+  /** QC / admin báo lỗi khâu đang làm trên phiếu mẹ. */
   @Post(':code/work/stage-defect')
+  @BlockWorker()
+  @RequirePermissions(Permission.PRODUCTION_QC)
   reportOrderStageDefect(
     @Param('code') code: string,
     @Body() dto: StageDefectDto,
@@ -444,6 +446,8 @@ export class ProductionOrdersController {
   }
 
   @Delete(':code/work/stage-defect')
+  @BlockWorker()
+  @RequirePermissions(Permission.PRODUCTION_QC)
   clearOrderStageDefect(
     @Param('code') code: string,
     @CurrentUser() user: AuthUserPayload,
@@ -614,8 +618,10 @@ export class ProductionOrdersController {
     return this.subTickets.unsubmit(code, no, user);
   }
 
-  /** Báo lỗi ở khâu đang làm: thợ giữ khâu, QC hoặc admin (lý do bắt buộc). */
+  /** QC / admin báo lỗi khâu đang làm trên phiếu con (lý do bắt buộc). */
   @Post(':code/sub-tickets/:no/stage-defect')
+  @BlockWorker()
+  @RequirePermissions(Permission.PRODUCTION_QC)
   reportStageDefect(
     @Param('code') code: string,
     @Param('no', ParseIntPipe) no: number,
@@ -626,6 +632,8 @@ export class ProductionOrdersController {
   }
 
   @Delete(':code/sub-tickets/:no/stage-defect')
+  @BlockWorker()
+  @RequirePermissions(Permission.PRODUCTION_QC)
   clearStageDefect(
     @Param('code') code: string,
     @Param('no', ParseIntPipe) no: number,

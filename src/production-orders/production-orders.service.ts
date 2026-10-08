@@ -1,3 +1,7 @@
+import {
+  intakeListSelect,
+  toIntakeRow,
+} from '../intake-orders/intake-order-row';
 import { randomUUID } from 'node:crypto';
 import {
   BadRequestException,
@@ -184,6 +188,7 @@ export class ProductionOrdersService {
 
   private statusCountsCacheKey(query: ListProductionOrdersQuery) {
     return `status-counts:${JSON.stringify({
+      groupReworks: query.groupReworks ?? false,
       requestType: query.requestType ?? '',
       source: query.source ?? '',
       receivedDate: query.receivedDate ?? '',
@@ -224,6 +229,7 @@ export class ProductionOrdersService {
         EXCLUDE_PRE_PRODUCTION,
       ],
     };
+    if (query.groupReworks) base.reworkOfOrderId = null;
     if (query.requestType) base.requestType = query.requestType;
     if (query.source) base.source = query.source;
     if (query.receivedDate) base.receivedDate = dateOnly(query.receivedDate);
@@ -241,6 +247,23 @@ export class ProductionOrdersService {
         { description: contains },
         { productName: contains },
         { customerName: contains },
+        ...(query.groupReworks
+          ? [
+              {
+                reworkOrders: {
+                  some: {
+                    OR: [
+                      { code: contains },
+                      { sxCode: contains },
+                      { intakeCode: contains },
+                      { description: contains },
+                      { productName: contains },
+                    ],
+                  },
+                },
+              },
+            ]
+          : []),
       ];
     }
     return base;
@@ -392,6 +415,14 @@ export class ProductionOrdersService {
           btpMaterial: { select: { sku: true } },
           intakeCode: true,
           sxCode: true,
+          reworkOrders: {
+            orderBy: { createdAt: 'asc' },
+            select: {
+              ...intakeListSelect,
+              reworkOfSubTicketId: true,
+              reworkOfEntryId: true,
+            },
+          },
           // Phiếu con kèm các khâu của chúng — vừa đủ để tính trạng thái từng phiếu cho cột
           // "Phiếu con" ở danh sách, không kéo cả chi tiết đơn.
           subTickets: {
@@ -477,6 +508,21 @@ export class ProductionOrdersService {
           workStage,
           workReceiptPrepared: Boolean(parentProgress && row.pendingHandover),
           images: [],
+          reworks: query.groupReworks
+            ? row.reworkOrders.map((rework) => {
+                const sourceTicket = row.subTickets.find(
+                  (ticket) => ticket.id === rework.reworkOfSubTicketId,
+                );
+                return {
+                  intake: toIntakeRow(rework),
+                  orderCode: rework.code,
+                  productionStatus: rework.status,
+                  sourceTicketCode: sourceTicket
+                    ? `${row.code}-${sourceTicket.no}`
+                    : row.code,
+                };
+              })
+            : [],
           subTickets: row.subTickets.map((ticket) =>
             subTicketSummary(
               row.code,
@@ -561,6 +607,13 @@ export class ProductionOrdersService {
             user.roleCode === RoleCode.WORKER ||
             user.extraRoles.includes(RoleCode.WORKER) ||
             user.allowedScreens.includes(Permission.PRODUCTION_WORKER),
+        )
+        .map((user) => user.id),
+      adminIds: users
+        .filter(
+          (user) =>
+            user.roleCode === RoleCode.ADMIN ||
+            user.extraRoles.includes(RoleCode.ADMIN),
         )
         .map((user) => user.id),
       closers: uniqueSorted([

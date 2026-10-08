@@ -1,3 +1,7 @@
+import {
+  intakeListSelect,
+  toIntakeRow,
+} from '../intake-orders/intake-order-row';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import {
   CastingSlipImageKind,
@@ -110,11 +114,7 @@ export const detailInclude = {
   // Đơn tạo bù cho hàng lỗi của đơn này — để phiếu lỗi hiện "Phiếu bù: DH…".
   reworkOrders: {
     select: {
-      code: true,
-      intakeCode: true,
-      status: true,
-      cutAt: true,
-      qty: true,
+      ...intakeListSelect,
       reworkOfEntryId: true,
       reworkOfSubTicketId: true,
     },
@@ -950,6 +950,7 @@ export function toDetail(order: OrderDetail) {
 
   return {
     id: order.id,
+    reworkOfOrderId: order.reworkOfOrderId,
     code: order.code,
     intakeOrderCode: order.intakeCode,
     intakeSxCode: order.sxCode,
@@ -1140,6 +1141,9 @@ export function toDetail(order: OrderDetail) {
     },
     /** Phiếu bù cho hàng lỗi Nguội / Vào đá: đơn tạo bù đang đi lại từ bước sáp. */
     reworks: order.reworkOrders.map((rework) => ({
+      intake: toIntakeRow(rework),
+      orderCode: rework.code,
+      productionStatus: rework.status,
       code: rework.intakeCode ?? rework.code,
       status: toIntakeStatus(rework),
       qty: rework.qty,

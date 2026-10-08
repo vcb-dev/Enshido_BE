@@ -20,13 +20,7 @@ import type { AuthUserPayload } from '../auth/types';
 import { dbTable } from '../prisma/database-url';
 import { poolAll } from '../prisma/pool-all';
 import { InventoryService } from '../inventory/inventory.service';
-import {
-  intakeCode,
-  nextIntakeSeq,
-  nextOrderSeq,
-  orderCode,
-  randomSxCode,
-} from './intake-order';
+import { nextOrderSeq, orderCode, randomSxCode } from './intake-order';
 import { PrismaService } from '../prisma/prisma.service';
 import { decStr } from '../util/money';
 import {
@@ -582,11 +576,13 @@ export class ProductionSubTicketsService {
           roleCode: true,
           extraRoles: true,
           workerStages: true,
+          allowedScreens: true,
         },
       });
       if (!craftsman) {
         throw new BadRequestException('Tài khoản thợ không còn hoạt động');
       }
+      assertAssignableWorker(actor, craftsman);
       if (
         !userHasRole(
           craftsman.roleCode,
@@ -1346,11 +1342,13 @@ export class ProductionSubTicketsService {
           roleCode: true,
           extraRoles: true,
           workerStages: true,
+          allowedScreens: true,
         },
       });
       if (!craftsman) {
         throw new BadRequestException('Tài khoản thợ không còn hoạt động');
       }
+      assertAssignableWorker(actor, craftsman);
       if (
         !userHasRole(
           craftsman.roleCode,
@@ -1675,7 +1673,7 @@ export class ProductionSubTicketsService {
   }
 
   /**
-   * Báo lỗi ngay ở khâu đang làm của phiếu con: thợ đang giữ khâu, QC hoặc admin. Khâu coi như
+   * QC / admin báo lỗi ngay ở khâu đang làm của phiếu mẹ / con. Khâu coi như
    * đã nộp để QC cân lại — không ghi đè lên "thợ báo xong". Nguội / Vào đá đạt 0 thì sau khi
    * thủ kho xác nhận phiếu tự chốt Lỗi tại khâu đó; các khâu khác QC chốt Lỗi sau khi nhận lại.
    */
@@ -1685,6 +1683,7 @@ export class ProductionSubTicketsService {
     dto: StageDefectDto,
     actor: AuthUserPayload,
   ) {
+    assertCanReportStageDefect(actor);
     return this.mutate(code, async (tx, order) => {
       assertOrderActive(order);
       const ticket = no == null ? null : requireSubTicket(order, no);
@@ -1701,16 +1700,6 @@ export class ProductionSubTicketsService {
       if (!open) {
         throw new BadRequestException(
           `Phiếu ${label} không có khâu nào đang làm để báo lỗi`,
-        );
-      }
-      const isHolder = open.craftsmanUserId === actor.id;
-      if (
-        !isHolder &&
-        !isAdmin(actor) &&
-        !userCan(actor, Permission.PRODUCTION_QC)
-      ) {
-        throw new ForbiddenException(
-          'Chỉ thợ đang giữ khâu, QC hoặc admin được báo lỗi khâu này',
         );
       }
       if (open.defectReportedAt) {
@@ -1735,12 +1724,13 @@ export class ProductionSubTicketsService {
     });
   }
 
-  /** Bỏ báo lỗi (báo nhầm): người đã báo, QC hoặc admin — chỉ khi QC chưa nhận lại. */
+  /** QC / admin bỏ báo lỗi nhầm — chỉ khi QC chưa nhận lại. */
   async clearStageDefect(
     code: string,
     no: number | null,
     actor: AuthUserPayload,
   ) {
+    assertCanReportStageDefect(actor);
     return this.mutate(code, async (tx, order) => {
       const ticket = no == null ? null : requireSubTicket(order, no);
       if (!ticket && order.subTickets.length > 0) {
@@ -1753,15 +1743,6 @@ export class ProductionSubTicketsService {
       ).find((entry) => !entry.returnedAt);
       if (!open?.defectReportedAt) {
         throw new BadRequestException('Khâu này chưa báo lỗi');
-      }
-      if (
-        open.defectReportedByUserId !== actor.id &&
-        !isAdmin(actor) &&
-        !userCan(actor, Permission.PRODUCTION_QC)
-      ) {
-        throw new ForbiddenException(
-          'Chỉ người đã báo lỗi, QC hoặc admin được bỏ báo lỗi',
-        );
       }
       await tx.productionStageEntry.update({
         where: { id: open.id },
@@ -2216,12 +2197,11 @@ export class ProductionSubTicketsService {
       });
       if (existing) {
         throw new BadRequestException(
-          `Đã có phiếu bù ${existing.intakeCode ?? existing.code} cho lần QC nhận lại này`,
+          `Đã có phiếu bù ${existing.code} cho lần QC nhận lại này`,
         );
       }
 
       const seq = await nextOrderSeq(tx);
-      const intakeSeq = await nextIntakeSeq(tx);
       const label = ticket ? ticketCode(order, ticket) : order.code;
       // Đá theo 3D chia theo tỷ lệ số lượng bù trên số lượng đơn gốc.
       const ratio = order.qty > 0 ? defectQty / order.qty : 1;
@@ -2229,8 +2209,8 @@ export class ProductionSubTicketsService {
         data: {
           seq,
           code: orderCode(seq),
-          intakeSeq,
-          intakeCode: intakeCode(intakeSeq),
+          intakeSeq: order.intakeSeq,
+          intakeCode: order.intakeCode,
           sxCode: randomSxCode(),
           // Đã có khuôn / 3D: bỏ qua duyệt và vẽ 3D, vào thẳng bước sáp.
           status: ProductionStatus.READY_FOR_PRODUCTION,
@@ -2266,8 +2246,12 @@ export class ProductionSubTicketsService {
         orderCode: order.code,
         subTicketNo: ticket?.no ?? null,
         stage: entry.stage,
-        after: { qty: defectQty, intakeCode: rework.intakeCode },
-        note: `Tạo phiếu bù ${rework.intakeCode} cho ${defectQty} sp lỗi — đi lại từ bước sáp`,
+        after: {
+          qty: defectQty,
+          orderCode: rework.code,
+          intakeCode: rework.intakeCode,
+        },
+        note: `Tạo lệnh sản xuất bù ${rework.code} cho ${defectQty} sp lỗi của đơn ${rework.intakeCode} — đi lại từ bước sáp`,
       });
       await touch(tx, order.id);
     });
@@ -3015,8 +2999,7 @@ export class ProductionSubTicketsService {
       _count: { select: { orders: true } },
     } as const;
 
-    const needCasting =
-      adminView || userCan(actor, Permission.PRODUCTION_CAST);
+    const needCasting = adminView || userCan(actor, Permission.PRODUCTION_CAST);
     const [
       claimed,
       working,
@@ -3030,163 +3013,175 @@ export class ProductionSubTicketsService {
       castingRecent,
     ] = await poolAll([
       () =>
-      this.prisma.productionSubTicket.findMany({
-        // Thủ kho chỉ định thợ (không có phiếu mở để thợ tự nhận); admin thấy mọi phiếu đang giữ.
-        where: adminView
-          ? { claimedByUserId: { not: null }, pendingStage: { not: null } }
-          : { claimedByUserId: actor.id, pendingStage: { not: null } },
-        include: myTicketInclude,
-        orderBy: { claimedAt: 'asc' },
-        ...(adminView ? { take: MINE_LIMIT } : {}),
-      }),
+        this.prisma.productionSubTicket.findMany({
+          // Thủ kho chỉ định thợ (không có phiếu mở để thợ tự nhận); admin thấy mọi phiếu đang giữ.
+          where: adminView
+            ? { claimedByUserId: { not: null }, pendingStage: { not: null } }
+            : { claimedByUserId: actor.id, pendingStage: { not: null } },
+          include: myTicketInclude,
+          orderBy: { claimedAt: 'asc' },
+          ...(adminView ? { take: MINE_LIMIT } : {}),
+        }),
       () =>
-      this.prisma.productionStageEntry.findMany({
-        where: adminView
-          ? { subTicketId: { not: null }, returnedAt: null }
-          : {
-              craftsmanUserId: actor.id,
-              subTicketId: { not: null },
-              returnedAt: null,
-            },
-        include: {
-          ...entryRequestsSelect,
-          subTicket: { include: myTicketInclude },
-        },
-        orderBy: { handedAt: 'asc' },
-        ...(adminView ? { take: MINE_LIMIT } : {}),
-      }),
+        this.prisma.productionStageEntry.findMany({
+          where: adminView
+            ? { subTicketId: { not: null }, returnedAt: null }
+            : {
+                craftsmanUserId: actor.id,
+                subTicketId: { not: null },
+                returnedAt: null,
+              },
+          include: {
+            ...entryRequestsSelect,
+            subTicket: { include: myTicketInclude },
+          },
+          orderBy: { handedAt: 'asc' },
+          ...(adminView ? { take: MINE_LIMIT } : {}),
+        }),
       () =>
-      this.prisma.productionStageEntry.findMany({
-        where: adminView
-          ? { subTicketId: { not: null }, returnedAt: { not: null } }
-          : {
-              craftsmanUserId: actor.id,
-              subTicketId: { not: null },
-              returnedAt: { not: null },
-            },
-        include: {
-          ...entryRequestsSelect,
-          subTicket: { include: myTicketInclude },
-        },
-        orderBy: { returnedAt: 'desc' },
-        take: RECENT_LIMIT,
-      }),
+        this.prisma.productionStageEntry.findMany({
+          where: adminView
+            ? { subTicketId: { not: null }, returnedAt: { not: null } }
+            : {
+                craftsmanUserId: actor.id,
+                subTicketId: { not: null },
+                returnedAt: { not: null },
+              },
+          include: {
+            ...entryRequestsSelect,
+            subTicket: { include: myTicketInclude },
+          },
+          orderBy: { returnedAt: 'desc' },
+          take: RECENT_LIMIT,
+        }),
       () =>
-      this.prisma.productionOrder.findMany({
-        where: {
-          subTickets: { none: {} },
-          pendingStage: openStage,
-          claimedByUserId: null,
-          status: { not: S.DELIVERED },
-        },
-        select: myOrderPendingSelect,
-        orderBy: { pendingAt: 'asc' },
-        take: AVAILABLE_LIMIT,
-      }),
+        this.prisma.productionOrder.findMany({
+          where: {
+            subTickets: { none: {} },
+            pendingStage: openStage,
+            claimedByUserId: null,
+            status: { not: S.DELIVERED },
+          },
+          select: myOrderPendingSelect,
+          orderBy: { pendingAt: 'asc' },
+          take: AVAILABLE_LIMIT,
+        }),
       () =>
-      this.prisma.productionOrder.findMany({
-        where: adminView
-          ? {
-              subTickets: { none: {} },
-              claimedByUserId: { not: null },
-              pendingStage: { not: null },
-            }
-          : {
-              subTickets: { none: {} },
-              claimedByUserId: actor.id,
-              pendingStage: { not: null },
-            },
-        select: myOrderPendingSelect,
-        orderBy: { claimedAt: 'asc' },
-        ...(adminView ? { take: MINE_LIMIT } : {}),
-      }),
+        this.prisma.productionOrder.findMany({
+          where: adminView
+            ? {
+                subTickets: { none: {} },
+                claimedByUserId: { not: null },
+                pendingStage: { not: null },
+              }
+            : {
+                subTickets: { none: {} },
+                claimedByUserId: actor.id,
+                pendingStage: { not: null },
+              },
+          select: myOrderPendingSelect,
+          orderBy: { claimedAt: 'asc' },
+          ...(adminView ? { take: MINE_LIMIT } : {}),
+        }),
       () =>
-      this.prisma.productionStageEntry.findMany({
-        where: adminView
-          ? {
-              subTicketId: null,
-              returnedAt: null,
-              order: { subTickets: { none: {} } },
-            }
-          : {
-              craftsmanUserId: actor.id,
-              subTicketId: null,
-              returnedAt: null,
-              // Đơn đã chia thì việc đi theo phiếu con; thẻ phiếu mẹ sẽ dẫn tới ngõ cụt.
-              order: { subTickets: { none: {} } },
-            },
-        select: myOrderEntrySelect,
-        orderBy: { handedAt: 'asc' },
-        ...(adminView ? { take: MINE_LIMIT } : {}),
-      }),
+        this.prisma.productionStageEntry.findMany({
+          where: adminView
+            ? {
+                subTicketId: null,
+                returnedAt: null,
+                order: { subTickets: { none: {} } },
+              }
+            : {
+                craftsmanUserId: actor.id,
+                subTicketId: null,
+                returnedAt: null,
+                // Đơn đã chia thì việc đi theo phiếu con; thẻ phiếu mẹ sẽ dẫn tới ngõ cụt.
+                order: { subTickets: { none: {} } },
+              },
+          select: myOrderEntrySelect,
+          orderBy: { handedAt: 'asc' },
+          ...(adminView ? { take: MINE_LIMIT } : {}),
+        }),
       () =>
-      this.prisma.productionStageEntry.findMany({
-        where: adminView
-          ? {
-              subTicketId: null,
-              returnedAt: { not: null },
-              order: { subTickets: { none: {} } },
-            }
-          : {
-              craftsmanUserId: actor.id,
-              subTicketId: null,
-              returnedAt: { not: null },
-              order: { subTickets: { none: {} } },
-            },
-        select: myOrderEntrySelect,
-        orderBy: { returnedAt: 'desc' },
-        take: RECENT_LIMIT,
-      }),
-      () =>
-        needCasting
-        ? this.prisma.castingSlip.findMany({
-            where: adminView
-              ? { status: CastingSlipStatus.WAIT_CASTING, startedAt: null }
-              : {
-                  startedByUserId: actor.id,
-                  status: CastingSlipStatus.WAIT_CASTING,
-                  startedAt: null,
-                },
-            select: castingSlipSelect,
-            orderBy: [{ slipDate: 'desc' }, { code: 'desc' }],
-            ...(adminView ? { take: AVAILABLE_LIMIT } : {}),
-          })
-        : Promise.resolve([]),
+        this.prisma.productionStageEntry.findMany({
+          where: adminView
+            ? {
+                subTicketId: null,
+                returnedAt: { not: null },
+                order: { subTickets: { none: {} } },
+              }
+            : {
+                craftsmanUserId: actor.id,
+                subTicketId: null,
+                returnedAt: { not: null },
+                order: { subTickets: { none: {} } },
+              },
+          select: myOrderEntrySelect,
+          orderBy: { returnedAt: 'desc' },
+          take: RECENT_LIMIT,
+        }),
       () =>
         needCasting
-        ? this.prisma.castingSlip.findMany({
-            where: adminView
-              ? { status: { in: castingHeldStatuses } }
-              : {
-                  startedByUserId: actor.id,
-                  status: { in: castingHeldStatuses },
-                },
-            select: castingSlipSelect,
-            orderBy: [{ slipDate: 'desc' }, { code: 'desc' }],
-            ...(adminView ? { take: AVAILABLE_LIMIT } : {}),
-          })
-        : Promise.resolve([]),
+          ? this.prisma.castingSlip.findMany({
+              where: adminView
+                ? { status: CastingSlipStatus.WAIT_CASTING, startedAt: null }
+                : {
+                    startedByUserId: actor.id,
+                    status: CastingSlipStatus.WAIT_CASTING,
+                    startedAt: null,
+                  },
+              select: castingSlipSelect,
+              orderBy: [{ slipDate: 'desc' }, { code: 'desc' }],
+              ...(adminView ? { take: AVAILABLE_LIMIT } : {}),
+            })
+          : Promise.resolve([]),
       () =>
         needCasting
-        ? this.prisma.castingSlip.findMany({
-            where: adminView
-              ? { status: CastingSlipStatus.DONE }
-              : { startedByUserId: actor.id, status: CastingSlipStatus.DONE },
-            select: castingSlipSelect,
-            orderBy: { confirmedAt: 'desc' },
-            take: RECENT_LIMIT,
-          })
-        : Promise.resolve([]),
+          ? this.prisma.castingSlip.findMany({
+              where: adminView
+                ? { status: { in: castingHeldStatuses } }
+                : {
+                    startedByUserId: actor.id,
+                    status: { in: castingHeldStatuses },
+                  },
+              select: castingSlipSelect,
+              orderBy: [{ slipDate: 'desc' }, { code: 'desc' }],
+              ...(adminView ? { take: AVAILABLE_LIMIT } : {}),
+            })
+          : Promise.resolve([]),
+      () =>
+        needCasting
+          ? this.prisma.castingSlip.findMany({
+              where: adminView
+                ? { status: CastingSlipStatus.DONE }
+                : { startedByUserId: actor.id, status: CastingSlipStatus.DONE },
+              select: castingSlipSelect,
+              orderBy: { confirmedAt: 'desc' },
+              take: RECENT_LIMIT,
+            })
+          : Promise.resolve([]),
     ]);
+
+    const assigned = [
+      ...parentClaimed.map((order) => parentPendingItem(order)),
+      ...claimed.map((row) => pendingItem(row)),
+    ];
+    const awaitingReceipt = (item: (typeof assigned)[number]) =>
+      item.state === 'CLAIMED' &&
+      (item.stage === ProductionStage.FILING ||
+        item.stage === ProductionStage.STONE_SETTING) &&
+      (item.no != null || ('receiptPrepared' in item && item.receiptPrepared));
 
     return {
       /** Khâu tài khoản này được nhận; admin nhận mọi khâu. */
       stages: stages ?? Object.values(ProductionStage),
-      available: [...parentAvailable.map((order) => parentPendingItem(order))],
+      available: [
+        ...parentAvailable.map((order) => parentPendingItem(order)),
+        ...assigned.filter(awaitingReceipt),
+      ],
       mine: [
-        ...parentClaimed.map((order) => parentPendingItem(order)),
+        ...assigned.filter((item) => !awaitingReceipt(item)),
         ...parentWorking.map((entry) => parentEntryItem(entry)),
-        ...claimed.map((row) => pendingItem(row)),
         ...working.flatMap((entry) =>
           entry.subTicket ? [entryItem(entry.subTicket, entry)] : [],
         ),
@@ -3438,10 +3433,10 @@ export class ProductionSubTicketsService {
     if (!found) throw new NotFoundException('Không tìm thấy đơn sản xuất');
     const updated = await this.prisma.runTx(async (tx) => {
       await tx.$queryRaw`SELECT id FROM ${dbTable('production_orders')} WHERE id = ${found.id}::uuid FOR UPDATE`;
-      const order = (await tx.productionOrder.findUniqueOrThrow({
+      const order = await tx.productionOrder.findUniqueOrThrow({
         where: { id: found.id },
         include: workInclude,
-      })) as OrderDetail;
+      });
       await apply(tx, order);
       return found.id;
     });
@@ -3508,6 +3503,42 @@ function castingSlipMyItem(row: {
 
 function isAdmin(actor: AuthUserPayload) {
   return userHasRole(actor.roleCode, actor.extraRoles ?? [], RoleCode.ADMIN);
+}
+
+function assertCanReportStageDefect(actor: AuthUserPayload) {
+  if (isAdmin(actor)) return;
+  if (
+    userHasRole(actor.roleCode, actor.extraRoles ?? [], RoleCode.WORKER) ||
+    !userCan(actor, Permission.PRODUCTION_QC)
+  ) {
+    throw new ForbiddenException(
+      'Chỉ QC hoặc admin được báo lỗi / bỏ báo lỗi khâu',
+    );
+  }
+}
+
+function assertAssignableWorker(
+  actor: AuthUserPayload,
+  craftsman: Pick<
+    AuthUserPayload,
+    'roleCode' | 'extraRoles' | 'allowedScreens'
+  >,
+) {
+  if (
+    userHasRole(craftsman.roleCode, craftsman.extraRoles ?? [], RoleCode.ADMIN)
+  ) {
+    if (!isAdmin(actor)) {
+      throw new ForbiddenException(
+        'Chỉ admin được giao việc cho tài khoản admin',
+      );
+    }
+    return;
+  }
+  if (!userCan(craftsman, Permission.PRODUCTION_WORKER)) {
+    throw new BadRequestException(
+      'Tài khoản được chọn không có quyền thợ sản xuất',
+    );
+  }
 }
 
 /** Khâu tài khoản được nhận, đọc từ DB để admin đổi khâu là có hiệu lực ngay. `null` = admin, nhận mọi khâu. */
