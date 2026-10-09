@@ -97,13 +97,24 @@ type IntakeRow = {
   castingSlipLine?: { slip?: { code: string; status: string } | null } | null;
 };
 
-export function toIntakeRow(row: IntakeRow) {
+/**
+ * `productionStatuses`: trạng thái thật đếm theo phiếu của đơn đã cắt cây (danh sách đơn tạo truyền
+ * vào); không truyền thì lấy trạng thái đơn.
+ */
+export function toIntakeRow(
+  row: IntakeRow,
+  productionStatuses?: { status: ProductionStatus; count: number }[],
+) {
   return {
     id: row.id,
     reworkOfOrderId: row.reworkOfOrderId ?? null,
     code: row.intakeCode ?? row.code,
     sxCode: row.sxCode ?? row.code,
     status: toIntakeStatus(row),
+    /** Đã cắt cây: trạng thái thật trên lệnh sản xuất (đơn chia phiếu thì đếm theo phiếu con). */
+    productionStatuses: row.cutAt
+      ? (productionStatuses ?? [{ status: row.status, count: 1 }])
+      : null,
     requestType: row.requestType,
     productName: row.productName,
     qty: row.qty,

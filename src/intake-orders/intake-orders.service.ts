@@ -42,6 +42,10 @@ import {
   randomSxCode,
   toIntakeStatus,
 } from '../production-orders/intake-order';
+import {
+  orderStatusCounts,
+  orderStatusCountsSelect,
+} from '../production-orders/order-detail';
 
 export { intakeCode, randomSxCode };
 
@@ -170,7 +174,23 @@ export class IntakeOrdersService {
         select: intakeListSelect,
       }),
     ]);
-    return { items: rows.map(toIntakeRow), total, page, pageSize };
+    // Đơn đã cắt cây hiện trạng thái thật của lệnh sản xuất thay vì gộp hết về "Chờ nguội".
+    const cutIds = rows.filter((row) => row.cutAt).map((row) => row.id);
+    const cutOrders = cutIds.length
+      ? await this.prisma.productionOrder.findMany({
+          where: { id: { in: cutIds } },
+          select: orderStatusCountsSelect,
+        })
+      : [];
+    const statusCounts = new Map(
+      cutOrders.map((order) => [order.id, orderStatusCounts(order)]),
+    );
+    return {
+      items: rows.map((row) => toIntakeRow(row, statusCounts.get(row.id))),
+      total,
+      page,
+      pageSize,
+    };
   }
 
   /** Một lần đếm cho badge tab Lệnh sản xuất — tránh N request count riêng lẻ trên FE. */
@@ -630,7 +650,7 @@ export class IntakeOrdersService {
         images: { orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }] },
       },
     });
-    return { items: rows.map(toIntakeRow) };
+    return { items: rows.map((row) => toIntakeRow(row)) };
   }
 
   /** Bước 5–6: thủ kho xác nhận đã nhận sáp → E (TL phiếu đúc lấy số thợ báo nếu không cân riêng). */

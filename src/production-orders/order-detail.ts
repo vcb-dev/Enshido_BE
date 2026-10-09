@@ -548,6 +548,66 @@ export function subTicketSummary(
   };
 }
 
+/** Phần của đơn cần để đếm trạng thái thật theo phiếu — danh sách đơn tạo nạp riêng cho đơn đã cắt cây. */
+export const orderStatusCountsSelect = {
+  id: true,
+  status: true,
+  stoneCount: true,
+  stoneSkipped: true,
+  subTickets: {
+    select: {
+      id: true,
+      pendingStage: true,
+      claimedByUserId: true,
+      outcome: true,
+      outcomeStage: true,
+    },
+  },
+  stages: {
+    orderBy: { createdAt: 'asc' as const },
+    select: {
+      subTicketId: true,
+      stage: true,
+      returnedAt: true,
+      confirmedAt: true,
+      defectReportedAt: true,
+      submittedAt: true,
+    },
+  },
+} satisfies Prisma.ProductionOrderSelect;
+
+/**
+ * Trạng thái thật của đơn đã vào sản xuất, đếm theo phiếu — cùng cách tính với chip ở danh sách
+ * lệnh sản xuất: đơn chưa chia lấy trạng thái đơn, đơn đã chia đếm trạng thái từng phiếu con.
+ */
+export function orderStatusCounts(order: {
+  status: ProductionStatus;
+  stoneCount?: number | null;
+  stoneSkipped?: boolean | null;
+  subTickets: readonly (Pick<
+    SubTicket,
+    'id' | 'pendingStage' | 'claimedByUserId' | 'outcome'
+  > & { outcomeStage?: ProductionStage | null })[];
+  stages: readonly (StateEntry & Pick<StageEntry, 'subTicketId'>)[];
+}): { status: ProductionStatus; count: number }[] {
+  if (order.subTickets.length === 0) {
+    return [{ status: order.status, count: 1 }];
+  }
+  const parentEntries = order.stages.filter((entry) => !entry.subTicketId);
+  const orderLast = parentEntries[parentEntries.length - 1]?.stage ?? null;
+  const counts = new Map<ProductionStatus, number>();
+  for (const ticket of order.subTickets) {
+    const entries = order.stages.filter(
+      (entry) => entry.subTicketId === ticket.id,
+    );
+    const status =
+      ticketStatus(ticket, entries, orderLast, skipsStone(order)) ??
+      outcomeStatus(ticket);
+    counts.set(status, (counts.get(status) ?? 0) + 1);
+  }
+  return [...counts].map(([status, count]) => ({ status, count }));
+}
+
 /**
  * Thứ tự "tích cực" của trạng thái đơn — phiếu con đi lệch nhau thì đơn lấy trạng thái của phiếu
  * đi xa nhất (mô tả luồng, ghi chú bước 15). Lỗi xếp thấp nhất: còn phiếu khác chạy thì đơn

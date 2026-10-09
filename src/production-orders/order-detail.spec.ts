@@ -10,6 +10,7 @@ import {
   lastStageDone,
   orderEntries,
   orderListStatuses,
+  orderStatusCounts,
   orderTicketAvailable,
   orderTicketState,
   outcomeStatus,
@@ -186,6 +187,34 @@ describe('orderListStatuses — tab theo vị trí thật của từng phiếu',
         [status],
       );
     }
+  });
+});
+
+describe('orderStatusCounts — trạng thái thật hiện ở màn Tạo đơn', () => {
+  it('đơn chưa chia lấy trạng thái của đơn', () => {
+    expect(
+      orderStatusCounts({ status: 'WAIT_ENGRAVING', subTickets: [], stages: [] }),
+    ).toEqual([{ status: 'WAIT_ENGRAVING', count: 1 }]);
+  });
+
+  it('đơn đã chia đếm theo trạng thái từng phiếu con, kể cả phiếu đã chốt lỗi', () => {
+    const counts = orderStatusCounts({
+      status: 'FILING',
+      subTickets: [
+        ticket({ id: 't1' }),
+        ticket({ id: 't2' }),
+        ticket({ id: 't3' }),
+        ticket({ id: 't4', outcome: 'DEFECT', outcomeStage: 'FILING' }),
+      ],
+      stages: [
+        entry({ subTicketId: 't1', stage: 'FILING', returnedAt: new Date() }),
+      ],
+    });
+    expect(counts).toEqual([
+      { status: 'WAIT_STONE', count: 1 },
+      { status: 'WAIT_FILING', count: 2 },
+      { status: 'FILING_DEFECT', count: 1 },
+    ]);
   });
 });
 
