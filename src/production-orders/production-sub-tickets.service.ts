@@ -2026,7 +2026,7 @@ export class ProductionSubTicketsService {
                 fromStatus: order.status,
                 toStatus: status,
                 changedBy: by,
-                note: `Lỗi hết hàng ở khâu ${stageName}: ${defectNoteOf(entry, stageName)}`,
+                note: `Lỗi toàn bộ hàng ở khâu ${stageName}: ${defectNoteOf(entry, stageName)}`,
               },
             },
           },
