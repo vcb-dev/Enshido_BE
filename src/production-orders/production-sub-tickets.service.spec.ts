@@ -30,6 +30,11 @@ const actor = (
 const manager = actor('creator');
 const worker = actor('worker', RoleCode.WORKER);
 const admin = actor('admin', RoleCode.ADMIN);
+const stonePhoto = {
+  url: 'https://res.cloudinary.com/demo/image/upload/enshido/stone.jpg',
+  publicId: 'enshido/stone',
+};
+
 const assignment: AssignOrderDto = {
   stage: ProductionStage.FILING,
   craftsmanUserId: worker.id,
@@ -110,6 +115,17 @@ function setup(order = makeOrder()) {
       >()
       .mockResolvedValue(['btp-cho-vao-da']),
     bustStock: jest.fn(),
+    stoneImages: jest.fn((images?: Array<{ publicId: string }> | null) => {
+      if (!images?.length) throw new BadRequestException('thiếu ảnh gói đá');
+      return images.map((image, sortOrder) => ({
+        url: 'https://res.cloudinary.com/x.jpg',
+        width: null,
+        height: null,
+        ...image,
+        sortOrder,
+      }));
+    }),
+    discardImages: jest.fn().mockResolvedValue(undefined),
   };
   const tx = {
     productionOrder: {
@@ -393,7 +409,142 @@ describe('phiếu mẹ: giao → nhận hàng → xuất kho → nộp QC', () =
     ).rejects.toThrow('không xác nhận giao tay');
   });
 
-  it('Vào đá giữ riêng bạc chuyển tiếp và đá xuất, chuyển Đang vào đá khi nhận', async () => {
+  const stoneLine = {
+    materialId: 'stones',
+    kind: 'STONE' as const,
+    qty: '20',
+    weight: '2',
+    stoneCount: 20,
+    images: [stonePhoto],
+  };
+  const stoneAssignment = {
+    ...assignment,
+    stage: ProductionStage.STONE_SETTING,
+    handedQty: 10,
+    materials: [stoneLine],
+  };
+
+  it('Vào đá tự xuất BTP đã nguội, đá giao lấy từ dòng giữ chỗ — không cộng đôi', async () => {
+    const { service, order, materials, tx } = setup(
+      makeOrder({ status: 'WAIT_STONE', stages: [returnedFiling()] }),
+    );
+    // Client cũ còn gửi kèm TL bạc và tổng đá — máy chủ bỏ qua, chỉ tính từ các dòng.
+    await service.assignOrder(
+      order.code,
+      { ...stoneAssignment, handedSilverWeight: '18', handedStoneCount: 20 },
+      manager,
+    );
+    expect(materials.issueAtHandover).not.toHaveBeenCalled();
+    tx.productionStoneHold.findMany.mockResolvedValueOnce([
+      { stoneCount: 20, weight: new Prisma.Decimal(2) },
+    ]);
+    await service.acceptOrder(order.code, worker);
+    expect(order.status).toBe('STONE_SETTING');
+    // Bạc vào khâu chỉ đến từ dòng BTP xuất kho; đá giao đúng bằng dòng giữ chỗ.
+    expect(order.stages[order.stages.length - 1]).toMatchObject({
+      handedSilverWeight: null,
+      handedStoneCount: 20,
+      handedStoneWeight: new Prisma.Decimal(2),
+    });
+    expect(materials.issueAtHandover.mock.calls[0][3]).toEqual([
+      expect.objectContaining({
+        materialId: 'filed-btp',
+        kind: 'METAL',
+        qty: '10',
+        weight: '18',
+      }),
+      expect.objectContaining({
+        kind: 'STONE',
+        weight: '2',
+        images: [expect.objectContaining({ publicId: stonePhoto.publicId })],
+      }),
+    ]);
+  });
+
+  it('Vào đá: không cho chọn lại BTP khi BTP đã nguội của đơn tự xuất', async () => {
+    const { service, order } = setup(
+      makeOrder({ status: 'WAIT_STONE', stages: [returnedFiling()] }),
+    );
+    await expect(
+      service.assignOrder(
+        order.code,
+        {
+          ...stoneAssignment,
+          materials: [
+            stoneLine,
+            { materialId: 'other-btp', kind: 'METAL', qty: '10', weight: '18' },
+          ],
+        },
+        manager,
+      ),
+    ).rejects.toThrow('chỉ chọn đá');
+    expect(order.pendingStage).toBeNull();
+  });
+
+  it('Vào đá: phải có đá cấp cho thợ và giao cả số QC nhận lại', async () => {
+    const { service, order } = setup(
+      makeOrder({ status: 'WAIT_STONE', stages: [returnedFiling()] }),
+    );
+    await expect(
+      service.assignOrder(
+        order.code,
+        { ...stoneAssignment, materials: [] },
+        manager,
+      ),
+    ).rejects.toThrow('chọn đá cấp cho thợ');
+    await expect(
+      service.assignOrder(
+        order.code,
+        { ...stoneAssignment, handedQty: 6 },
+        manager,
+      ),
+    ).rejects.toThrow('không giao lẻ');
+  });
+
+  it('Vào đá sau khâu luồng cũ (không nhập kho BTP): giữ TL bạc chuyển tay', async () => {
+    const { service, order, materials } = setup(
+      makeOrder({
+        status: 'WAIT_STONE',
+        stages: [{ ...returnedFiling(), outputMaterialId: null }],
+      }),
+    );
+    await service.assignOrder(
+      order.code,
+      { ...stoneAssignment, handedSilverWeight: '18' },
+      manager,
+    );
+    await service.acceptOrder(order.code, worker);
+    expect(order.stages[order.stages.length - 1]).toMatchObject({
+      handedSilverWeight: new Prisma.Decimal(18),
+    });
+    expect(materials.issueAtHandover.mock.calls[0][3]).toEqual([
+      expect.objectContaining({ kind: 'STONE' }),
+    ]);
+  });
+
+  it('Vào đá: dòng đá không có ảnh gói đá thì không giao được', async () => {
+    const { service, order } = setup(
+      makeOrder({ status: 'WAIT_STONE', stages: [returnedFiling()] }),
+    );
+    await expect(
+      service.assignOrder(
+        order.code,
+        {
+          ...assignment,
+          stage: 'STONE_SETTING',
+          handedQty: 10,
+          handedSilverWeight: '18',
+          materials: [
+            { materialId: 'stones', kind: 'STONE', qty: '20', weight: '2' },
+          ],
+        },
+        manager,
+      ),
+    ).rejects.toThrow('thiếu ảnh gói đá');
+    expect(order.pendingStage).toBeNull();
+  });
+
+  it('huỷ lượt giao Vào đá thì dọn ảnh gói đá đã chụp', async () => {
     const { service, order, materials } = setup(
       makeOrder({ status: 'WAIT_STONE', stages: [returnedFiling()] }),
     );
@@ -404,29 +555,20 @@ describe('phiếu mẹ: giao → nhận hàng → xuất kho → nộp QC', () =
         stage: 'STONE_SETTING',
         handedQty: 10,
         handedSilverWeight: '18',
-        handedStoneCount: 20,
         materials: [
           {
             materialId: 'stones',
             kind: 'STONE',
             qty: '20',
             weight: '2',
-            stoneCount: 20,
+            images: [stonePhoto],
           },
         ],
       },
       manager,
     );
-    expect(materials.issueAtHandover).not.toHaveBeenCalled();
-    await service.acceptOrder(order.code, worker);
-    expect(order.status).toBe('STONE_SETTING');
-    expect(order.stages[order.stages.length - 1]).toMatchObject({
-      handedSilverWeight: new Prisma.Decimal(18),
-      handedStoneCount: 20,
-    });
-    expect(materials.issueAtHandover.mock.calls[0][3]).toEqual([
-      expect.objectContaining({ kind: 'STONE', weight: '2' }),
-    ]);
+    await service.cancelOrderPending(order.code, manager);
+    expect(materials.discardImages).toHaveBeenCalledWith([stonePhoto.publicId]);
   });
 
   it('không cho Vào đá nếu đơn bỏ đá', async () => {

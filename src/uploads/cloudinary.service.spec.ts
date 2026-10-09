@@ -8,6 +8,7 @@ describe('Cloudinary — ảnh QC dùng chung', () => {
       productionOrderImage: empty,
       intakeOrderImage: empty,
       castingSlipImage: empty,
+      productionStoneHoldImage: empty,
       productionStageImage: {
         findMany: jest.fn().mockResolvedValue([{ publicId: 'enshido/shared' }]),
       },
