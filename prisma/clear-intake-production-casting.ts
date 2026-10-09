@@ -3,7 +3,7 @@ import { dbTable } from '../src/prisma/database-url';
 
 const prisma = new PrismaClient();
 
-/** Xóa tạo đơn + lệnh SX + lệnh/phiếu đúc. Giữ user, danh mục, kho và tồn không gắn đơn. */
+/** Xóa đơn tạo/lệnh SX + phiếu con + lệnh/phiếu đúc (cắt cây thông). Giữ nhân sự, danh mục, kho và tồn không gắn đơn. */
 async function main() {
   const affected = await prisma.$transaction(
     async (tx) => {
@@ -26,6 +26,7 @@ async function main() {
         });
       }
 
+      const holdImages = await tx.productionStoneHoldImage.deleteMany({});
       const holds = await tx.productionStoneHold.deleteMany({});
       const requests = await tx.productionMaterialRequest.deleteMany({});
       const drafts = await tx.stockOutboundDraft.deleteMany({});
@@ -74,23 +75,18 @@ async function main() {
       const tickets = await tx.productionSubTicket.deleteMany({});
       const orderImages = await tx.productionOrderImage.deleteMany({});
       const bom = await tx.productionOrderBomLine.deleteMany({});
-      const orders = await tx.productionOrder.deleteMany({});
-
       const slipImages = await tx.castingSlipImage.deleteMany({});
       const slipOrders = await tx.castingSlipOrder.deleteMany({});
       const slips = await tx.castingSlip.deleteMany({});
       const castLines = await tx.castingOrderLine.deleteMany({});
       const castOrders = await tx.castingOrder.deleteMany({});
-
-      const intakeImages = await tx.intakeOrderImage.deleteMany({});
-      const intakes = await tx.intakeOrder.deleteMany({});
+      const orders = await tx.productionOrder.deleteMany({});
 
       for (const { warehouseId, materialId } of keys.values()) {
         await recomputeStockBalance(tx, warehouseId, materialId);
       }
 
       return {
-        intakes: intakes.count,
         orders: orders.count,
         slips: slips.count,
         castOrders: castOrders.count,
@@ -114,15 +110,15 @@ async function main() {
           slipImages: slipImages.count,
           slipOrders: slipOrders.count,
           castLines: castLines.count,
-          intakeImages: intakeImages.count,
+          holdImages: holdImages.count,
         },
       };
     },
-    { timeout: 60_000 },
+    { timeout: 180_000 },
   );
 
   console.log(
-    `Đã xóa ${affected.intakes} đơn tạo, ${affected.orders} lệnh SX, ${affected.slips} phiếu đúc, ${affected.castOrders} lệnh đúc.`,
+    `Đã xóa ${affected.orders} lệnh SX (kèm đơn tạo), ${affected.slips} phiếu đúc, ${affected.castOrders} lệnh đúc.`,
   );
   console.log(
     `Gỡ ${affected.inbounds} phiếu nhập / ${affected.outbounds} phiếu xuất / ${affected.drafts} phiếu nháp gắn đơn (đã tính lại tồn).`,
