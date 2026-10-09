@@ -193,7 +193,28 @@ export const detailInclude = {
 export const workInclude = {
   ...detailInclude,
   stages: { orderBy: { createdAt: 'asc' as const } },
-  statusLogs: { orderBy: { changedAt: 'desc' as const }, take: 20 },
+  statusLogs: { orderBy: { changedAt: 'desc' as const }, take: 8 },
+  stoneHolds: {
+    where: { stageEntryId: { not: null } },
+    orderBy: { createdAt: 'asc' as const },
+    include: {
+      material: {
+        select: {
+          id: true,
+          sku: true,
+          name: true,
+          unit: { select: { name: true } },
+        },
+      },
+    },
+  },
+  castingSlipLine: {
+    select: {
+      slip: {
+        select: { restWeightGram: true },
+      },
+    },
+  },
 } as typeof detailInclude;
 
 export type OrderDetail = Prisma.ProductionOrderGetPayload<{
@@ -1314,7 +1335,7 @@ function stoneLinesOf(
         usedCount: hold.usedCount,
         extra,
         done,
-        images: [...hold.images],
+        images: [...(hold.images ?? [])],
       });
       continue;
     }
@@ -1337,7 +1358,7 @@ function stoneLinesOf(
         : line.usedCount + hold.usedCount;
     line.extra += extra;
     line.done = line.done && done;
-    line.images.push(...hold.images);
+    line.images.push(...(hold.images ?? []));
   }
   return [...lines.values()].map((line) => ({
     materialId: line.materialId,
