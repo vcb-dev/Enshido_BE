@@ -2045,7 +2045,7 @@ export class ProductionOrdersService {
               fromStatus: updated.status,
               toStatus: nextStatus,
               note: parentDefect
-                ? `Lỗi hết hàng ở khâu ${STAGE_LABEL[entry.stage]}: ${defectNote}`
+                ? `Lỗi toàn bộ hàng ở khâu ${STAGE_LABEL[entry.stage]}: ${defectNote}`
                 : `QC nhận lại khâu ${STAGE_LABEL[entry.stage]}${entry.subTicketId ? ` (phiếu ${ticketNoOf(order, entry.subTicketId) ?? ''})` : ''}`,
               changedBy: kcsName,
             },
