@@ -63,6 +63,7 @@ import {
   skipsStone,
   earlyReturnedOf,
   KEEPER_CONFIRM_STAGES,
+  PHOTO_ONLY_STAGES,
   selfTakeStageAfter,
   LAST_STAGE,
   lastStageDone,
@@ -166,6 +167,41 @@ const splitListSelect = {
   },
 } satisfies Prisma.ProductionOrderSelect;
 
+/** Lệnh bù hiện dưới đơn gốc ở danh sách gom — kèm mã lệnh được bù (bù tiếp cho lệnh bù lỗi). */
+const reworkChainSelect = {
+  ...intakeListSelect,
+  intakeSeq: true,
+  reworkOfOrder: { select: { code: true } },
+} satisfies Prisma.ProductionOrderSelect;
+
+type ReworkChainRow = Prisma.ProductionOrderGetPayload<{
+  select: typeof reworkChainSelect;
+}>;
+
+/** Số cấp bù tối đa mà ô tìm kiếm lần theo (bù của bù của bù…). */
+const REWORK_SEARCH_DEPTH = 5;
+
+/** Đơn gốc khớp tìm kiếm khi một lệnh bù trong chuỗi bù của nó khớp. */
+function reworkChainMatch(
+  contains: Prisma.StringFilter,
+  depth = REWORK_SEARCH_DEPTH,
+): Prisma.ProductionOrderWhereInput {
+  const own: Prisma.ProductionOrderWhereInput[] = [
+    { code: contains },
+    { sxCode: contains },
+    { intakeCode: contains },
+    { description: contains },
+    { productName: contains },
+  ];
+  return {
+    reworkOrders: {
+      some: {
+        OR: depth > 1 ? [...own, reworkChainMatch(contains, depth - 1)] : own,
+      },
+    },
+  };
+}
+
 const BTP_WAREHOUSE_CODE = 'btp-cho-vao-da';
 const NVL_WAREHOUSE_CODE = 'nvl-chinh';
 
@@ -216,6 +252,32 @@ export class ProductionOrdersService {
     });
   }
 
+  /**
+   * Mọi lệnh bù của các đơn gốc trên trang, gom theo mã đơn hàng (`intakeSeq` dùng chung) — kể cả
+   * bù tiếp cho một lệnh bù lại lỗi (A009 bù A008 bù A007). Chỉ lấy con trực tiếp thì lệnh bù cấp
+   * hai không nằm dưới dòng nào ở danh sách gom.
+   */
+  private async reworkChains(rows: readonly { intakeSeq: number | null }[]) {
+    const seqs = [
+      ...new Set(
+        rows.flatMap((row) => (row.intakeSeq != null ? [row.intakeSeq] : [])),
+      ),
+    ];
+    const bySeq = new Map<number, ReworkChainRow[]>();
+    if (seqs.length === 0) return bySeq;
+    const reworks = await this.prisma.productionOrder.findMany({
+      where: { intakeSeq: { in: seqs }, reworkOfOrderId: { not: null } },
+      orderBy: { createdAt: 'asc' },
+      select: reworkChainSelect,
+    });
+    for (const rework of reworks) {
+      const list = bySeq.get(rework.intakeSeq!) ?? [];
+      list.push(rework);
+      bySeq.set(rework.intakeSeq!, list);
+    }
+    return bySeq;
+  }
+
   private buildListBase(
     query: ListProductionOrdersQuery,
   ): Prisma.ProductionOrderWhereInput {
@@ -249,23 +311,7 @@ export class ProductionOrdersService {
         { description: contains },
         { productName: contains },
         { customerName: contains },
-        ...(query.groupReworks
-          ? [
-              {
-                reworkOrders: {
-                  some: {
-                    OR: [
-                      { code: contains },
-                      { sxCode: contains },
-                      { intakeCode: contains },
-                      { description: contains },
-                      { productName: contains },
-                    ],
-                  },
-                },
-              },
-            ]
-          : []),
+        ...(query.groupReworks ? [reworkChainMatch(contains)] : []),
       ];
     }
     return base;
@@ -417,15 +463,8 @@ export class ProductionOrdersService {
           receipt: { select: { id: true } },
           btpMaterial: { select: { sku: true } },
           intakeCode: true,
+          intakeSeq: true,
           sxCode: true,
-          reworkOrders: {
-            orderBy: { createdAt: 'asc' },
-            select: {
-              ...intakeListSelect,
-              reworkOfSubTicketId: true,
-              reworkOfEntryId: true,
-            },
-          },
           // Phiếu con kèm các khâu của chúng — vừa đủ để tính trạng thái từng phiếu cho cột
           // "Phiếu con" ở danh sách, không kéo cả chi tiết đơn.
           subTickets: {
@@ -459,6 +498,10 @@ export class ProductionOrdersService {
       }),
       this.prisma.productionOrder.count({ where }),
     ]);
+
+    const reworksBySeq = query.groupReworks
+      ? await this.reworkChains(rows)
+      : new Map<number, ReworkChainRow[]>();
 
     return {
       total,
@@ -511,13 +554,15 @@ export class ProductionOrdersService {
           workStage,
           workReceiptPrepared: Boolean(parentProgress && row.pendingHandover),
           images: [],
-          reworks: query.groupReworks
-            ? row.reworkOrders.map((rework) => ({
-                intake: toIntakeRow(rework),
-                orderCode: rework.code,
-                productionStatus: rework.status,
-              }))
-            : [],
+          reworks: (row.intakeSeq != null
+            ? (reworksBySeq.get(row.intakeSeq) ?? [])
+            : []
+          ).map((rework) => ({
+            intake: toIntakeRow(rework),
+            orderCode: rework.code,
+            productionStatus: rework.status,
+            reworkOfCode: rework.reworkOfOrder?.code ?? null,
+          })),
           subTickets: row.subTickets.map((ticket) =>
             subTicketSummary(
               row.code,
@@ -1734,8 +1779,25 @@ export class ProductionOrdersService {
       throw new BadRequestException('Có hàng lỗi — ghi lý do lỗi');
     }
     const scrapS999 = needsKeeper ? decimalOrNull(dto.scrapS999Weight) : null;
-    const returnedSilver = new Prisma.Decimal(dto.returnedSilverWeight);
-    if (returnedQty > 0 && returnedSilver.lte(0)) {
+    // Khắc / Đánh bóng: QC chỉ chụp ảnh xác nhận, không cân — hao hụt cả chặng tính ở Xi.
+    const photoOnly = PHOTO_ONLY_STAGES.includes(entry.stage);
+    if (
+      photoOnly &&
+      (dto.returnedSilverWeight != null ||
+        dto.btpRecoveredWeight != null ||
+        dto.silverRecoveredWeight != null)
+    ) {
+      throw new BadRequestException(
+        `Khâu ${STAGE_LABEL[entry.stage]} QC chỉ chụp ảnh, không cân lại — hao hụt tính ở khâu ${STAGE_LABEL[ProductionStage.PLATING]}`,
+      );
+    }
+    if (!photoOnly && dto.returnedSilverWeight == null) {
+      throw new BadRequestException('Nhập trọng lượng sản phẩm đạt');
+    }
+    const returnedSilver = photoOnly
+      ? null
+      : new Prisma.Decimal(dto.returnedSilverWeight!);
+    if (returnedSilver && returnedQty > 0 && returnedSilver.lte(0)) {
       throw new BadRequestException(
         'Có sản phẩm đạt — trọng lượng sản phẩm đạt phải lớn hơn 0',
       );
@@ -1854,7 +1916,7 @@ export class ProductionOrdersService {
     // Hàng về không thể nặng hơn hàng giao — chặn ở đây để hao hụt không bao giờ âm.
     // Mốc = bạc vào khâu (giao + xuất thêm); khâu Vào đá cân cả cụm nên cộng TL đá vừa gắn.
     const silverIn = silverInOf(entry, issued.metal);
-    if (silverIn != null) {
+    if (silverIn != null && returnedSilver != null) {
       const zero = new Prisma.Decimal(0);
       const limit = silverIn.add(stoneWeight ?? zero);
       const label = isStoneStage
