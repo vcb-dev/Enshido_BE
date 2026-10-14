@@ -2,6 +2,7 @@ import { ForbiddenException, type ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { RoleCode } from '@prisma/client';
 import { CastingSlipsController } from '../casting-slips/casting-slips.controller';
+import { FinishedGoodsController } from '../finished-goods/finished-goods.controller';
 import { IntakeOrdersController } from '../intake-orders/intake-orders.controller';
 import { ProductionOrdersController } from '../production-orders/production-orders.controller';
 import { PermissionsGuard } from './guards/permissions.guard';
@@ -175,6 +176,12 @@ const MATRIX: [string, object, string, PermissionCode[]][] = [
     'kho từ chối xin NVL',
     ProductionOrdersController.prototype,
     'rejectMaterialRequest',
+    [P.WAREHOUSE_KEEPER],
+  ],
+  [
+    'B22 thủ kho nhập kho thành phẩm',
+    FinishedGoodsController.prototype,
+    'receiveReceipt',
     [P.WAREHOUSE_KEEPER],
   ],
 ];

@@ -10,7 +10,13 @@ import {
   Query,
 } from '@nestjs/common';
 import { RoleCode } from '@prisma/client';
-import { CurrentUser, Roles } from '../auth/decorators';
+import {
+  BlockWorker,
+  CurrentUser,
+  RequirePermissions,
+  Roles,
+} from '../auth/decorators';
+import { Permission } from '../auth/permissions';
 import type { AuthUserPayload } from '../auth/types';
 import {
   ListShipmentsQuery,
@@ -53,7 +59,10 @@ export class FinishedGoodsController {
     return this.finishedGoods.createReceipt(dto, user);
   }
 
+  // Mô tả luồng bước 22: thủ kho xác nhận nhập kho thành phẩm (U → V).
   @Post('receipts/:id/receive')
+  @BlockWorker()
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
   receiveReceipt(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: ReceiveReceiptDto,
