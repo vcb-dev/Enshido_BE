@@ -121,7 +121,7 @@ export class IntakeModel3dDto {
   @MaxLength(2000)
   model3dUrl!: string;
 
-  /** Đá theo file 3D: số viên cả đơn; 0 = đơn không có đá (bỏ qua khâu Vào đá). */
+  /** Đá theo file 3D: số viên cả đơn. */
   @IsOptional()
   @Transform(emptyToNull)
   @Type(() => Number)
@@ -129,7 +129,10 @@ export class IntakeModel3dDto {
   @Min(0)
   stoneCount3d?: number | null;
 
-  /** Đá theo file 3D: tổng TL (g) cả đơn — mốc tính hao hụt khâu Vào đá. */
+  /**
+   * Đá theo file 3D: tổng TL (g) cả đơn — mốc tính hao hụt khâu Vào đá.
+   * Trống hoặc 0 = đơn không có đá (bỏ qua khâu Vào đá).
+   */
   @IsOptional()
   @Transform(emptyToNull)
   @Type(() => Number)
@@ -151,7 +154,7 @@ export class IntakeProductSpecsDto {
   @Min(0.0001)
   castingTreeWeightGram?: number;
 
-  /** Đá theo file 3D: số viên cả đơn; 0 = đơn không có đá (bỏ qua khâu Vào đá). */
+  /** Đá theo file 3D: số viên cả đơn. */
   @IsOptional()
   @Transform(emptyToNull)
   @Type(() => Number)
@@ -159,7 +162,10 @@ export class IntakeProductSpecsDto {
   @Min(0)
   stoneCount3d?: number | null;
 
-  /** Đá theo file 3D: tổng TL (g) cả đơn — mốc tính hao hụt khâu Vào đá. */
+  /**
+   * Đá theo file 3D: tổng TL (g) cả đơn — mốc tính hao hụt khâu Vào đá.
+   * Trống hoặc 0 = đơn không có đá (bỏ qua khâu Vào đá).
+   */
   @IsOptional()
   @Transform(emptyToNull)
   @Type(() => Number)

@@ -27,7 +27,6 @@ import {
   AssignSubTicketDto,
   SkipStoneDto,
   StageDefectDto,
-  HandoverInfoDto,
   ListProductionOrdersQuery,
   OpenOrderStageDto,
   AssignOrderDto,
@@ -480,7 +479,7 @@ export class ProductionOrdersController {
     @Param('code') code: string,
     @CurrentUser() user: AuthUserPayload,
   ) {
-    return this.subTickets.claimOrder(code, user);
+    return this.subTickets.takeOrder(code, user);
   }
 
   @Delete(':code/work/claim')
@@ -489,15 +488,6 @@ export class ProductionOrdersController {
     @CurrentUser() user: AuthUserPayload,
   ) {
     return this.subTickets.unclaimOrder(code, user);
-  }
-
-  @Post(':code/work/handover')
-  handoverOrder(
-    @Param('code') code: string,
-    @Body() dto: HandoverInfoDto,
-    @CurrentUser() user: AuthUserPayload,
-  ) {
-    return this.subTickets.handoverOrder(code, dto, user);
   }
 
   @Post(':code/work/submit')
@@ -590,6 +580,17 @@ export class ProductionOrdersController {
     return this.subTickets.accept(code, no, user);
   }
 
+  /** Bước 21–22: thợ tự nhận phiếu con đang chờ Đánh bóng / Xi — nhận là vào làm. */
+  @Post(':code/sub-tickets/:no/claim')
+  @RequirePermissions(Permission.PRODUCTION_WORKER)
+  claimSubTicket(
+    @Param('code') code: string,
+    @Param('no', ParseIntPipe) no: number,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.subTickets.take(code, no, user);
+  }
+
   @Delete(':code/sub-tickets/:no/claim')
   unclaimSubTicket(
     @Param('code') code: string,
@@ -640,16 +641,6 @@ export class ProductionOrdersController {
     @CurrentUser() user: AuthUserPayload,
   ) {
     return this.subTickets.clearStageDefect(code, no, user);
-  }
-
-  @Post(':code/sub-tickets/:no/handover')
-  handoverSubTicket(
-    @Param('code') code: string,
-    @Param('no', ParseIntPipe) no: number,
-    @Body() dto: HandoverInfoDto,
-    @CurrentUser() user: AuthUserPayload,
-  ) {
-    return this.subTickets.handover(code, no, dto, user);
   }
 
   /** Chốt phiếu con ở nhánh Hoàn thiện — số lượng phiếu vào kho thành phẩm. */

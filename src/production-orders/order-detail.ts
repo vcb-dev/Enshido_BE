@@ -67,11 +67,14 @@ export const STATUS_LABEL: Record<ProductionStatus, string> = {
   STONE_SETTING: 'Đang vào đá',
   STONE_DEFECT: 'Lỗi vào đá',
   WAIT_ENGRAVING: 'Chờ khắc',
-  ENGRAVING: 'Khắc',
-  POLISHING: 'Bóng',
-  PLATING: 'Xi',
+  ENGRAVING: 'Đang khắc',
+  WAIT_POLISHING: 'Chờ đánh bóng',
+  POLISHING: 'Đang đánh bóng',
+  WAIT_PLATING: 'Chờ xi',
+  PLATING: 'Đang xi',
+  PLATED: 'Đã xi xong',
   DEFECT: 'Sản xuất lỗi',
-  FINISHING: 'Hoàn thiện',
+  FINISHING: 'Sản xuất xong',
   DELIVERED: 'Đã giao',
 };
 
@@ -91,7 +94,9 @@ export const IN_STAGE_STATUSES: ProductionStatus[] = [
   S.STONE_SETTING,
   S.WAIT_ENGRAVING,
   S.ENGRAVING,
+  S.WAIT_POLISHING,
   S.POLISHING,
+  S.WAIT_PLATING,
   S.PLATING,
 ];
 
@@ -396,14 +401,20 @@ type StateEntry = Pick<StageEntry, 'stage' | 'returnedAt' | 'submittedAt'> & {
 };
 
 /**
- * Đơn bỏ khâu Vào đá: 0 viên đá trên 3D, hoặc thủ kho đánh dấu "Đơn không có đá" (mô tả luồng
- * bước 17). Sau Nguội đi thẳng Chờ khắc.
+ * Đơn bỏ khâu Vào đá: không khai đá ở khâu 3D (TL đá trống hoặc 0), sau Nguội đi thẳng Chờ khắc.
+ * Đơn cũ chỉ khai số viên vẫn tính là có đá; cờ `stoneSkipped` giữ cho đơn thủ kho đã đánh dấu
+ * trước đây.
  */
 export function skipsStone(order: {
-  stoneCount?: number | null;
+  stoneCount: number | null;
+  stoneWeight: Prisma.Decimal | null;
   stoneSkipped?: boolean | null;
 }): boolean {
-  return order.stoneCount === 0 || order.stoneSkipped === true;
+  if (order.stoneSkipped === true) return true;
+  const hasStone =
+    (order.stoneWeight != null && order.stoneWeight.gt(0)) ||
+    (order.stoneCount ?? 0) > 0;
+  return !hasStone;
 }
 
 /** Khâu của phiếu mẹ / con phải qua thủ kho xác nhận sau QC (mô tả luồng bước 13–18). */
@@ -411,6 +422,20 @@ export const KEEPER_CONFIRM_STAGES: ProductionStage[] = [
   G.FILING,
   G.STONE_SETTING,
 ];
+
+/**
+ * Khâu thợ tự chọn phiếu để nhận (mô tả luồng bước 21–22): QC xác nhận khâu trước xong là phiếu
+ * tự mở khâu này, thợ bấm nhận là vào làm — không qua thủ kho chỉ định, không xuất kho.
+ */
+export const SELF_TAKE_STAGES: ProductionStage[] = [G.POLISHING, G.PLATING];
+
+/** Khâu kế tiếp tự mở sau khi QC xác nhận `stage`; null = không tự mở (thủ kho giao, hoặc hết khâu). */
+export function selfTakeStageAfter(
+  stage: ProductionStage,
+): ProductionStage | null {
+  const next = STAGE_ORDER[STAGE_ORDER.indexOf(stage) + 1];
+  return next && SELF_TAKE_STAGES.includes(next) ? next : null;
+}
 
 export function subTicketState(
   ticket: Pick<SubTicket, 'pendingStage' | 'claimedByUserId' | 'outcome'>,
@@ -463,7 +488,8 @@ export function ticketPosition(
  */
 export function orderListStatuses(order: {
   status: ProductionStatus;
-  stoneCount?: number | null;
+  stoneCount: number | null;
+  stoneWeight: Prisma.Decimal | null;
   stoneSkipped?: boolean | null;
   subTickets: readonly Pick<
     SubTicket,
@@ -483,12 +509,8 @@ export function orderListStatuses(order: {
   const parentEntries = order.stages.filter((entry) => !entry.subTicketId);
   const orderLast = parentEntries[parentEntries.length - 1]?.stage ?? null;
   for (const ticket of order.subTickets) {
-    if (ticket.outcome === SubTicketOutcome.DEFECT) {
-      statuses.add(outcomeStatus(ticket));
-      continue;
-    }
-    if (ticket.outcome === SubTicketOutcome.FINISH) {
-      statuses.add(S.FINISHING);
+    if (ticket.outcome) {
+      statuses.add(outcomeStatus(ticket, order.status));
       continue;
     }
     const entries = order.stages.filter(
@@ -524,6 +546,7 @@ export function subTicketSummary(
   orderLast: ProductionStage | null = null,
   skipStone = false,
   ticketCount?: number,
+  orderStatus?: ProductionStatus,
 ) {
   const { state, activeStage } = subTicketState(ticket, entries);
   const open = entries.find((entry) => !entry.returnedAt);
@@ -537,7 +560,7 @@ export function subTicketSummary(
     /** Trạng thái thật của phiếu (I/K/L/N/O…) — dùng xếp tab và hiện chip. */
     status:
       ticketStatus(ticket, entries, orderLast, skipStone) ??
-      outcomeStatus(ticket),
+      outcomeStatus(ticket, orderStatus),
     stage: activeStage ?? entries[entries.length - 1]?.stage ?? null,
     workerName:
       state === 'CLAIMED'
@@ -553,6 +576,7 @@ export const orderStatusCountsSelect = {
   id: true,
   status: true,
   stoneCount: true,
+  stoneWeight: true,
   stoneSkipped: true,
   subTickets: {
     select: {
@@ -582,7 +606,8 @@ export const orderStatusCountsSelect = {
  */
 export function orderStatusCounts(order: {
   status: ProductionStatus;
-  stoneCount?: number | null;
+  stoneCount: number | null;
+  stoneWeight: Prisma.Decimal | null;
   stoneSkipped?: boolean | null;
   subTickets: readonly (Pick<
     SubTicket,
@@ -602,7 +627,7 @@ export function orderStatusCounts(order: {
     );
     const status =
       ticketStatus(ticket, entries, orderLast, skipsStone(order)) ??
-      outcomeStatus(ticket);
+      outcomeStatus(ticket, order.status);
     counts.set(status, (counts.get(status) ?? 0) + 1);
   }
   return [...counts].map(([status, count]) => ({ status, count }));
@@ -622,7 +647,9 @@ export const STATUS_RANK: ProductionStatus[] = [
   S.STONE_SETTING,
   S.WAIT_ENGRAVING,
   S.ENGRAVING,
+  S.WAIT_POLISHING,
   S.POLISHING,
+  S.WAIT_PLATING,
   S.PLATING,
 ];
 
@@ -639,26 +666,45 @@ export function furthestStatus(
   return best;
 }
 
-/** Khâu đang chờ thợ nhận → trạng thái "Chờ …" (khâu không có trạng thái chờ riêng giữ trạng thái khâu). */
+/** Khâu đang chờ thợ nhận → trạng thái "Chờ …". */
 const WAITING_STATUS: Record<ProductionStage, ProductionStatus> = {
   FILING: S.WAIT_FILING,
   STONE_SETTING: S.WAIT_STONE,
   ENGRAVING: S.WAIT_ENGRAVING,
-  POLISHING: S.POLISHING,
-  PLATING: S.PLATING,
+  POLISHING: S.WAIT_POLISHING,
+  PLATING: S.WAIT_PLATING,
 };
 
+/** Đơn đã ra khỏi các khâu ở nhánh đạt: U Đã xi xong (chờ kho nhận) hoặc V Sản xuất xong. */
+export const FINISHED_STATUSES: ProductionStatus[] = [S.PLATED, S.FINISHING];
+
 /**
- * Trạng thái của phiếu đã chốt kết cục: Hoàn thiện, hoặc Lỗi — lỗi ở Nguội / Vào đá có trạng
+ * Trạng thái đơn đã có phiếu nhập kho thành phẩm (mô tả luồng bước 22): còn phần chờ thủ kho
+ * xác nhận → U Đã xi xong; kho nhận đủ → V Sản xuất xong.
+ */
+export function finishedStatusOf(
+  receipt: { qty: number; stockedQty: number } | null | undefined,
+): ProductionStatus {
+  return receipt && receipt.stockedQty >= receipt.qty ? S.FINISHING : S.PLATED;
+}
+
+/**
+ * Trạng thái của phiếu đã chốt kết cục: đạt, hoặc Lỗi — lỗi ở Nguội / Vào đá có trạng
  * thái riêng (M Lỗi nguội, Lỗi vào đá), các khâu khác là "Sản xuất lỗi" chung. Trạng thái của
- * cả đơn khi mọi phiếu lỗi vẫn là Sản xuất lỗi.
+ * cả đơn khi mọi phiếu lỗi vẫn là Sản xuất lỗi. Phiếu đạt là U Đã xi xong cho tới khi cả đơn
+ * được kho nhận đủ (`orderStatus` = Sản xuất xong / Đã giao) — kho nhận theo đơn, không theo phiếu.
  */
 export function outcomeStatus(
   ticket: Pick<SubTicket, 'outcome'> & {
     outcomeStage?: ProductionStage | null;
   },
+  orderStatus?: ProductionStatus,
 ): ProductionStatus {
-  if (ticket.outcome === SubTicketOutcome.FINISH) return S.FINISHING;
+  if (ticket.outcome === SubTicketOutcome.FINISH) {
+    return orderStatus === S.FINISHING || orderStatus === S.DELIVERED
+      ? S.FINISHING
+      : S.PLATED;
+  }
   if (ticket.outcomeStage === G.FILING) return S.FILING_DEFECT;
   if (ticket.outcomeStage === G.STONE_SETTING) return S.STONE_DEFECT;
   return S.DEFECT;
@@ -693,7 +739,7 @@ export function defectStatusOf(
  * Trạng thái của một phiếu con (hoặc cả đơn chưa chia) suy từ khâu đang chạy:
  * - đang làm / đã báo xong → trạng thái khâu (K Đang nguội, N Đang vào đá…);
  * - đã mở khâu, chờ thợ → "Chờ …";
- * - rảnh sau khi QC nhận lại → "Chờ" khâu kế (L sau Nguội, O sau Vào đá);
+ * - rảnh sau khi QC nhận lại → "Chờ" khâu kế (L sau Nguội, O sau Vào đá, Q sau Khắc, S sau Đánh bóng);
  * - chưa làm khâu nào → I Chờ nguội.
  * `skipStone`: đơn không có đá thì sau Nguội đi thẳng sang Chờ khắc (bỏ Vào đá).
  * Trả null khi phiếu đã chốt Lỗi / Hoàn thiện — kết cục do `syncOrder` xử lý.
@@ -720,7 +766,12 @@ export function ticketStatus(
       return skipStone ? S.WAIT_ENGRAVING : S.WAIT_STONE;
     case G.STONE_SETTING:
       return S.WAIT_ENGRAVING;
+    case G.ENGRAVING:
+      return S.WAIT_POLISHING;
+    case G.POLISHING:
+      return S.WAIT_PLATING;
     default:
+      // Xi xong mà chưa chốt (phiếu cũ, hoặc admin vừa gỡ): giữ Đang xi cho tới khi chốt.
       return STAGE_STATUS[last];
   }
 }
@@ -733,8 +784,9 @@ export function ticketStatus(
 export function deriveOrderStatus(
   order: {
     status: ProductionStatus;
-    /** 0 = đơn không có đá (theo 3D) → sau Nguội đi thẳng sang Chờ khắc. */
-    stoneCount?: number | null;
+    /** Không khai đá ở 3D → sau Nguội đi thẳng sang Chờ khắc (xem `skipsStone`). */
+    stoneCount: number | null;
+    stoneWeight: Prisma.Decimal | null;
     /** Thủ kho đánh dấu đơn không có đá. */
     stoneSkipped?: boolean | null;
     pendingStage: ProductionStage | null;
@@ -1272,7 +1324,7 @@ function toSubTicket(order: OrderDetail, ticket: SubTicket) {
         entries,
         orderEntries(order).slice(-1)[0]?.stage ?? null,
         skipsStone(order),
-      ) ?? outcomeStatus(ticket),
+      ) ?? outcomeStatus(ticket, order.status),
     /** Đá thủ kho đã cấp (giữ chỗ) cho khâu Vào đá đang chờ thợ nhận. */
     heldStoneCount: (ticket.stoneHolds ?? []).reduce(
       (sum, hold) => sum + (hold.stoneCount ?? 0),

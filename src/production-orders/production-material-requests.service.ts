@@ -53,8 +53,8 @@ const REQUEST_WAREHOUSES = [NVL_WAREHOUSE_CODE, BTP_WAREHOUSE_CODE];
 
 /**
  * Kho xuất theo khâu (người dùng chốt 2026-09-25): Nguội lấy phôi ở kho BTP, Vào đá lấy ở kho
- * NVL chính — hai khâu này bắt buộc xuất lúc giao. Khắc / Bóng / Xi không xuất kho, chỉ chuyển
- * hàng từ khâu trước.
+ * NVL chính — hai khâu này bắt buộc xuất lúc giao. Khắc / Bóng / Xi thợ không xin xuất kho, chỉ
+ * chuyển hàng từ khâu trước.
  */
 const STAGE_WAREHOUSES: Record<ProductionStage, string[]> = {
   [ProductionStage.FILING]: [BTP_WAREHOUSE_CODE],
@@ -70,9 +70,26 @@ const WAREHOUSE_LABEL: Record<string, string> = {
   [NVL_WAREHOUSE_CODE]: 'kho NVL chính',
 };
 
+/**
+ * Kho xuất lúc thợ nhận hàng. Khắc tự xuất BTP của khâu trước (đã vào đá / đã nguội) khỏi kho BTP
+ * — hàng ra khỏi kho một lần ở đây, Khắc → Đánh bóng → Xi chỉ chuyển tay tới kho thành phẩm.
+ * Thợ khắc vẫn không xin xuất thêm NVL được (`STAGE_WAREHOUSES`).
+ */
+const HANDOVER_WAREHOUSES: Record<ProductionStage, string[]> = {
+  ...STAGE_WAREHOUSES,
+  [ProductionStage.ENGRAVING]: [BTP_WAREHOUSE_CODE],
+  // Bỏ qua Khắc thì BTP khâu trước rời kho ở khâu thợ nhận đầu tiên sau đó.
+  [ProductionStage.POLISHING]: [BTP_WAREHOUSE_CODE],
+  [ProductionStage.PLATING]: [BTP_WAREHOUSE_CODE],
+};
+
 /** Chặn mã nằm ngoài kho của khâu. */
-function assertStageWarehouse(stage: ProductionStage, warehouseCode: string) {
-  const allowed = STAGE_WAREHOUSES[stage];
+function assertStageWarehouse(
+  stage: ProductionStage,
+  warehouseCode: string,
+  atHandover = false,
+) {
+  const allowed = (atHandover ? HANDOVER_WAREHOUSES : STAGE_WAREHOUSES)[stage];
   if (allowed.length === 0) {
     throw new BadRequestException(
       `Khâu ${STAGE_LABEL[stage]} không xuất kho — chỉ chuyển hàng từ khâu trước`,
@@ -111,6 +128,8 @@ type IssueLine = {
   weight: Prisma.Decimal | null;
   stoneCount: number | null;
   note: string;
+  /** Dòng xuất lúc thợ nhận hàng (không phải thợ xin thêm) — kho cho phép theo `HANDOVER_WAREHOUSES`. */
+  atHandover?: boolean;
   /** Đá: ảnh gói đá trên cân thủ kho chụp lúc cấp. */
   images?: StageImageDto[] | null;
 };
@@ -437,6 +456,7 @@ export class ProductionMaterialRequestsService {
         weight: decimalOrNull(line.weight),
         stoneCount: line.stoneCount ?? null,
         note: 'xuất lúc giao khâu',
+        atHandover: true,
         images: line.images,
       };
       // Đá Vào đá lúc giao chỉ giữ chỗ, và là "đá giao" của khâu (cộng từ các dòng giữ chỗ) —
@@ -632,7 +652,7 @@ export class ProductionMaterialRequestsService {
         'Không tìm thấy mã trong kho NVL chính hoặc kho BTP',
       );
     }
-    assertStageWarehouse(entry.stage, material.warehouse.code);
+    assertStageWarehouse(entry.stage, material.warehouse.code, line.atHandover);
     // Phôi sau đúc của đơn: tổng xuất (chiếc + gram) không vượt phôi nhận lúc xác nhận đúc.
     const blank =
       order.blankMaterialId &&
@@ -806,10 +826,10 @@ export class ProductionMaterialRequestsService {
     if (!found) throw new NotFoundException('Không tìm thấy đơn sản xuất');
     await this.prisma.runTx(async (tx) => {
       await tx.$queryRaw`SELECT id FROM ${dbTable('production_orders')} WHERE id = ${found.id}::uuid FOR UPDATE`;
-      const order = (await tx.productionOrder.findUniqueOrThrow({
+      const order = await tx.productionOrder.findUniqueOrThrow({
         where: { id: found.id },
         include: workInclude,
-      })) as OrderDetail;
+      });
       await apply(tx, order);
       await tx.productionOrder.update({
         where: { id: found.id },

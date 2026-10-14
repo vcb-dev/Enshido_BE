@@ -63,6 +63,7 @@ import {
   skipsStone,
   earlyReturnedOf,
   KEEPER_CONFIRM_STAGES,
+  selfTakeStageAfter,
   LAST_STAGE,
   lastStageDone,
   normalizeCode,
@@ -139,6 +140,7 @@ const splitListSelect = {
   id: true,
   status: true,
   stoneCount: true,
+  stoneWeight: true,
   stoneSkipped: true,
   subTickets: {
     select: {
@@ -379,6 +381,7 @@ export class ProductionOrdersService {
           code: true,
           status: true,
           stoneCount: true,
+          stoneWeight: true,
           stoneSkipped: true,
           source: true,
           requestType: true,
@@ -523,6 +526,7 @@ export class ProductionOrdersService {
               parentEntries[parentEntries.length - 1]?.stage ?? null,
               skipsStone(row),
               row.subTickets.length,
+              row.status,
             ),
           ),
         };
@@ -2005,6 +2009,11 @@ export class ProductionOrdersService {
         },
         select: { id: true },
       });
+      // Khắc / Đánh bóng: phiếu tự mở khâu kế cho thợ tự nhận; Xi: tự chốt đạt + sinh phiếu nhập
+      // kho thành phẩm (mô tả luồng bước 20–22).
+      if (!needsKeeper && !closesAsDefect) {
+        await this.subTickets.advanceAfterQc(tx, order.id, entry.id, actor);
+      }
       if (closesAsDefect && ticket) {
         await this.subTickets.closeTicketAsDefect(
           tx,
@@ -2057,8 +2066,9 @@ export class ProductionOrdersService {
   }
 
   /**
-   * Kết phiếu ở nhánh Hoàn thiện (thay cho khâu Ngoại Quan cũ): QC chốt hàng đạt,
-   * đơn sang Hoàn thiện và tạo phiếu chờ kho thành phẩm xác nhận nhập.
+   * QC chốt tay hàng đạt cho phiếu đã qua Xi mà chưa có phiếu nhập kho (phiếu cũ, hoặc admin vừa
+   * gỡ): đơn sang U Đã xi xong và tạo phiếu chờ kho thành phẩm xác nhận nhập. Luồng thường tự
+   * chốt ngay lúc QC xác nhận khâu Xi (`advanceAfterQc`).
    */
   async finish(code: string, dto: FinishOrderDto, actor: AuthUserPayload) {
     const order = await this.requireOrder(code);
@@ -2117,7 +2127,7 @@ export class ProductionOrdersService {
     const updated = await this.prisma.productionOrder.update({
       where: { id: order.id },
       data: {
-        status: S.FINISHING,
+        status: S.PLATED,
         dataChangedAt: new Date(),
         receipt: {
           create: {
@@ -2131,7 +2141,7 @@ export class ProductionOrdersService {
         statusLogs: {
           create: {
             fromStatus: order.status,
-            toStatus: S.FINISHING,
+            toStatus: S.PLATED,
             note: dto.note?.trim() || null,
             changedBy,
           },
@@ -2140,7 +2150,7 @@ export class ProductionOrdersService {
           create: activity(actor, ACTIVITY.ORDER_FINISH, {
             orderCode: order.code,
             before: { status: order.status },
-            after: { status: S.FINISHING, qty: finishedQty, finishedAt },
+            after: { status: S.PLATED, qty: finishedQty, finishedAt },
             note: dto.note,
           }),
         },
@@ -2239,17 +2249,28 @@ export class ProductionOrdersService {
         `Phiếu ${subTicketCode(order.code, ticket.no, order.subTickets.length)} đã chốt lỗi / hoàn thiện — gỡ kết cục phiếu con trước khi gỡ nhận lại`,
       );
     }
-    if (ticket?.pendingStage) {
+    // Khâu kế tự mở lúc QC xác nhận (Chờ đánh bóng / Chờ xi): chưa thợ nào nhận thì gỡ cùng lúc.
+    const holder = ticket ?? order;
+    const autoOpened =
+      holder.pendingStage != null &&
+      holder.pendingStage === selfTakeStageAfter(entry.stage) &&
+      !holder.claimedByUserId;
+    if (holder.pendingStage && !autoOpened) {
       throw new BadRequestException(
-        `Phiếu ${subTicketCode(order.code, ticket.no, order.subTickets.length)} đã mở khâu ${STAGE_LABEL[ticket.pendingStage]} — huỷ mở khâu trước khi gỡ nhận lại`,
+        `Phiếu ${ticket ? subTicketCode(order.code, ticket.no, order.subTickets.length) : order.code} đã mở khâu ${STAGE_LABEL[holder.pendingStage]} — huỷ mở khâu trước khi gỡ nhận lại`,
       );
     }
+    const clearPending = {
+      pendingStage: null,
+      pendingAt: null,
+      pendingByName: null,
+    };
     if (order.status === S.DELIVERED) {
       throw new BadRequestException('Đơn đã giao, không gỡ nhận lại được');
     }
     if (order.receipt) {
       throw new BadRequestException(
-        'Đơn đã hoàn thiện và vào kho thành phẩm — gỡ hoàn thiện trước khi sửa khâu',
+        'Đơn đã có phiếu nhập kho thành phẩm — gỡ hoàn thiện trước khi sửa khâu',
       );
     }
 
@@ -2257,6 +2278,14 @@ export class ProductionOrdersService {
       where: { id: order.id },
       data: {
         dataChangedAt: new Date(),
+        ...(autoOpened && !ticket ? clearPending : {}),
+        ...(autoOpened && ticket
+          ? {
+              subTickets: {
+                update: { where: { id: ticket.id }, data: clearPending },
+              },
+            }
+          : {}),
         stages: {
           update: {
             where: { id: entry.id },

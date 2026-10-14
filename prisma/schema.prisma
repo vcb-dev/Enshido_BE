@@ -528,10 +528,20 @@ enum ProductionStatus {
   STONE_DEFECT
   /// O — Vào đá xong (hoặc đơn không có đá), chờ khắc.
   WAIT_ENGRAVING
+  /// P — Đang khắc.
   ENGRAVING
+  /// Q — Khắc xong, chờ thợ đánh bóng tự nhận.
+  WAIT_POLISHING
+  /// R — Đang đánh bóng.
   POLISHING
+  /// S — Đánh bóng xong, chờ thợ xi tự nhận.
+  WAIT_PLATING
+  /// T — Đang xi.
   PLATING
+  /// U — Đã xi xong: đã có phiếu nhập kho thành phẩm, chờ thủ kho xác nhận.
+  PLATED
   DEFECT
+  /// V — Sản xuất xong: thủ kho đã nhận đủ vào kho thành phẩm.
   FINISHING
   DELIVERED
 }
