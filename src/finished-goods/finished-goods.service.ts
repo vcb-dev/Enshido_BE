@@ -17,6 +17,10 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ProductionCostingService } from '../production-orders/production-costing.service';
 import { randomUUID } from 'node:crypto';
 import { nextOrderSeq, orderCode } from '../production-orders/intake-order';
+import {
+  FINISHED_STATUSES,
+  finishedStatusOf,
+} from '../production-orders/order-detail';
 import { availabilityOf, decStr, METAL_KIND_LABEL } from '../util/money';
 import {
   ListShipmentsQuery,
@@ -509,7 +513,7 @@ export class FinishedGoodsService {
         `Phiếu chỉ còn ${pendingQty} đang chờ vào tồn`,
       );
     }
-    await this.prisma.finishedGoodsReceipt.update({
+    const updated = await this.prisma.finishedGoodsReceipt.update({
       where: { id },
       data: {
         stockedQty: receipt.stockedQty + takenQty,
@@ -517,8 +521,51 @@ export class FinishedGoodsService {
         receivedByUserId: actor.id,
         receivedByName: actorName(actor),
       },
+      select: { orderId: true },
     });
+    await this.syncFinishedStatus(
+      updated.orderId,
+      actorName(actor),
+      'Thủ kho xác nhận nhập kho thành phẩm',
+    );
     return { success: true };
+  }
+
+  /**
+   * Mô tả luồng bước 22: đơn đã xi xong (U) sang Sản xuất xong (V) khi kho thành phẩm nhận đủ;
+   * sửa phiếu nhập làm phát sinh lại phần chờ thì quay về U. Đơn đang ở trạng thái khác (còn
+   * phiếu con chạy, đã giao…) không đổi.
+   */
+  private async syncFinishedStatus(
+    orderId: string,
+    changedBy: string,
+    note: string,
+  ) {
+    const order = await this.prisma.productionOrder.findUnique({
+      where: { id: orderId },
+      select: {
+        status: true,
+        receipt: { select: { qty: true, stockedQty: true } },
+      },
+    });
+    if (!order?.receipt || !FINISHED_STATUSES.includes(order.status)) return;
+    const status = finishedStatusOf(order.receipt);
+    if (status === order.status) return;
+    await this.prisma.productionOrder.update({
+      where: { id: orderId },
+      data: {
+        status,
+        dataChangedAt: new Date(),
+        statusLogs: {
+          create: {
+            fromStatus: order.status,
+            toStatus: status,
+            note,
+            changedBy,
+          },
+        },
+      },
+    });
   }
 
   async updateReceipt(
@@ -615,6 +662,11 @@ export class FinishedGoodsService {
       reason: dto.editReason,
       changedBy,
     });
+    await this.syncFinishedStatus(
+      receipt.order.id,
+      changedBy,
+      'Sửa phiếu nhập kho thành phẩm',
+    );
     return { success: true };
   }
 
@@ -1166,7 +1218,7 @@ export class FinishedGoodsService {
           qty: true,
           status: true,
           returnedQty: true,
-          receipt: { select: { qty: true } },
+          receipt: { select: { qty: true, stockedQty: true } },
           shipmentLines: { select: { qty: true } },
         },
       });
@@ -1182,7 +1234,7 @@ export class FinishedGoodsService {
       const nextStatus = delivered
         ? ProductionStatus.DELIVERED
         : order.status === ProductionStatus.DELIVERED
-          ? ProductionStatus.FINISHING
+          ? finishedStatusOf(order.receipt)
           : order.status;
       if (shipped === order.returnedQty && nextStatus === order.status)
         continue;

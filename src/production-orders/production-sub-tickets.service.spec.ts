@@ -61,6 +61,7 @@ function makeOrder(over: Partial<OrderDetail> = {}): OrderDetail {
     bomLines: [],
     receipt: null,
     stoneCount: 20,
+    stoneWeight: null,
     stoneSkipped: false,
     pendingStage: null,
     pendingAt: null,
@@ -384,29 +385,13 @@ describe('phiếu mẹ: giao → nhận hàng → xuất kho → nộp QC', () =
     });
   });
 
-  it('phiếu theo luồng cũ vẫn xác nhận giao được khi chưa có pendingHandover', async () => {
+  it('thợ được chỉ định mà chưa có nội dung giao thì không nhận được', async () => {
     const { service, order } = setup(
       makeOrder({ pendingStage: 'FILING', claimedByUserId: worker.id }),
     );
-    await service.handoverOrder(
-      order.code,
-      {
-        handedQty: 4,
-        materials: [
-          { materialId: 'cut-btp', kind: 'METAL', qty: '4', weight: '8' },
-        ],
-      },
-      manager,
+    await expect(service.acceptOrder(order.code, worker)).rejects.toThrow(
+      'chưa được thủ kho giao khâu',
     );
-    expect(order.status).toBe('FILING');
-  });
-
-  it('phiếu đã lưu giao phải do thợ nhận, không cho người giao xác nhận tay', async () => {
-    const { service, order } = setup();
-    await service.assignOrder(order.code, assignment, manager);
-    await expect(
-      service.handoverOrder(order.code, { handedQty: 4 }, manager),
-    ).rejects.toThrow('không xác nhận giao tay');
   });
 
   const stoneLine = {
@@ -582,9 +567,9 @@ describe('phiếu mẹ: giao → nhận hàng → xuất kho → nộp QC', () =
     ).rejects.toThrow('không có đá');
   });
 
-  it('khâu Khắc vẫn mở để thợ tự nhận', async () => {
+  it('Đánh bóng mở lại được để thợ tự nhận', async () => {
     const { service, order } = setup();
-    await service.openOrderStage(order.code, { stage: 'ENGRAVING' }, manager);
+    await service.openOrderStage(order.code, { stage: 'POLISHING' }, manager);
     expect(orderTicketState(order, order.stages).state).toBe('WAITING');
     expect(order.claimedByUserId).toBeNull();
   });
@@ -903,5 +888,178 @@ describe('phiếu con: số lượng và tự xuất BTP', () => {
         data: { stageEntryId: order.stages[order.stages.length - 1].id },
       }),
     );
+  });
+});
+
+describe('Khắc → Đánh bóng → Xi (mô tả luồng bước 19–22)', () => {
+  const stoneDone = (
+    ticketId: string | null = null,
+  ): OrderDetail['stages'][number] => ({
+    ...returnedFiling(ticketId),
+    id: 'stone',
+    stage: 'STONE_SETTING',
+    outputMaterialId: 'stoned-btp',
+    returnedByUserId: 'qc',
+    returnedByName: 'QC Lan',
+  });
+  const engraved = (
+    ticketId: string | null = null,
+  ): OrderDetail['stages'][number] => ({
+    ...returnedFiling(ticketId),
+    id: 'engrave',
+    stage: 'ENGRAVING',
+    outputMaterialId: null,
+    returnedQty: 9,
+    returnedSilverWeight: new Prisma.Decimal(17.5),
+    returnedByUserId: 'qc',
+    returnedByName: 'QC Lan',
+  });
+  const engraving: AssignOrderDto = {
+    stage: ProductionStage.ENGRAVING,
+    craftsmanUserId: worker.id,
+  };
+  const allStages = (tx: ReturnType<typeof setup>['tx']) =>
+    tx.user.findFirst.mockImplementation(({ where }) =>
+      Promise.resolve({
+        ...actor(where.id, RoleCode.WORKER),
+        workerStages: Object.values(ProductionStage),
+      }),
+    );
+
+  it('Giao Khắc: thủ kho chỉ chọn thợ, BTP đã vào đá tự xuất lúc thợ nhận', async () => {
+    const { service, order, tx, materials } = setup(
+      makeOrder({ status: 'WAIT_ENGRAVING', stages: [stoneDone()] }),
+    );
+    allStages(tx);
+    await service.assignOrder(order.code, engraving, manager);
+    expect(order.pendingHandover).toMatchObject({
+      handedQty: 10,
+      handedSilverWeight: null,
+      materials: [
+        { materialId: 'stoned-btp', kind: 'METAL', qty: '10', weight: '18' },
+      ],
+    });
+    expect(order.status).toBe('WAIT_ENGRAVING');
+    expect(materials.issueAtHandover).not.toHaveBeenCalled();
+    await service.acceptOrder(order.code, worker);
+    expect(order.status).toBe('ENGRAVING');
+    expect(materials.issueAtHandover).toHaveBeenCalledTimes(1);
+    expect(materials.issueAtHandover.mock.calls[0][3]).toEqual([
+      expect.objectContaining({ materialId: 'stoned-btp', qty: '10' }),
+    ]);
+  });
+
+  it('Giao Khắc không nhận NVL chọn tay', async () => {
+    const { service, order, tx } = setup(
+      makeOrder({ status: 'WAIT_ENGRAVING', stages: [stoneDone()] }),
+    );
+    allStages(tx);
+    await expect(
+      service.assignOrder(
+        order.code,
+        {
+          ...engraving,
+          materials: [
+            { materialId: 'other', kind: 'METAL', qty: '1', weight: '1' },
+          ],
+        },
+        manager,
+      ),
+    ).rejects.toThrow('không chọn NVL');
+  });
+
+  it('thợ tự nhận phiếu chờ Đánh bóng: vào làm ngay, hàng lấy từ số QC nhận lại khâu Khắc', async () => {
+    const { service, order, tx, materials } = setup(
+      makeOrder({
+        status: 'WAIT_POLISHING',
+        stages: [stoneDone(), engraved()],
+        pendingStage: 'POLISHING',
+        pendingByName: 'QC Lan',
+      }),
+    );
+    (tx.user as unknown as { findUnique: jest.Mock }).findUnique = jest
+      .fn()
+      .mockResolvedValue({ workerStages: ['POLISHING'] });
+    await service.takeOrder(order.code, worker);
+    expect(order.status).toBe('POLISHING');
+    expect(order.pendingStage).toBeNull();
+    expect(orderTicketState(order, order.stages).state).toBe('WORKING');
+    expect(tx.productionStageEntry.create.mock.calls[0][0].data).toMatchObject({
+      stage: 'POLISHING',
+      handedQty: 9,
+      handedSilverWeight: new Prisma.Decimal(17.5),
+      handedByUserId: 'qc',
+      handedByName: 'QC Lan',
+      craftsmanUserId: worker.id,
+    });
+    // Khắc → Đánh bóng không qua kho.
+    expect(materials.issueAtHandover).not.toHaveBeenCalled();
+    // Thợ khác bấm sau thì không còn phiếu để nhận.
+    await expect(
+      service.takeOrder(order.code, actor('other', RoleCode.WORKER)),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('thợ không làm khâu đó thì không tự nhận được', async () => {
+    const { service, order, tx } = setup(
+      makeOrder({
+        status: 'WAIT_PLATING',
+        stages: [engraved()],
+        pendingStage: 'PLATING',
+      }),
+    );
+    (tx.user as unknown as { findUnique: jest.Mock }).findUnique = jest
+      .fn()
+      .mockResolvedValue({ workerStages: ['POLISHING'] });
+    await expect(service.takeOrder(order.code, worker)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+  });
+
+  it('Khắc không tự nhận được — phải do thủ kho chỉ định', async () => {
+    const { service, order } = setup(
+      makeOrder({
+        status: 'WAIT_ENGRAVING',
+        stages: [stoneDone()],
+        pendingStage: 'ENGRAVING',
+      }),
+    );
+    await expect(service.takeOrder(order.code, admin)).rejects.toThrow(
+      'do thủ kho chỉ định thợ',
+    );
+  });
+
+  it('phiếu con: thợ tự nhận Xi, đơn theo phiếu đi xa nhất', async () => {
+    const t1 = makeTicket(1, 9, { pendingStage: 'PLATING' });
+    const polished = { ...engraved('t1'), id: 'polish', stage: 'POLISHING' };
+    const { service, order, tx } = setup(
+      makeOrder({
+        status: 'WAIT_PLATING',
+        subTickets: [t1, makeTicket(2, 1)],
+        stages: [polished] as OrderDetail['stages'],
+      }),
+    );
+    await service.take(order.code, 1, admin);
+    expect(
+      subTicketState(
+        t1,
+        order.stages.filter((e) => e.subTicketId === 't1'),
+      ).state,
+    ).toBe('WORKING');
+    expect(order.status).toBe('PLATING');
+    expect(tx.productionStageEntry.create.mock.calls[0][0].data).toMatchObject({
+      subTicketId: 't1',
+      stage: 'PLATING',
+      handedQty: 9,
+    });
+  });
+
+  it('mở lại khâu trên phiếu mẹ chỉ cho Đánh bóng / Xi', async () => {
+    const { service, order } = setup(
+      makeOrder({ status: 'WAIT_ENGRAVING', stages: [stoneDone()] }),
+    );
+    await expect(
+      service.openOrderStage(order.code, { stage: 'ENGRAVING' }, manager),
+    ).rejects.toThrow('Giao cho thợ');
   });
 });

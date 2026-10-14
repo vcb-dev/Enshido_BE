@@ -818,15 +818,37 @@ export class IntakeOrdersService {
   }
 }
 
-/** Đá theo 3D: chỉ ghi khi người dùng có nhập, để bước sau không xoá mất số đã khai. */
+/**
+ * Đá theo 3D: chỉ ghi khi người dùng có nhập, để bước sau không xoá mất số đã khai.
+ * Không nhập TL đá (trống hoặc 0) là đơn không có đá — `skipsStone` bỏ khâu Vào đá; TL 0 thì ghi
+ * luôn 0 viên cho khớp.
+ */
 function stoneData(dto: {
   stoneCount3d?: number | null;
   stoneWeight3dGram?: number | null;
 }) {
+  const count = dto.stoneCount3d;
+  const weight = dto.stoneWeight3dGram;
+  if (weight === 0 && count != null && count > 0) {
+    throw new BadRequestException(
+      'TL đá 0 ct là đơn không có đá — bỏ trống hoặc nhập 0 viên đá',
+    );
+  }
+  if (count === 0 && weight != null && weight > 0) {
+    throw new BadRequestException('Đơn 0 viên đá thì TL đá phải là 0 ct');
+  }
+  if (count != null && count > 0 && !weight) {
+    throw new BadRequestException(
+      'Đơn có đá phải nhập TL đá — để trống cả hai nếu đơn không có đá',
+    );
+  }
+  const noStone = weight === 0 || count === 0;
   return {
-    ...(dto.stoneCount3d !== undefined ? { stoneCount: dto.stoneCount3d } : {}),
-    ...(dto.stoneWeight3dGram !== undefined
-      ? { stoneWeight: dto.stoneWeight3dGram }
-      : {}),
+    ...(noStone
+      ? { stoneCount: 0, stoneWeight: 0 }
+      : {
+          ...(count !== undefined ? { stoneCount: count } : {}),
+          ...(weight !== undefined ? { stoneWeight: weight } : {}),
+        }),
   };
 }

@@ -14,6 +14,8 @@ import {
   orderTicketAvailable,
   orderTicketState,
   outcomeStatus,
+  finishedStatusOf,
+  selfTakeStageAfter,
   recentFirst,
   deriveOrderStatus,
   defectStatusOf,
@@ -153,6 +155,8 @@ describe('subTicketState — phiếu con đang ở đâu', () => {
 describe('orderListStatuses — tab theo vị trí thật của từng phiếu', () => {
   it('một đơn xuất hiện ở mọi khâu mà phiếu con đang đứng', () => {
     const statuses = orderListStatuses({
+      stoneCount: null,
+      stoneWeight: new Prisma.Decimal(1),
       status: 'FILING',
       subTickets: [ticket({ id: 't1' }), ticket({ id: 't2' })],
       stages: [
@@ -168,6 +172,8 @@ describe('orderListStatuses — tab theo vị trí thật của từng phiếu',
 
   it('phiếu đã chốt nằm ở tab kết cục tương ứng', () => {
     const statuses = orderListStatuses({
+      stoneCount: null,
+      stoneWeight: new Prisma.Decimal(1),
       status: 'STONE_SETTING',
       subTickets: [
         ticket({ id: 't1', outcome: 'FINISH' }),
@@ -175,7 +181,8 @@ describe('orderListStatuses — tab theo vị trí thật của từng phiếu',
       ],
       stages: [],
     });
-    expect(statuses).toEqual(expect.arrayContaining(['FINISHING', 'DEFECT']));
+    // Phiếu đạt là Đã xi xong cho tới khi kho thành phẩm nhận đủ cả đơn.
+    expect(statuses).toEqual(expect.arrayContaining(['PLATED', 'DEFECT']));
     expect(statuses).not.toContain('STONE_SETTING');
   });
 
@@ -183,9 +190,15 @@ describe('orderListStatuses — tab theo vị trí thật của từng phiếu',
   // đã chia về tính trong bộ nhớ. Luật đó chỉ đúng khi đơn chưa chia luôn nằm đúng một tab.
   it('đơn chưa chia luôn nằm đúng một tab — chính trạng thái của nó', () => {
     for (const status of Object.values(ProductionStatus)) {
-      expect(orderListStatuses({ status, subTickets: [], stages: [] })).toEqual(
-        [status],
-      );
+      expect(
+        orderListStatuses({
+          status,
+          stoneCount: null,
+          stoneWeight: null,
+          subTickets: [],
+          stages: [],
+        }),
+      ).toEqual([status]);
     }
   });
 });
@@ -193,12 +206,20 @@ describe('orderListStatuses — tab theo vị trí thật của từng phiếu',
 describe('orderStatusCounts — trạng thái thật hiện ở màn Tạo đơn', () => {
   it('đơn chưa chia lấy trạng thái của đơn', () => {
     expect(
-      orderStatusCounts({ status: 'WAIT_ENGRAVING', subTickets: [], stages: [] }),
+      orderStatusCounts({
+        stoneCount: null,
+        stoneWeight: new Prisma.Decimal(1),
+        status: 'WAIT_ENGRAVING',
+        subTickets: [],
+        stages: [],
+      }),
     ).toEqual([{ status: 'WAIT_ENGRAVING', count: 1 }]);
   });
 
   it('đơn đã chia đếm theo trạng thái từng phiếu con, kể cả phiếu đã chốt lỗi', () => {
     const counts = orderStatusCounts({
+      stoneCount: null,
+      stoneWeight: new Prisma.Decimal(1),
       status: 'FILING',
       subTickets: [
         ticket({ id: 't1' }),
@@ -621,10 +642,35 @@ describe('ticketStatus — I/K/L/N/O của phiếu con', () => {
     ).toBe('WAIT_ENGRAVING');
   });
 
-  it('các khâu sau Khắc giữ trạng thái khâu', () => {
+  it('QC xác nhận Khắc → Q Chờ đánh bóng, Đánh bóng → S Chờ xi', () => {
+    expect(
+      ticketStatus(ticket(), [entry({ stage: 'ENGRAVING', returnedAt: DONE })]),
+    ).toBe('WAIT_POLISHING');
     expect(
       ticketStatus(ticket(), [entry({ stage: 'POLISHING', returnedAt: DONE })]),
+    ).toBe('WAIT_PLATING');
+  });
+
+  it('phiếu tự mở Đánh bóng / Xi chờ thợ nhận vẫn là "Chờ", thợ nhận rồi mới "Đang"', () => {
+    const polished = [entry({ stage: 'ENGRAVING', returnedAt: DONE })];
+    expect(ticketStatus(ticket({ pendingStage: 'POLISHING' }), polished)).toBe(
+      'WAIT_POLISHING',
+    );
+    expect(
+      ticketStatus(ticket(), [...polished, entry({ stage: 'POLISHING' })]),
     ).toBe('POLISHING');
+    expect(
+      ticketStatus(ticket({ pendingStage: 'PLATING' }), [
+        ...polished,
+        entry({ stage: 'POLISHING', returnedAt: DONE }),
+      ]),
+    ).toBe('WAIT_PLATING');
+  });
+
+  it('Xi xong mà chưa chốt (phiếu cũ) giữ Đang xi', () => {
+    expect(
+      ticketStatus(ticket(), [entry({ stage: 'PLATING', returnedAt: DONE })]),
+    ).toBe('PLATING');
   });
 
   it('QC đã nhận nhưng thủ kho chưa xác nhận: vẫn "Đang" khâu đó, chưa sang L', () => {
@@ -662,9 +708,25 @@ describe('ticketStatus — I/K/L/N/O của phiếu con', () => {
     expect(outcomeStatus({ outcome: 'DEFECT', outcomeStage: 'PLATING' })).toBe(
       'DEFECT',
     );
-    expect(outcomeStatus({ outcome: 'FINISH', outcomeStage: 'PLATING' })).toBe(
-      'FINISHING',
-    );
+  });
+
+  it('phiếu đạt: U Đã xi xong, kho nhận đủ cả đơn mới là V Sản xuất xong', () => {
+    const done = { outcome: 'FINISH', outcomeStage: 'PLATING' } as const;
+    expect(outcomeStatus(done)).toBe('PLATED');
+    expect(outcomeStatus(done, 'PLATED')).toBe('PLATED');
+    expect(outcomeStatus(done, 'FINISHING')).toBe('FINISHING');
+    expect(outcomeStatus(done, 'DELIVERED')).toBe('FINISHING');
+    expect(finishedStatusOf({ qty: 5, stockedQty: 3 })).toBe('PLATED');
+    expect(finishedStatusOf({ qty: 5, stockedQty: 5 })).toBe('FINISHING');
+    expect(finishedStatusOf(null)).toBe('PLATED');
+  });
+
+  it('chỉ Đánh bóng / Xi tự mở sau QC', () => {
+    expect(selfTakeStageAfter('ENGRAVING')).toBe('POLISHING');
+    expect(selfTakeStageAfter('POLISHING')).toBe('PLATING');
+    expect(selfTakeStageAfter('PLATING')).toBeNull();
+    expect(selfTakeStageAfter('FILING')).toBeNull();
+    expect(selfTakeStageAfter('STONE_SETTING')).toBeNull();
   });
 
   it('phiếu đã chốt kết cục thì không có trạng thái khâu', () => {
@@ -675,6 +737,8 @@ describe('ticketStatus — I/K/L/N/O của phiếu con', () => {
 describe('deriveOrderStatus', () => {
   const DONE = new Date('2026-09-21T02:58:00Z');
   const base = {
+    stoneCount: null as number | null,
+    stoneWeight: new Prisma.Decimal(1) as Prisma.Decimal | null,
     pendingStage: null,
     claimedByUserId: null,
   } as const;
@@ -746,12 +810,23 @@ describe('deriveOrderStatus', () => {
 });
 
 describe('skipsStone', () => {
-  it('bỏ Vào đá khi 0 viên trên 3D hoặc thủ kho đánh dấu', () => {
-    expect(skipsStone({ stoneCount: 0 })).toBe(true);
-    expect(skipsStone({ stoneCount: 3, stoneSkipped: true })).toBe(true);
-    expect(skipsStone({ stoneCount: null, stoneSkipped: true })).toBe(true);
-    expect(skipsStone({ stoneCount: 3, stoneSkipped: false })).toBe(false);
-    expect(skipsStone({ stoneCount: null })).toBe(false);
+  const w = (n: number) => new Prisma.Decimal(n);
+
+  it('bỏ Vào đá khi không khai đá ở 3D', () => {
+    expect(skipsStone({ stoneCount: null, stoneWeight: null })).toBe(true);
+    expect(skipsStone({ stoneCount: 0, stoneWeight: w(0) })).toBe(true);
+    expect(skipsStone({ stoneCount: null, stoneWeight: w(0) })).toBe(true);
+  });
+
+  it('có TL đá thì đi Vào đá; đơn cũ chỉ khai số viên vẫn tính có đá', () => {
+    expect(skipsStone({ stoneCount: null, stoneWeight: w(0.5) })).toBe(false);
+    expect(skipsStone({ stoneCount: 3, stoneWeight: null })).toBe(false);
+  });
+
+  it('đơn thủ kho đã đánh dấu trước đây vẫn bỏ Vào đá', () => {
+    expect(
+      skipsStone({ stoneCount: 3, stoneWeight: w(1), stoneSkipped: true }),
+    ).toBe(true);
   });
 });
 
