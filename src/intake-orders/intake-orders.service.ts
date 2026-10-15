@@ -1,4 +1,8 @@
-import { intakeListSelect, toIntakeRow } from './intake-order-row';
+import {
+  INTAKE_CUSTOMER_NAME,
+  intakeListSelect,
+  toIntakeRow,
+} from './intake-order-row';
 import {
   BadRequestException,
   ConflictException,
@@ -277,6 +281,7 @@ export class IntakeOrdersService {
               intakeCode: intakeCode(intakeSeq),
               sxCode: randomSxCode(),
               source: ProductionSource.NVL,
+              customerName: INTAKE_CUSTOMER_NAME,
               closedBy: placedBy,
               createdBy: placedBy,
               createdByUserId: actor.id,
@@ -323,6 +328,8 @@ export class IntakeOrdersService {
         where: { id },
         data: {
           ...data,
+          // Đơn cũ chưa có khách thì điền VCB cho khớp ô readonly trên form.
+          customerName: order.customerName?.trim() || INTAKE_CUSTOMER_NAME,
           images: { deleteMany: {}, create: images },
         },
       });
@@ -340,7 +347,7 @@ export class IntakeOrdersService {
       });
     });
 
-    await this.cloudinary.destroy(removed);
+    this.cloudinary.destroy(removed);
     return toIntakeRow(updated);
   }
 
@@ -757,7 +764,7 @@ export class IntakeOrdersService {
       throw new BadRequestException('Chỉ xóa được đơn đang chờ duyệt');
     }
     await this.prisma.productionOrder.delete({ where: { id } });
-    await this.cloudinary.destroy(order.images.map((image) => image.publicId));
+    this.cloudinary.destroy(order.images.map((image) => image.publicId));
     return { success: true };
   }
 
@@ -774,6 +781,7 @@ export class IntakeOrdersService {
       productName: dto.productName.trim(),
       qty: dto.qty,
       trackingCode: dto.trackingCode?.trim() || null,
+      customerCode: dto.customerCode?.trim() || null,
       description: dto.description.trim(),
       receivedDate: createdDate,
       dueDate,

@@ -18,10 +18,13 @@ import { isCastWorkerAssignee } from '../auth/staff-job-presets';
 import type { AuthUserPayload } from '../auth/types';
 import { canConfirmIntakeWarehouse } from '../intake-orders/intake-warehouse-access';
 import { InventoryService } from '../inventory/inventory.service';
+import { dbTable } from '../prisma/database-url';
+import { poolAll } from '../prisma/pool-all';
 import { PrismaService } from '../prisma/prisma.service';
 import { actorName } from '../production-orders/order-detail';
 import { ACTIVITY, logActivity } from '../production-orders/activity-log';
 import { toIntakeStatus } from '../production-orders/intake-order';
+import { todayVn } from '../production-orders/production-material-requests.service';
 import { CloudinaryService } from '../uploads/cloudinary.service';
 import {
   CastingLossQuery,
@@ -204,7 +207,8 @@ export class CastingSlipsService {
     if (ids.length !== dto.intakeOrderIds.length) {
       throw new BadRequestException('Một đơn chỉ chọn một lần trên phiếu');
     }
-    const slipDate = parseDate(dto.slipDate, 'Ngày phiếu');
+    /** Ngày phiếu = ngày thủ kho lập phiếu, không cho chọn tay. */
+    const slipDate = todayVn();
     const orders = await this.prisma.productionOrder.findMany({
       where: { id: { in: ids } },
       select: {
@@ -252,6 +256,7 @@ export class CastingSlipsService {
       (sum, line) => sum.add(line.waxWeightGram),
       new Prisma.Decimal(0),
     );
+    const estimate = silverEstimateFromWax(waxWeightGram);
     const createdByName = actorName(actor);
     const assignee = await this.resolveCastWorker(dto.assignedUserId);
 
@@ -264,9 +269,9 @@ export class CastingSlipsService {
               slipDate,
               waxWeightGram,
               batchOrderCodes: lines.map((line) => line.code).join(', '),
-              estimateS999Gram: silverEstimateFromWax(waxWeightGram),
-              estimateMasterAlloyGram: silverEstimateFromWax(waxWeightGram),
-              estimateS925Gram: silverEstimateFromWax(waxWeightGram),
+              estimateS999Gram: estimate.s999,
+              estimateMasterAlloyGram: estimate.masterAlloy,
+              estimateS925Gram: estimate.s925,
               issueS999Gram: null,
               issueMasterAlloyGram: null,
               issueS925Gram: null,
@@ -320,9 +325,6 @@ export class CastingSlipsService {
         where: { id },
         select: {
           waxWeightGram: true,
-          estimateS999Gram: true,
-          estimateMasterAlloyGram: true,
-          estimateS925Gram: true,
           orders: { select: { orderId: true } },
         },
       });
@@ -710,7 +712,8 @@ export class CastingSlipsService {
     this.inventory.bustBtpStock();
     if (items.some((item) => item.restWeightGram > 0))
       this.inventory.bustNvlStock();
-    return Promise.all(items.map((item) => this.getById(item.slipId)));
+    // Tối đa 25 phiếu: đọc lại theo lô 4 để không chiếm hết pool (~10 slot).
+    return poolAll(items.map((item) => () => this.getById(item.slipId)));
   }
 
   private async cutInTransaction(
@@ -1205,7 +1208,7 @@ export class CastingSlipsService {
     if (!digits) return [];
     const pattern = `%${digits}%`;
     const rows = await this.prisma.$queryRaw<{ id: string }[]>`
-      SELECT id FROM casting_slips
+      SELECT id FROM ${dbTable('casting_slips')}
       WHERE regexp_replace(wax_weight_gram::text, '[^0-9]', '', 'g') LIKE ${pattern}
     `;
     return rows.map((row) => row.id);
@@ -1216,7 +1219,7 @@ export class CastingSlipsService {
     if (!digits) return [];
     const pattern = `%${digits}%`;
     const rows = await this.prisma.$queryRaw<{ id: string }[]>`
-      SELECT id FROM casting_slips
+      SELECT id FROM ${dbTable('casting_slips')}
       WHERE regexp_replace(
         (
           COALESCE(issue_s999_gram, 0)
@@ -1366,25 +1369,29 @@ function blankWeightTotal(
   );
 }
 
-/** 1 g sáp = 24 g bạc — ước tính S999 / Hội / S925. */
+/** 1 g sáp = 24 g bạc — tổng bạc ước tính cho phiếu đúc. */
 const WAX_TO_SILVER = 24;
+/** Bạc 925 = 92.5% bạc nguyên chất, phần còn lại là hội pha. */
+const S999_RATIO = 0.925;
 
+/**
+ * Ước tính bạc cấp cho phiếu đúc. Nửa tổng là S925, nửa còn lại nấu ra từ
+ * S999 (92.5%) và hội pha (phần dư) nên ba dòng cộng lại đúng bằng tổng.
+ */
 function silverEstimateFromWax(wax: Prisma.Decimal) {
-  return wax.mul(WAX_TO_SILVER);
+  const total = wax.mul(WAX_TO_SILVER);
+  const half = total.div(2);
+  const s999 = half.mul(S999_RATIO);
+  return { s999, masterAlloy: half.sub(s999), s925: half, total };
 }
 
 function optionalIssued(value?: number) {
   return value != null && value > 0 ? new Prisma.Decimal(value) : null;
 }
 
-/** Không nhập thực xuất lúc xác nhận cấp vật tư → lấy đúng số ước tính (sáp × 24). */
+/** Không nhập thực xuất lúc xác nhận cấp vật tư → lấy đúng số ước tính đang hiện trên phiếu. */
 function resolveIssuedGrams(
-  slip: {
-    waxWeightGram: Prisma.Decimal;
-    estimateS999Gram: Prisma.Decimal | null;
-    estimateMasterAlloyGram: Prisma.Decimal | null;
-    estimateS925Gram: Prisma.Decimal | null;
-  },
+  slip: { waxWeightGram: Prisma.Decimal },
   dto: {
     issueS999Gram?: number;
     issueMasterAlloyGram?: number;
@@ -1401,12 +1408,11 @@ function resolveIssuedGrams(
     Number(entered.issueMasterAlloyGram ?? 0) +
     Number(entered.issueS925Gram ?? 0);
   if (enteredTotal > 0) return entered;
-  const fallback =
-    slip.estimateS999Gram ?? silverEstimateFromWax(slip.waxWeightGram);
+  const estimate = silverEstimateFromWax(slip.waxWeightGram);
   return {
-    issueS999Gram: slip.estimateS999Gram ?? fallback,
-    issueMasterAlloyGram: slip.estimateMasterAlloyGram ?? fallback,
-    issueS925Gram: slip.estimateS925Gram ?? fallback,
+    issueS999Gram: estimate.s999,
+    issueMasterAlloyGram: estimate.masterAlloy,
+    issueS925Gram: estimate.s925,
   };
 }
 
@@ -1418,10 +1424,6 @@ function issueTotal(row: {
   const parts = [row.issueS999Gram, row.issueMasterAlloyGram, row.issueS925Gram]
     .filter((part): part is Prisma.Decimal => part != null)
     .map((part) => Number(part.toString()));
-  if (parts.length === 3 && parts[0] === parts[1] && parts[1] === parts[2]) {
-    // Ba cột cùng số ước tính (sáp × 24) — tổng thực xuất là số đó, không nhân 3.
-    return String(parts[0]);
-  }
   return String(parts.reduce((sum, n) => sum + n, 0));
 }
 
@@ -1475,6 +1477,7 @@ function toImage(image: {
 
 function slipRowBase(row: SlipRowBaseInput) {
   const images = slipImagesOf(row);
+  const estimate = silverEstimateFromWax(row.waxWeightGram);
   return {
     id: row.id,
     code: row.code,
@@ -1501,10 +1504,10 @@ function slipRowBase(row: SlipRowBaseInput) {
           : [],
       waxWeightGram: line.waxWeightGram.toString(),
     })),
-    estimateS999Gram: dec(silverEstimateFromWax(row.waxWeightGram)),
-    estimateMasterAlloyGram: dec(silverEstimateFromWax(row.waxWeightGram)),
-    estimateS925Gram: dec(silverEstimateFromWax(row.waxWeightGram)),
-    estimateTotalGram: silverEstimateFromWax(row.waxWeightGram).toString(),
+    estimateS999Gram: dec(estimate.s999),
+    estimateMasterAlloyGram: dec(estimate.masterAlloy),
+    estimateS925Gram: dec(estimate.s925),
+    estimateTotalGram: estimate.total.toString(),
     issueS999Gram: dec(row.issueS999Gram),
     issueMasterAlloyGram: dec(row.issueMasterAlloyGram),
     issueS925Gram: dec(row.issueS925Gram),

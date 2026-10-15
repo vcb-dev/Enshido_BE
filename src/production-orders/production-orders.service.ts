@@ -25,6 +25,7 @@ import {
   snapshotFields,
 } from '../inventory/inventory.service';
 import { dbTable } from '../prisma/database-url';
+import { poolAll } from '../prisma/pool-all';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProductionSubTicketsService } from './production-sub-tickets.service';
 import {
@@ -83,6 +84,7 @@ import {
   subTicketState,
   subTicketSummary,
   toDetail,
+  workInclude,
   ymd,
 } from './order-detail';
 import { planStoneReturn } from './stone-holds';
@@ -349,9 +351,11 @@ export class ProductionOrdersService {
 
     let statusCounts: Record<ProductionStatus | 'ALL', number> | undefined;
     let splitIdsByStatus = new Map<ProductionStatus, string[]>();
+    let computedCounts: Record<ProductionStatus | 'ALL', number> | undefined;
 
     if (includeCounts || needsSplitIndex) {
       const computed = await this.getStatusCountsAndSplitIndex(query);
+      computedCounts = computed.statusCounts;
       if (includeCounts) statusCounts = computed.statusCounts;
       if (needsSplitIndex) splitIdsByStatus = computed.splitIdsByStatus;
     }
@@ -369,6 +373,12 @@ export class ProductionOrdersService {
           ],
         }
       : base;
+
+    // Bảng đếm theo trạng thái đã cho sẵn tổng số dòng của đúng bộ lọc này, nên không
+    // cần `count` thêm lần nữa — `where` có `contains` trên chín cột nên không index nào đỡ.
+    const knownTotal = computedCounts
+      ? (query.status ? computedCounts[query.status] : computedCounts.ALL)
+      : undefined;
 
     const [rows, total] = await Promise.all([
       this.prisma.productionOrder.findMany({
@@ -395,6 +405,7 @@ export class ProductionOrdersService {
           trackingCode: true,
           closedBy: true,
           customerName: true,
+          customerCode: true,
           description: true,
           stoneColor: true,
           stoneTypes: true,
@@ -457,7 +468,7 @@ export class ProductionOrdersService {
           },
         },
       }),
-      this.prisma.productionOrder.count({ where }),
+      knownTotal ?? this.prisma.productionOrder.count({ where }),
     ]);
 
     return {
@@ -491,6 +502,7 @@ export class ProductionOrdersService {
           intakeSxCode: row.sxCode,
           closedBy: row.closedBy,
           customerName: row.customerName,
+          customerCode: row.customerCode,
           description: row.description,
           stoneColor: row.stoneColor,
           stoneTypes: row.stoneTypes,
@@ -557,35 +569,38 @@ export class ProductionOrdersService {
       debts,
       customers,
       shipmentCustomers,
-    ] = await Promise.all([
-      this.prisma.user.findMany({
-        where: { isActive: true },
-        select: {
-          id: true,
-          username: true,
-          fullName: true,
-          roleCode: true,
-          extraRoles: true,
-          allowedScreens: true,
-        },
-        orderBy: { fullName: 'asc' },
-      }),
-      this.prisma.materialType.findMany({
-        select: { code: true, name: true },
-        orderBy: { sortOrder: 'asc' },
-      }),
-      this.distinctValues('closedBy'),
-      this.usedStoneTypes(),
-      this.distinctValues('leadTime'),
-      this.distinctValues('debtStatus'),
-      this.distinctValues('customerName'),
-      this.prisma.shipment.findMany({
-        where: { customerName: { not: '' } },
-        distinct: ['customerName'],
-        select: { customerName: true },
-        orderBy: { customerName: 'asc' },
-        take: 200,
-      }),
+    ] = await poolAll([
+      () =>
+        this.prisma.user.findMany({
+          where: { isActive: true },
+          select: {
+            id: true,
+            username: true,
+            fullName: true,
+            roleCode: true,
+            extraRoles: true,
+            allowedScreens: true,
+          },
+          orderBy: { fullName: 'asc' },
+        }),
+      () =>
+        this.prisma.materialType.findMany({
+          select: { code: true, name: true },
+          orderBy: { sortOrder: 'asc' },
+        }),
+      () => this.distinctValues('closedBy'),
+      () => this.usedStoneTypes(),
+      () => this.distinctValues('leadTime'),
+      () => this.distinctValues('debtStatus'),
+      () => this.distinctValues('customerName'),
+      () =>
+        this.prisma.shipment.findMany({
+          where: { customerName: { not: '' } },
+          distinct: ['customerName'],
+          select: { customerName: true },
+          orderBy: { customerName: 'asc' },
+          take: 200,
+        }),
     ]);
 
     return {
@@ -1078,7 +1093,7 @@ export class ProductionOrdersService {
   }
 
   async detail(code: string) {
-    return toDetail(await this.requireOrder(code));
+    return toDetail(await this.requireOrder(code, detailInclude));
   }
 
   /** Nhật ký thao tác của đơn, mới nhất trước. Tìm theo mã nên đơn đã xoá vẫn xem được. */
@@ -1381,11 +1396,11 @@ export class ProductionOrdersService {
     if (order.parentId !== fields.parentId) {
       await this.touchSiblings([order.parentId, fields.parentId], order.id);
     }
-    await this.cloudinary.destroy(removed);
+    this.cloudinary.destroy(removed);
     return toDetail(
       await this.prisma.productionOrder.findUniqueOrThrow({
         where: { id: updated },
-        include: detailInclude,
+        include: workInclude,
       }),
     );
   }
@@ -1436,7 +1451,7 @@ export class ProductionOrdersService {
       this.inventory.bustNvlStock();
     }
     await this.touchSiblings([order.parentId], order.id);
-    await this.cloudinary.destroy(order.images.map((image) => image.publicId));
+    this.cloudinary.destroy(order.images.map((image) => image.publicId));
     return { success: true };
   }
 
@@ -1557,7 +1572,7 @@ export class ProductionOrdersService {
           }),
         },
       },
-      include: detailInclude,
+      include: workInclude,
     });
     return toDetail(updated);
   }
@@ -1634,7 +1649,7 @@ export class ProductionOrdersService {
             }
           : null),
       },
-      include: detailInclude,
+      include: workInclude,
     });
     return toDetail(updated);
   }
@@ -1648,7 +1663,8 @@ export class ProductionOrdersService {
     /** QC sửa lại kết quả đã nhận (Nguội / Vào đá): tối đa 3 lần, thủ kho xác nhận rồi thì khoá. */
     revise = false,
   ) {
-    const order = await this.requireOrder(code);
+    // Nhánh này đọc ảnh cũ của khâu để dọn Cloudinary nên phải nạp bản đầy đủ.
+    const order = await this.requireOrder(code, detailInclude);
     const entry = requireStage(order, stageId);
     if (revise) {
       if (!entry.returnedAt) {
@@ -2030,10 +2046,10 @@ export class ProductionOrdersService {
       }
       return tx.productionOrder.findUniqueOrThrow({
         where: { id: order.id },
-        include: detailInclude,
+        include: workInclude,
       });
     });
-    await this.cloudinary.destroy(replacedImages);
+    this.cloudinary.destroy(replacedImages);
     // Nguội / Vào đá luôn chờ thủ kho xác nhận, kể cả không có hàng lỗi. Chưa xác nhận thì
     // giữ phiếu ở khâu hiện tại; chỉ nhập kho và chuyển khâu ở confirmStage.
     // Khâu không qua thủ kho thì QC nhận lại xong, phiếu sang "Chờ" khâu kế; đơn theo phiếu xa nhất.
@@ -2060,7 +2076,7 @@ export class ProductionOrdersService {
             },
           },
         },
-        include: detailInclude,
+        include: workInclude,
       }),
     );
   }
@@ -2155,7 +2171,7 @@ export class ProductionOrdersService {
           }),
         },
       },
-      include: detailInclude,
+      include: workInclude,
     });
     return toDetail(updated);
   }
@@ -2206,14 +2222,15 @@ export class ProductionOrdersService {
           }),
         },
       },
-      include: detailInclude,
+      include: workInclude,
     });
     return toDetail(updated);
   }
 
   /** Admin gỡ lần nhận lại để sửa sai; chỉ áp dụng cho khâu cuối. */
   async undoReturn(code: string, stageId: string, actor: AuthUserPayload) {
-    const order = await this.requireOrder(code);
+    // Xoá ảnh QC của khâu bị gỡ nên cần bản đầy đủ.
+    const order = await this.requireOrder(code, detailInclude);
     const entry = requireStage(order, stageId);
     if (!entry.returnedAt) {
       throw new BadRequestException('QC chưa nhận lại khâu này');
@@ -2322,9 +2339,9 @@ export class ProductionOrdersService {
           }),
         },
       },
-      include: detailInclude,
+      include: workInclude,
     });
-    await this.cloudinary.destroy(entry.images.map((image) => image.publicId));
+    this.cloudinary.destroy(entry.images.map((image) => image.publicId));
     // Gỡ nhận lại thì phiếu về "Đang" làm khâu đó — tính lại trạng thái đơn.
     const nextStatus = deriveOrderStatus(updated);
     if (nextStatus === updated.status) return toDetail(updated);
@@ -2342,7 +2359,7 @@ export class ProductionOrdersService {
             },
           },
         },
-        include: detailInclude,
+        include: workInclude,
       }),
     );
   }
@@ -2395,10 +2412,14 @@ export class ProductionOrdersService {
     });
   }
 
-  private async requireOrder(code: string) {
+  /**
+   * Mặc định nạp bản nhẹ (`workInclude`): thao tác đổi trạng thái không cần ảnh QC từng khâu
+   * lẫn 80 dòng lịch sử. Nhánh nào có đọc `entry.images` thì truyền `detailInclude`.
+   */
+  private async requireOrder(code: string, include = workInclude) {
     const order = await this.prisma.productionOrder.findUnique({
       where: { code: normalizeCode(code) },
-      include: detailInclude,
+      include,
     });
     if (!order) throw new NotFoundException('Không tìm thấy đơn sản xuất');
     return order;

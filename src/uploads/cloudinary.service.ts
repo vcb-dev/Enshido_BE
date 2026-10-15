@@ -45,8 +45,18 @@ export class CloudinaryService {
    * Xóa ảnh trên Cloudinary; lỗi chỉ ghi log vì dữ liệu đã được lưu. Gọi SAU khi đã xoá
    * dòng ảnh trong DB. Ảnh BTP chép sang đơn dùng chung publicId nên ảnh còn dòng kho
    * hoặc đơn khác trỏ tới thì giữ lại.
+   *
+   * Chạy nền, không await: ảnh thừa trên Cloudinary không ảnh hưởng dữ liệu, trong khi
+   * mỗi lượt gọi tốn vài trăm ms khiến nút Lưu / Xoá chờ vô ích.
    */
-  async destroy(candidates: string[]) {
+  destroy(candidates: string[]) {
+    if (candidates.length === 0) return;
+    void this.destroyNow(candidates).catch((error) =>
+      this.logger.warn(`Xóa ảnh thất bại: ${String(error)}`),
+    );
+  }
+
+  async destroyNow(candidates: string[]) {
     const publicIds = await this.unreferenced(candidates);
     if (publicIds.length === 0) return;
     const config = this.readConfig();

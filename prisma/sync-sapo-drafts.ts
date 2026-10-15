@@ -1,7 +1,16 @@
 import { randomUUID } from 'crypto';
 import { PrismaClient } from '@prisma/client';
 
-const prisma = new PrismaClient();
+const draftUrl = process.env.SAPO_DRAFT_DATABASE_URL;
+if (!draftUrl) {
+  throw new Error(
+    'Thiếu SAPO_DRAFT_DATABASE_URL — location_draft / inventory_draft nằm ở DB draft, không còn trên schema enshido.',
+  );
+}
+
+const prisma = new PrismaClient({
+  datasources: { db: { url: draftUrl } },
+});
 const PAGE_SIZE = 250;
 
 type SapoLocation = {

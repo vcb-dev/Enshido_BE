@@ -12,6 +12,7 @@ import {
   Prisma,
 } from '@prisma/client';
 import { recordEditLog } from '../edit-logs/edit-log';
+import { poolAll } from '../prisma/pool-all';
 import { PrismaService } from '../prisma/prisma.service';
 import { CloudinaryService } from '../uploads/cloudinary.service';
 import { InflightMap, TtlCache } from '../util/ttl-cache';
@@ -268,44 +269,51 @@ export class InventoryService {
           productKinds,
           consumableCategories,
           platingColors,
-        ] = await Promise.all([
-          this.prisma.unit.findMany({
-            select: lookupSelect,
-            orderBy: { sortOrder: 'asc' },
-          }),
-          this.prisma.materialType.findMany({
-            select: { ...lookupSelect, metalKind: true },
-            orderBy: [{ sortOrder: 'asc' }],
-          }),
-          this.prisma.shape.findMany({
-            select: lookupSelect,
-            orderBy: { sortOrder: 'asc' },
-          }),
-          this.prisma.color.findMany({
-            select: lookupSelect,
-            orderBy: { sortOrder: 'asc' },
-          }),
-          this.prisma.supplier.findMany({
-            select: lookupSelect,
-            orderBy: { sortOrder: 'asc' },
-          }),
-          this.prisma.otherClass.findMany({
-            where: { parent: { code: 'phan-loai-khac' } },
-            select: lookupSelect,
-            orderBy: { sortOrder: 'asc' },
-          }),
-          this.listCatalogChildrenByParent('chat-lieu'),
-          this.listCatalogChildrenByParent('danh-muc-btp'),
-          this.listCatalogChildrenByParent('phan-loai-san-pham'),
-          this.prisma.otherClass.findMany({
-            where: {
-              parentId: null,
-              code: { in: ['ccdc', 'nvl-phu', 'nvl-chinh'] },
-            },
-            select: lookupSelect,
-            orderBy: { sortOrder: 'asc' },
-          }),
-          this.listCatalogChildrenByParent('mau-xi'),
+        ] = await poolAll([
+          () =>
+            this.prisma.unit.findMany({
+              select: lookupSelect,
+              orderBy: { sortOrder: 'asc' },
+            }),
+          () =>
+            this.prisma.materialType.findMany({
+              select: { ...lookupSelect, metalKind: true },
+              orderBy: [{ sortOrder: 'asc' }],
+            }),
+          () =>
+            this.prisma.shape.findMany({
+              select: lookupSelect,
+              orderBy: { sortOrder: 'asc' },
+            }),
+          () =>
+            this.prisma.color.findMany({
+              select: lookupSelect,
+              orderBy: { sortOrder: 'asc' },
+            }),
+          () =>
+            this.prisma.supplier.findMany({
+              select: lookupSelect,
+              orderBy: { sortOrder: 'asc' },
+            }),
+          () =>
+            this.prisma.otherClass.findMany({
+              where: { parent: { code: 'phan-loai-khac' } },
+              select: lookupSelect,
+              orderBy: { sortOrder: 'asc' },
+            }),
+          () => this.listCatalogChildrenByParent('chat-lieu'),
+          () => this.listCatalogChildrenByParent('danh-muc-btp'),
+          () => this.listCatalogChildrenByParent('phan-loai-san-pham'),
+          () =>
+            this.prisma.otherClass.findMany({
+              where: {
+                parentId: null,
+                code: { in: ['ccdc', 'nvl-phu', 'nvl-chinh'] },
+              },
+              select: lookupSelect,
+              orderBy: { sortOrder: 'asc' },
+            }),
+          () => this.listCatalogChildrenByParent('mau-xi'),
         ]);
         return {
           units,
@@ -767,7 +775,7 @@ export class InventoryService {
       changedBy: actorDisplayName(actor),
     });
     this.bustWarehouseCaches(code);
-    await this.cloudinary.destroy(removedImages);
+    this.cloudinary.destroy(removedImages);
     const snapshot = await this.stockSnapshot([material.id]);
     return {
       ...this.toStockRow(

@@ -66,6 +66,13 @@ export class UpsertIntakeOrderDto {
   @MaxLength(120)
   trackingCode?: string | null;
 
+  /** Mã khách tự đặt cho sản phẩm. Khách hàng thì cố định VCB, server tự điền. */
+  @IsOptional()
+  @Transform(emptyToNull)
+  @IsString()
+  @MaxLength(120)
+  customerCode?: string | null;
+
   @IsString()
   @IsNotEmpty()
   @MaxLength(120)
@@ -78,10 +85,9 @@ export class UpsertIntakeOrderDto {
   @IsDateString()
   createdDate!: string;
 
-  @IsOptional()
   @Transform(emptyToNull)
-  @IsDateString()
-  dueDate?: string | null;
+  @IsDateString({}, { message: 'Chọn ngày trả hàng' })
+  dueDate!: string;
 
   @IsOptional()
   @IsEnum(IntakeOrderStatus)

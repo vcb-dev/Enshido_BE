@@ -6,6 +6,9 @@ import {
 } from '@prisma/client';
 import { toIntakeStatus } from '../production-orders/intake-order';
 
+/** Đơn tạo mới luôn là hàng của VCB — form không cho chọn khách khác. */
+export const INTAKE_CUSTOMER_NAME = 'VCB';
+
 const intakeListImageKinds: ProductionImageKind[] = [
   ProductionImageKind.DETAIL,
   ProductionImageKind.PRODUCT,
@@ -24,6 +27,8 @@ export const intakeListSelect = {
   productName: true,
   qty: true,
   trackingCode: true,
+  customerCode: true,
+  customerName: true,
   closedBy: true,
   description: true,
   receivedDate: true,
@@ -70,6 +75,8 @@ type IntakeRow = {
   productName: string | null;
   qty: number;
   trackingCode: string | null;
+  customerCode: string | null;
+  customerName: string | null;
   closedBy: string | null;
   description: string | null;
   receivedDate: Date;
@@ -119,6 +126,8 @@ export function toIntakeRow(
     productName: row.productName,
     qty: row.qty,
     trackingCode: row.trackingCode,
+    customerCode: row.customerCode,
+    customerName: row.customerName?.trim() || INTAKE_CUSTOMER_NAME,
     placedBy: row.closedBy,
     description: row.description,
     createdDate: row.receivedDate.toISOString().slice(0, 10),

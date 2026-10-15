@@ -200,24 +200,25 @@ export class CastingOrdersService {
     if (unique.size !== materialIds.length) {
       throw new BadRequestException('Mỗi mã NVL chỉ chọn một lần');
     }
-    return Promise.all(
-      lines.map(async (line) => {
-        const gram = new Prisma.Decimal(line.gramQty);
-        if (gram.lte(0)) {
-          throw new BadRequestException('Số gram phải lớn hơn 0');
-        }
-        return {
-          ...(await this.materialSnapshot(line.materialId)),
-          gramQty: gram,
-        };
-      }),
-    );
+    const grams = lines.map((line) => {
+      const gram = new Prisma.Decimal(line.gramQty);
+      if (gram.lte(0)) {
+        throw new BadRequestException('Số gram phải lớn hơn 0');
+      }
+      return gram;
+    });
+    // Một lượt đọc cho cả bảng kê thay vì mỗi dòng một query.
+    const snapshots = await this.materialSnapshots(materialIds);
+    return lines.map((line, index) => ({
+      ...snapshots.get(line.materialId)!,
+      gramQty: grams[index]!,
+    }));
   }
 
-  private async materialSnapshot(materialId: string) {
-    const material = await this.prisma.material.findFirst({
+  private async materialSnapshots(materialIds: string[]) {
+    const materials = await this.prisma.material.findMany({
       where: {
-        id: materialId,
+        id: { in: materialIds },
         isActive: true,
         warehouse: { code: NVL_WAREHOUSE },
       },
@@ -234,21 +235,26 @@ export class CastingOrdersService {
         otherClass: { select: { name: true } },
       },
     });
-    if (!material)
+    if (materials.length !== materialIds.length)
       throw new NotFoundException('Không tìm thấy mã NVL trên Tồn');
-    return {
-      materialId: material.id,
-      materialSku: material.sku,
-      materialName: material.name,
-      locationCode: material.locationCode,
-      category: material.metalKind
-        ? (METAL_KIND_LABEL[material.metalKind] ?? material.metalKind)
-        : (material.otherClass?.name ?? null),
-      materialType: material.materialType?.name ?? null,
-      shape: material.shape?.name ?? null,
-      color: material.color?.name ?? null,
-      unit: material.unit.name,
-    };
+    return new Map(
+      materials.map((material) => [
+        material.id,
+        {
+          materialId: material.id,
+          materialSku: material.sku,
+          materialName: material.name,
+          locationCode: material.locationCode,
+          category: material.metalKind
+            ? (METAL_KIND_LABEL[material.metalKind] ?? material.metalKind)
+            : (material.otherClass?.name ?? null),
+          materialType: material.materialType?.name ?? null,
+          shape: material.shape?.name ?? null,
+          color: material.color?.name ?? null,
+          unit: material.unit.name,
+        },
+      ]),
+    );
   }
 }
 

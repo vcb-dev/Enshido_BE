@@ -46,9 +46,16 @@ export function resolveDatabaseUrl(raw = process.env.DATABASE_URL): string {
     params.set('connect_timeout', '10');
   }
   // Prisma `schema=` chỉ gắn vào query do Client sinh. Raw SQL nhìn search_path
-  // (thường là public) — thiếu options thì lên đơn BTP chết vì không thấy stock_balances.
+  // (thường là public) — session pooler giữ nguyên startup option nên đặt luôn ở đây.
+  // Transaction pooler dùng chung server connection giữa các client nên option này
+  // không bám theo phiên: raw SQL phải tự gọi dbTable() để đủ schema.
   const schema = params.get('schema');
-  if (schema && IDENT.test(schema) && !params.has('options')) {
+  if (
+    !usesTransactionPooler &&
+    schema &&
+    IDENT.test(schema) &&
+    !params.has('options')
+  ) {
     params.set('options', `-csearch_path=${schema}`);
   }
 

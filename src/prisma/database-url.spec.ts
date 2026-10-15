@@ -41,6 +41,15 @@ describe('resolveDatabaseUrl', () => {
     expect(params.get('options')).toBe('-csearch_path=enshido');
   });
 
+  it('qua transaction pooler thì bật pgbouncer và bỏ options', () => {
+    const url = resolveDatabaseUrl(
+      'postgresql://u:p@h:6543/postgres?schema=enshido',
+    );
+    const params = new URLSearchParams(url.split('?')[1]);
+    expect(params.get('pgbouncer')).toBe('true');
+    expect(params.get('options')).toBeNull();
+  });
+
   it('đợi pool lâu hơn mặc định để poll workflow không văng P2024', () => {
     const url = resolveDatabaseUrl(
       'postgresql://u:p@h:5432/postgres?schema=enshido',

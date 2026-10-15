@@ -39,9 +39,6 @@ export class CastingSlipImageDto {
  * và chụp ảnh phiếu + vật tư.
  */
 export class CreateCastingSlipDto {
-  @IsDateString()
-  slipDate!: string;
-
   @IsArray()
   @ArrayMinSize(1, { message: 'Chọn ít nhất một đơn đi đúc' })
   @ArrayMaxSize(100)

@@ -1,5 +1,9 @@
 generator client {
   provider = "prisma-client-js"
+  /// Đọc quan hệ bằng JOIN thay vì mỗi quan hệ một truy vấn. Bật cờ này cũng đổi luôn
+  /// mặc định của `relationLoadStrategy` sang "join" cho mọi truy vấn có `include`:
+  /// đọc một đơn hàng từ 21 truy vấn xuống còn 4.
+  previewFeatures = ["relationJoins"]
 }
 
 datasource db {
@@ -605,6 +609,8 @@ model ProductionOrder {
   closedBy              String                @map("closed_by")
   /// Khách hàng trên phiếu lên đơn.
   customerName          String?               @map("customer_name")
+  /// Mã khách tự đặt cho sản phẩm — khách dùng mã này để đối chiếu đơn.
+  customerCode          String?               @map("customer_code")
   description           String
   stoneColor            String?               @map("stone_color")
   stoneTypes            String[]              @default([]) @map("stone_types")
@@ -770,6 +776,8 @@ model ProductionOrderImage {
   order ProductionOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
   @@index([orderId, kind, sortOrder])
+  /// Dọn ảnh cũ trên Cloudinary tra theo publicId.
+  @@index([publicId])
   @@map("production_order_images")
 }
 
@@ -859,6 +867,10 @@ model ProductionStageEntry {
   @@index([orderId, createdAt])
   @@index([subTicketId])
   @@index([craftsmanUserId, returnedAt])
+  /// Bảng KCS: các khâu chưa trả, xếp theo lúc giao.
+  @@index([returnedAt, handedAt])
+  /// Hàng chờ thủ kho xác nhận: đã trả nhưng chưa xác nhận, xếp theo lúc trả.
+  @@index([confirmedAt, returnedAt])
   @@map("production_stage_entries")
 }
 
@@ -877,6 +889,8 @@ model ProductionStageImage {
   stageEntry ProductionStageEntry @relation(fields: [stageEntryId], references: [id], onDelete: Cascade)
 
   @@index([stageEntryId, sortOrder])
+  /// Dọn ảnh cũ trên Cloudinary tra theo publicId.
+  @@index([publicId])
   @@map("production_stage_images")
 }
 
@@ -972,6 +986,10 @@ model ProductionStoneHold {
 
   @@index([materialId, status])
   @@index([subTicketId, status])
+  /// Mọi lần đọc chi tiết đơn và mọi thao tác sản xuất đều lấy đá theo đơn.
+  @@index([orderId])
+  /// Xuất / nhả đá theo khâu lúc thủ kho xác nhận.
+  @@index([stageEntryId, status])
   @@map("production_stone_holds")
 }
 
@@ -989,6 +1007,8 @@ model ProductionStoneHoldImage {
   hold ProductionStoneHold @relation(fields: [holdId], references: [id], onDelete: Cascade)
 
   @@index([holdId, sortOrder])
+  /// Dọn ảnh cũ trên Cloudinary tra theo publicId.
+  @@index([publicId])
   @@map("production_stone_hold_images")
 }
 
@@ -1376,6 +1396,8 @@ model CastingSlipImage {
   slip CastingSlip @relation(fields: [slipId], references: [id], onDelete: Cascade)
 
   @@index([slipId, sortOrder])
+  /// Dọn ảnh cũ trên Cloudinary tra theo publicId.
+  @@index([publicId])
   @@map("casting_slip_images")
 }
 
@@ -1404,6 +1426,7 @@ model CastingOrderLine {
 }
 
 /// Chi nhánh / kho Sapo — GET /admin/locations.json (Private App, header X-Sapo-Access-Token).
+/// Bảng nằm trên SAPO_DRAFT_DATABASE_URL, không còn trên schema enshido.
 model LocationDraft {
   id            String    @id @default(uuid()) @db.Uuid
   sapoId        BigInt    @unique @map("sapo_id")
@@ -1428,7 +1451,8 @@ model LocationDraft {
   @@map("location_draft")
 }
 
-/// Tồn kho Sapo theo variant × location. Màn Tồn kho:
+/// Tồn kho Sapo theo variant × location. Bảng nằm trên SAPO_DRAFT_DATABASE_URL.
+/// Màn Tồn kho:
 /// GET /admin/products.json (tên, ảnh, giá, SKU) + GET /admin/inventory_levels.json
 /// (on_hand / packed / available / committed).
 model InventoryDraft {

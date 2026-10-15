@@ -1117,6 +1117,7 @@ export function toDetail(order: OrderDetail) {
     trackingCode: order.trackingCode,
     closedBy: order.closedBy,
     customerName: order.customerName,
+    customerCode: order.customerCode,
     description: order.description,
     stoneColor: order.stoneColor,
     stoneTypes: order.stoneTypes,
