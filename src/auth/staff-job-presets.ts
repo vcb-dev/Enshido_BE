@@ -17,7 +17,8 @@ export type StaffJobPreset =
   | 'worker_casting'
   | 'worker_filing'
   | 'warehouse'
-  | 'kcs';
+  | 'kcs'
+  | 'accountant';
 
 const WAREHOUSE_SCREENS: PermissionCode[] = [
   Permission.SCREEN_WAREHOUSE_NVL_CHINH,
@@ -90,10 +91,21 @@ export function roleAndScreensForPreset(preset: StaffJobPreset): {
           Permission.PRODUCTION_QC,
         ],
       };
+    case 'accountant':
+      return {
+        roleCode: RoleCode.USER,
+        allowedScreens: [
+          Permission.SCREEN_DASHBOARD,
+          Permission.SCREEN_WAREHOUSE_THANH_PHAM,
+          Permission.ACCOUNTING_APPROVE,
+        ],
+      };
   }
 }
 
-export function workerStagesForPreset(preset: StaffJobPreset): ProductionStage[] {
+export function workerStagesForPreset(
+  preset: StaffJobPreset,
+): ProductionStage[] {
   if (preset === 'worker_filing') return [ProductionStage.FILING];
   if (preset === 'worker_sx') return Object.values(ProductionStage);
   return [];
@@ -136,6 +148,13 @@ export function inferStaffJobPreset(user: {
     return 'kcs';
   }
   if (
+    granted.includes(Permission.ACCOUNTING_APPROVE) &&
+    !granted.includes(Permission.WAREHOUSE_KEEPER) &&
+    !granted.includes(Permission.PRODUCTION_QC)
+  ) {
+    return 'accountant';
+  }
+  if (
     granted.includes(Permission.WAREHOUSE_KEEPER) &&
     WAREHOUSE_SCREENS.some((key) => screens.has(key)) &&
     !granted.includes(Permission.PRODUCTION_MODEL3D) &&
@@ -156,6 +175,7 @@ const STAFF_JOB_LABELS: Record<StaffJobPreset, string> = {
   worker_filing: 'Thợ nguội',
   warehouse: 'Thủ kho',
   kcs: 'QC',
+  accountant: 'Kế toán',
 };
 
 export function staffJobLabelFor(user: {

@@ -2869,7 +2869,10 @@ export class ProductionOrdersService {
           qty: true,
           status: true,
           returnedQty: true,
-          shipmentLines: { select: { qty: true } },
+          shipmentLines: {
+            where: { shipment: { pendingApproval: false } },
+            select: { qty: true },
+          },
         },
       });
       if (!order) continue;

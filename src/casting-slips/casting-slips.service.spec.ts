@@ -238,3 +238,104 @@ describe('cắt cây thông sau Đúc xong → Chờ nguội', () => {
     expect(tx.productionOrder.create).not.toHaveBeenCalled();
   });
 });
+
+describe('bước 7 cấp vật tư đúc xuất kho NVL chính', () => {
+  function issueSetup() {
+    const tx = {
+      castingSlip: {
+        findUnique: jest.fn().mockResolvedValue({
+          code: 'DABCDE',
+          waxWeightGram: new Prisma.Decimal(10),
+          orders: [{ orderId: '1' }, { orderId: '2' }],
+        }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      castingSlipImage: { createMany: jest.fn() },
+      productionOrder: {
+        updateMany: jest.fn().mockResolvedValue({ count: 2 }),
+      },
+    };
+    const prisma = {
+      runTx: jest.fn((fn: (client: typeof tx) => Promise<unknown>) => fn(tx)),
+    };
+    const inventory = {
+      issueStockForCastingSlip: jest.fn().mockResolvedValue({}),
+      bustNvlStock: jest.fn(),
+    };
+    const service = new CastingSlipsService(
+      prisma as never,
+      { ownsPublicId: jest.fn().mockReturnValue(true) } as never,
+      inventory as never,
+    );
+    jest.spyOn(service, 'getById').mockResolvedValue({ id: 'slip' } as never);
+    return { service, tx, inventory };
+  }
+
+  it('xuất từng dòng có gram theo mã thủ kho chọn, gắn phiếu đúc', async () => {
+    const { service, inventory } = issueSetup();
+    await service.issue(
+      'slip',
+      {
+        images: [image],
+        issueS999Gram: 50,
+        issueMasterAlloyGram: 5,
+        issueS925Gram: 0,
+        issueS999MaterialId: 'm-999',
+        issueMasterAlloyMaterialId: 'm-hoi',
+      },
+      actor,
+    );
+
+    expect(inventory.issueStockForCastingSlip).toHaveBeenCalledTimes(2);
+    expect(inventory.issueStockForCastingSlip).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.objectContaining({
+        castingSlipId: 'slip',
+        materialId: 'm-999',
+        grams: new Prisma.Decimal(50),
+        issuedBy: 'Thủ kho',
+      }),
+    );
+    expect(inventory.issueStockForCastingSlip).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      expect.objectContaining({
+        materialId: 'm-hoi',
+        grams: new Prisma.Decimal(5),
+      }),
+    );
+    expect(inventory.bustNvlStock).toHaveBeenCalled();
+  });
+
+  it('dòng có gram mà chưa chọn mã NVL thì không cấp', async () => {
+    const { service, tx, inventory } = issueSetup();
+    await expect(
+      service.issue(
+        'slip',
+        { images: [image], issueS999Gram: 50, issueS999MaterialId: undefined },
+        actor,
+      ),
+    ).rejects.toThrow('Chọn mã NVL xuất cho Bạc S999');
+    expect(tx.castingSlip.updateMany).not.toHaveBeenCalled();
+    expect(inventory.issueStockForCastingSlip).not.toHaveBeenCalled();
+  });
+
+  it('không nhập số thực xuất thì xuất theo ước tính, vẫn phải chọn đủ mã', async () => {
+    const { service, inventory } = issueSetup();
+    await expect(
+      service.issue('slip', { images: [image] }, actor),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await service.issue(
+      'slip',
+      {
+        images: [image],
+        issueS999MaterialId: 'm-999',
+        issueMasterAlloyMaterialId: 'm-hoi',
+        issueS925MaterialId: 'm-925',
+      },
+      actor,
+    );
+    expect(inventory.issueStockForCastingSlip).toHaveBeenCalledTimes(3);
+  });
+});

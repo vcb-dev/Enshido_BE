@@ -170,7 +170,14 @@ export const detailInclude = {
   shipmentLines: {
     select: {
       qty: true,
-      shipment: { select: { code: true, shippedAt: true, customerName: true } },
+      shipment: {
+        select: {
+          code: true,
+          shippedAt: true,
+          customerName: true,
+          pendingApproval: true,
+        },
+      },
     },
     orderBy: { shipment: { seq: 'asc' } },
   },
@@ -1196,6 +1203,7 @@ export function toDetail(order: OrderDetail) {
             shippedAt: ymd(line.shipment.shippedAt),
             customerName: line.shipment.customerName,
             qty: line.qty,
+            pendingApproval: line.shipment.pendingApproval,
           })),
         }
       : null,

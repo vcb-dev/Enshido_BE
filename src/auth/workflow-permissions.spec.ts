@@ -184,6 +184,48 @@ const MATRIX: [string, object, string, PermissionCode[]][] = [
     'receiveReceipt',
     [P.WAREHOUSE_KEEPER],
   ],
+  [
+    'B22 thủ kho nhập thêm thành phẩm',
+    FinishedGoodsController.prototype,
+    'createReceipt',
+    [P.WAREHOUSE_KEEPER],
+  ],
+  [
+    'B22 thủ kho sửa phiếu nhập thành phẩm',
+    FinishedGoodsController.prototype,
+    'updateReceipt',
+    [P.WAREHOUSE_KEEPER],
+  ],
+  [
+    'B22 thủ kho xoá phiếu nhập thành phẩm',
+    FinishedGoodsController.prototype,
+    'deleteReceipt',
+    [P.WAREHOUSE_KEEPER],
+  ],
+  [
+    'B23 thủ kho lập phiếu xuất',
+    FinishedGoodsController.prototype,
+    'create',
+    [P.WAREHOUSE_KEEPER],
+  ],
+  [
+    'B23 thủ kho sửa phiếu xuất',
+    FinishedGoodsController.prototype,
+    'update',
+    [P.WAREHOUSE_KEEPER],
+  ],
+  [
+    'B23 in phiếu xuất',
+    FinishedGoodsController.prototype,
+    'markPrinted',
+    [P.WAREHOUSE_KEEPER, P.ACCOUNTING_APPROVE],
+  ],
+  [
+    'B23 kế toán xác nhận phiếu xuất',
+    FinishedGoodsController.prototype,
+    'approve',
+    [P.ACCOUNTING_APPROVE],
+  ],
 ];
 
 function user(

@@ -112,6 +112,19 @@ export class IssueCastingSlipDto {
   @IsNumber()
   @Min(0)
   issueS925Gram?: number;
+
+  /** Mã NVL (kho NVL chính, đơn vị gram) xuất cho từng dòng — bắt buộc khi dòng đó có số gram. */
+  @IsOptional()
+  @IsUUID()
+  issueS999MaterialId?: string;
+
+  @IsOptional()
+  @IsUUID()
+  issueMasterAlloyMaterialId?: string;
+
+  @IsOptional()
+  @IsUUID()
+  issueS925MaterialId?: string;
 }
 
 export class CastingLossQuery {

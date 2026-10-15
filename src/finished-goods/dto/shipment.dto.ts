@@ -16,6 +16,10 @@ import {
 } from 'class-validator';
 
 const MONEY = /^\d+(\.\d{1,2})?$/;
+const WEIGHT = /^\d+(\.\d{1,2})?$/;
+
+const emptyToUndefined = ({ value }: { value: unknown }) =>
+  value === '' || value === null ? undefined : value;
 
 export class ShipmentLineDto {
   @IsString()
@@ -27,9 +31,35 @@ export class ShipmentLineDto {
   @Min(1)
   qty!: number;
 
-  /** Đơn giá bán cho khách. */
-  @Matches(MONEY, { message: 'Đơn giá bán không hợp lệ' })
-  unitPrice!: string;
+  /**
+   * TL tính tiền (g). Chỉ dùng khi hệ thống không tự tính được từ TL sau Xi (hàng nhập tồn,
+   * đơn chưa cân ở Xi); tính được thì số gửi lên bị bỏ qua.
+   */
+  @IsOptional()
+  @Transform(emptyToUndefined)
+  @Matches(WEIGHT, { message: 'Trọng lượng không hợp lệ' })
+  weightGram?: string;
+
+  /** Bốn khoản người lập tự nhập — bỏ trống được khi lưu, nhưng phải đủ mới in. */
+  @IsOptional()
+  @Transform(emptyToUndefined)
+  @Matches(MONEY, { message: 'Đơn giá NL không hợp lệ' })
+  materialUnitPrice?: string;
+
+  @IsOptional()
+  @Transform(emptyToUndefined)
+  @Matches(MONEY, { message: 'Tiền công không hợp lệ' })
+  laborAmount?: string;
+
+  @IsOptional()
+  @Transform(emptyToUndefined)
+  @Matches(MONEY, { message: 'Tiền đá không hợp lệ' })
+  stoneAmount?: string;
+
+  @IsOptional()
+  @Transform(emptyToUndefined)
+  @Matches(MONEY, { message: 'Chi phí khác không hợp lệ' })
+  otherAmount?: string;
 
   @IsOptional()
   @IsString()

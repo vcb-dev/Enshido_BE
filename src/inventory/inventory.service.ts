@@ -161,6 +161,7 @@ const outboundListSelect = {
   destInboundId: true,
   destWarehouse: { select: { code: true, shortName: true } },
   productionOrder: { select: { code: true } },
+  castingSlip: { select: { code: true } },
   unit: { select: { id: true, name: true } },
   material: { select: { id: true, sku: true } },
 } as const;
@@ -1327,6 +1328,7 @@ export class InventoryService {
         productionOrderId: true,
         autoIssued: true,
         productionOrder: { select: { code: true } },
+        castingSlip: { select: { code: true } },
       },
     });
     if (!outbound) throw new NotFoundException('Không tìm thấy dòng xuất kho');
@@ -1433,6 +1435,7 @@ export class InventoryService {
           material: { select: { id: true, sku: true } },
           destWarehouse: { select: { code: true, shortName: true } },
           productionOrder: { select: { code: true } },
+          castingSlip: { select: { code: true } },
         },
       });
 
@@ -1501,6 +1504,7 @@ export class InventoryService {
         destWarehouse: { select: { id: true, code: true } },
         autoIssued: true,
         productionOrder: { select: { code: true } },
+        castingSlip: { select: { code: true } },
       },
     });
     if (!outbound) throw new NotFoundException('Không tìm thấy dòng xuất kho');
@@ -1790,6 +1794,7 @@ export class InventoryService {
       destInboundId?: string | null;
       destWarehouse?: { code: string; shortName: string } | null;
       productionOrder?: { code: string } | null;
+      castingSlip?: { code: string } | null;
       unit?: { id: string; name: string } | null;
       material?: { id: string; sku: string | null } | null;
     },
@@ -1816,6 +1821,7 @@ export class InventoryService {
       destWarehouseCode: row.destWarehouse?.code ?? null,
       destWarehouseName: row.destWarehouse?.shortName ?? null,
       productionOrderCode: row.productionOrder?.code ?? null,
+      castingSlipCode: row.castingSlip?.code ?? null,
       autoIssued: row.autoIssued ?? false,
       priceBreakdown: (takes ?? []).map((take) => ({
         qty: decStr(take.qty),
@@ -2186,6 +2192,72 @@ export class InventoryService {
         throw new BadRequestException(
           'Kho đang xử lý phiếu khác cho mã này, thử lại sau vài giây',
         );
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Bước 7: thủ kho cấp bạc / hội cho phiếu đúc — xuất FIFO khỏi kho NVL chính theo gram, gắn
+   * phiếu đúc, không gắn đơn (chưa chia vào giá vốn). Thiếu tồn thì cả lần cấp không thực hiện.
+   */
+  async issueStockForCastingSlip(
+    tx: Prisma.TransactionClient,
+    params: {
+      castingSlipId: string;
+      materialId: string;
+      grams: Prisma.Decimal;
+      issuedAt: Date;
+      issuedBy: string;
+      note: string;
+    },
+  ) {
+    const material = await tx.material.findFirst({
+      where: {
+        id: params.materialId,
+        isActive: true,
+        warehouse: { code: 'nvl-chinh' },
+        unit: { code: 'gram' },
+      },
+      select: {
+        id: true,
+        name: true,
+        sku: true,
+        warehouseId: true,
+        unit: { select: { id: true, name: true } },
+      },
+    });
+    if (!material?.unit) {
+      throw new BadRequestException(
+        'Mã NVL cấp đúc phải là mã đang dùng, tính theo gram trong kho NVL chính',
+      );
+    }
+    try {
+      return await this.applyFifoOutbound(tx, {
+        warehouseId: material.warehouseId,
+        material: { id: material.id, name: material.name, sku: material.sku },
+        unit: material.unit,
+        unitName: material.unit.name,
+        issuedAt: params.issuedAt,
+        qty: params.grams,
+        gramQty: params.grams,
+        note: params.note,
+        issuedBy: params.issuedBy,
+        receivedBy: null,
+        receivedByUserId: null,
+        applyToStock: true,
+        productionOrderId: null,
+        autoIssued: true,
+        castingSlipId: params.castingSlipId,
+      });
+    } catch (error) {
+      if (isLockTimeout(error)) {
+        throw new BadRequestException(
+          'Kho đang xử lý phiếu khác cho mã này, thử lại sau vài giây',
+        );
+      }
+      if (error instanceof BadRequestException) {
+        throw new BadRequestException(`${material.name}: ${error.message}`);
       }
       throw error;
     }
@@ -3294,6 +3366,7 @@ export class InventoryService {
       applyToStock: boolean;
       productionOrderId: string | null;
       autoIssued?: boolean;
+      castingSlipId?: string | null;
     },
   ) {
     const [quote, last] = await Promise.all([
@@ -3325,6 +3398,7 @@ export class InventoryService {
         applyToStock: params.applyToStock,
         productionOrderId: params.productionOrderId,
         autoIssued: params.autoIssued ?? false,
+        castingSlipId: params.castingSlipId ?? null,
       },
     });
     await this.recomputeStockBalance(
@@ -3539,8 +3613,14 @@ function assertNvlWarehouse(code: string) {
 function assertNotAutoIssued(outbound: {
   autoIssued: boolean;
   productionOrder: { code: string } | null;
+  castingSlip: { code: string } | null;
 }) {
   if (!outbound.autoIssued) return;
+  if (outbound.castingSlip) {
+    throw new BadRequestException(
+      `Phiếu xuất do cấp vật tư phiếu đúc ${outbound.castingSlip.code} tự tạo — không sửa tay được`,
+    );
+  }
   throw new BadRequestException(
     `Phiếu xuất do đơn ${outbound.productionOrder?.code} tự tạo (giao khâu / thợ xin) — không sửa tay được`,
   );
