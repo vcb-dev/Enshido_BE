@@ -72,6 +72,7 @@ import {
   KEEPER_CONFIRM_STAGES,
   SELF_TAKE_STAGES,
   selfTakeStageAfter,
+  carriedSilverOf,
   FINISHED_STATUSES,
   finishedStatusOf,
   requireStage,
@@ -193,6 +194,7 @@ function filedBtpLine(
  * xuất luôn ở đây — bạc vào khâu lấy từ dòng xuất, không ghi thêm TL chuyển tay.
  */
 function carriedHandover(
+  order: OrderDetail,
   available: { qty: number; silver: Prisma.Decimal | null },
   previous: StageEntry | undefined,
   openedByName: string | null,
@@ -202,13 +204,18 @@ function carriedHandover(
     previous?.outputMaterialId && weight?.gt(0)
       ? { materialId: previous.outputMaterialId, weight }
       : null;
+  // Khắc / Đánh bóng QC không cân: chuyển nguyên bạc vào khâu trước để Xi có mốc hao hụt.
+  const silver =
+    previous?.returnedAt && previous.returnedSilverWeight == null
+      ? carriedSilverOf(order, previous)
+      : available.silver;
   return {
     line,
     entry: {
       handedByUserId: previous?.returnedByUserId ?? null,
       handedByName: previous?.returnedByName ?? openedByName ?? '—',
       handedQty: available.qty,
-      handedSilverWeight: line ? null : available.silver,
+      handedSilverWeight: line ? null : silver,
     },
   };
 }
@@ -587,6 +594,7 @@ export class ProductionSubTicketsService {
       assertTakeable(order.code, state, stage, order.claimedByName);
       await assertCanTakeStage(tx, actor, stage);
       const carried = carriedHandover(
+        order,
         orderTicketAvailable(order, entries),
         lastOf(entries),
         order.pendingByName,
@@ -806,11 +814,12 @@ export class ProductionSubTicketsService {
       }
       // Bạc vào khâu lấy từ dòng BTP xuất kho; TL chuyển tay chỉ dùng khi khâu trước không nhập
       // kho BTP — ghi cả hai là cộng đôi bạc vào khâu.
+      const carriedSilver = carryOver ? carriedSilverOf(order, last) : null;
       const handedSilverWeight = autoBtp
         ? null
         : carryOver
-          ? last.returnedSilverWeight
-            ? decStr(last.returnedSilverWeight)
+          ? carriedSilver
+            ? decStr(carriedSilver)
             : null
           : (dto.handedSilverWeight ?? null);
       assertHandedSilverWithin(
@@ -1720,7 +1729,8 @@ export class ProductionSubTicketsService {
           }
           const available = subTicketAvailable(ticket, entries);
           handedQty = available.qty;
-          const weight = previous.returnedSilverWeight;
+          // Khắc / Đánh bóng QC không cân — chuyển nguyên bạc vào khâu đó.
+          const weight = carriedSilverOf(order, previous);
           if (!weight || weight.lte(0)) {
             throw new BadRequestException(
               'Khâu trước chưa có TL hàng nhận lại',
@@ -2393,9 +2403,10 @@ export class ProductionSubTicketsService {
           closedBy: actorName(actor),
           createdBy: actorName(actor),
           createdByUserId: actor.id,
-          // Phiếu bù là bù cho đơn hàng (mã DH…), không phải cho mã lệnh sản xuất.
+          // Phiếu bù là bù cho đơn hàng (mã DH…), không phải cho mã lệnh sản xuất. Bù tiếp cho một
+          // đơn bù thì bỏ tiền tố cũ — không chồng "[Bù cho …] [Bù cho …]".
           description:
-            `[Bù cho ${order.intakeCode ?? label}] ${order.description}`.trim(),
+            `[Bù cho ${order.intakeCode ?? label}] ${order.description.replace(/^\[Bù cho [^\]]*\]\s*/, '')}`.trim(),
           receivedDate: todayVn(),
           dueDate: order.dueDate,
           hasMold: order.hasMold,
@@ -2619,6 +2630,7 @@ export class ProductionSubTicketsService {
       assertTakeable(label, state, stage, ticket.claimedByName);
       await assertCanTakeStage(tx, actor, stage);
       const carried = carriedHandover(
+        order,
         subTicketAvailable(ticket, entries),
         lastOf(entries),
         ticket.pendingByName,

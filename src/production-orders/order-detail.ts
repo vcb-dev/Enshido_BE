@@ -100,6 +100,21 @@ export const IN_STAGE_STATUSES: ProductionStatus[] = [
   S.PLATING,
 ];
 
+/**
+ * Lệnh bù của lệnh bù (bù tiếp khi lệnh bù lại lỗi), lồng thêm 3 cấp dưới lệnh bù trực tiếp —
+ * đơn gốc thấy được cả chuỗi bù của mình. Chuỗi dài hơn nữa xem ở chi tiết lệnh bù cấp cuối.
+ */
+const reworkLevel = <T extends object>(inner: T) => ({
+  orderBy: { createdAt: 'asc' as const },
+  select: { ...intakeListSelect, reworkOrders: inner },
+});
+const nestedReworks = reworkLevel(
+  reworkLevel({
+    orderBy: { createdAt: 'asc' as const },
+    select: intakeListSelect,
+  }),
+);
+
 export const detailInclude = {
   images: { orderBy: [{ kind: 'asc' }, { sortOrder: 'asc' }] },
   stages: {
@@ -118,10 +133,12 @@ export const detailInclude = {
   },
   // Đơn tạo bù cho hàng lỗi của đơn này — để phiếu lỗi hiện "Phiếu bù: DH…".
   reworkOrders: {
+    orderBy: { createdAt: 'asc' },
     select: {
       ...intakeListSelect,
       reworkOfEntryId: true,
       reworkOfSubTicketId: true,
+      reworkOrders: nestedReworks,
     },
   },
   materialRequests: {
@@ -435,6 +452,28 @@ export function selfTakeStageAfter(
 ): ProductionStage | null {
   const next = STAGE_ORDER[STAGE_ORDER.indexOf(stage) + 1];
   return next && SELF_TAKE_STAGES.includes(next) ? next : null;
+}
+
+/**
+ * Khâu QC chỉ chụp ảnh xác nhận, không cân lại (Khắc → khâu trước Xi): không tính hao hụt riêng.
+ * Hao tổn cả chặng dồn về Xi — QC cân lại ở Xi, mốc là bạc vào khâu Khắc.
+ */
+export const PHOTO_ONLY_STAGES: ProductionStage[] = [G.ENGRAVING, G.POLISHING];
+
+/**
+ * TL hàng chuyển sang khâu kế từ một khâu QC đã nhận lại: TL QC cân lại. Khâu chỉ chụp ảnh không
+ * cân thì chuyển nguyên bạc vào khâu đó (giao + xuất thêm) — Xi tính hao hụt từ mốc này.
+ */
+export function carriedSilverOf(
+  order: Pick<OrderDetail, 'materialRequests'>,
+  entry: Pick<
+    StageEntry,
+    'id' | 'stage' | 'handedSilverWeight' | 'returnedSilverWeight'
+  >,
+): Prisma.Decimal | null {
+  if (entry.returnedSilverWeight != null) return entry.returnedSilverWeight;
+  if (!PHOTO_ONLY_STAGES.includes(entry.stage)) return null;
+  return silverInOf(entry, issuedOf(requestsOf(order, entry.id)).metal);
 }
 
 export function subTicketState(
@@ -1288,6 +1327,19 @@ export function toDetail(order: OrderDetail) {
           (ticket) => ticket.id === rework.reworkOfSubTicketId,
         )?.no ?? null,
     })),
+    /**
+     * Cả chuỗi lệnh bù của đơn (bù trực tiếp + bù tiếp cho lệnh bù lại lỗi), theo thứ tự tạo.
+     * `rootTicketNo` = phiếu con của đơn này mà chuỗi bù bắt nguồn.
+     */
+    reworkChain: order.reworkOrders.flatMap((rework) =>
+      reworkChainOf(
+        rework,
+        order.code,
+        order.subTickets.find(
+          (ticket) => ticket.id === rework.reworkOfSubTicketId,
+        )?.no ?? null,
+      ),
+    ),
     /** NVL xuất thêm + hao hụt của cả đơn, cộng mọi phiếu. */
     materials: ticketMaterials(
       order.stages,
@@ -1380,6 +1432,47 @@ export function requestsOf(
   return order.materialRequests.filter(
     (request) => request.stageEntryId === stageEntryId,
   );
+}
+
+type ReworkNode = Parameters<typeof toIntakeRow>[0] &
+  Parameters<typeof toIntakeStatus>[0] & {
+    code: string;
+    status: ProductionStatus;
+    qty: number;
+    intakeCode: string | null;
+    reworkOrders?: readonly ReworkNode[];
+  };
+
+/** Trải một lệnh bù và các lệnh bù tiếp của nó thành danh sách phẳng, mỗi dòng ghi lệnh được bù. */
+function reworkChainOf(
+  rework: ReworkNode,
+  reworkOfCode: string,
+  rootTicketNo: number | null,
+): Array<{
+  intake: ReturnType<typeof toIntakeRow>;
+  orderCode: string;
+  productionStatus: ProductionStatus;
+  code: string;
+  status: ReturnType<typeof toIntakeStatus>;
+  qty: number;
+  reworkOfCode: string;
+  rootTicketNo: number | null;
+}> {
+  return [
+    {
+      intake: toIntakeRow(rework),
+      orderCode: rework.code,
+      productionStatus: rework.status,
+      code: rework.intakeCode ?? rework.code,
+      status: toIntakeStatus(rework),
+      qty: rework.qty,
+      reworkOfCode,
+      rootTicketNo,
+    },
+    ...(rework.reworkOrders ?? []).flatMap((child) =>
+      reworkChainOf(child, rework.code, rootTicketNo),
+    ),
+  ];
 }
 
 const dec = (value: Prisma.Decimal | null) =>

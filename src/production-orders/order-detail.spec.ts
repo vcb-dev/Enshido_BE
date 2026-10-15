@@ -1,10 +1,12 @@
 import {
+  MaterialRequestKind,
   MaterialRequestStatus,
   Prisma,
   ProductionStatus,
 } from '@prisma/client';
 import {
   blankLeftOf,
+  carriedSilverOf,
   entriesOf,
   handedStoneOf,
   lastStageDone,
@@ -350,6 +352,80 @@ describe('subTicketAvailable — số lượng / bạc còn lại để giao kh�
       qty: 6,
       silver: dec('600'),
     });
+  });
+});
+
+describe('carriedSilverOf — TL chuyển sang khâu kế', () => {
+  const metal = (
+    stageEntryId: string,
+    weight: string,
+    status: MaterialRequestStatus = MaterialRequestStatus.ISSUED,
+  ) =>
+    ({
+      stageEntryId,
+      status,
+      kind: MaterialRequestKind.METAL,
+      issuedWeight: dec(weight),
+      issuedStoneCount: null,
+    }) as unknown as OrderDetail['materialRequests'][number];
+
+  it('khâu QC cân lại thì lấy TL cân lại', () => {
+    const order = { materialRequests: [] };
+    expect(
+      carriedSilverOf(order, {
+        id: 'e1',
+        stage: 'STONE_SETTING',
+        handedSilverWeight: dec('600'),
+        returnedSilverWeight: dec('590'),
+      }),
+    ).toEqual(dec('590'));
+  });
+
+  it('Khắc chỉ chụp ảnh: chuyển nguyên BTP xuất lúc giao + bạc xuất thêm, bỏ yêu cầu chưa xuất', () => {
+    const order = {
+      materialRequests: [
+        metal('khac', '120'),
+        metal('khac', '2.5'),
+        metal('khac', '9', MaterialRequestStatus.PENDING),
+        metal('other', '50'),
+      ],
+    };
+    expect(
+      carriedSilverOf(order, {
+        id: 'khac',
+        stage: 'ENGRAVING',
+        handedSilverWeight: null,
+        returnedSilverWeight: null,
+      }),
+    ).toEqual(dec('122.5'));
+  });
+
+  it('Đánh bóng chỉ chụp ảnh: chuyển TL giao (đã mang từ Khắc)', () => {
+    expect(
+      carriedSilverOf(
+        { materialRequests: [] },
+        {
+          id: 'bong',
+          stage: 'POLISHING',
+          handedSilverWeight: dec('122.5'),
+          returnedSilverWeight: null,
+        },
+      ),
+    ).toEqual(dec('122.5'));
+  });
+
+  it('khâu phải cân mà chưa có TL thì không có mốc', () => {
+    expect(
+      carriedSilverOf(
+        { materialRequests: [] },
+        {
+          id: 'xi',
+          stage: 'PLATING',
+          handedSilverWeight: dec('122.5'),
+          returnedSilverWeight: null,
+        },
+      ),
+    ).toBeNull();
   });
 });
 

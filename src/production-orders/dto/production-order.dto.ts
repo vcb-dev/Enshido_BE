@@ -578,9 +578,11 @@ export class ReturnStageDto {
   @Min(0)
   returnedQty?: number | null;
 
+  /** Khắc / Đánh bóng QC chỉ chụp ảnh, không cân — để trống. Khâu khác bắt buộc. */
+  @IsOptional()
   @Transform(emptyToNull)
   @Matches(DECIMAL, { message: 'Trọng lượng sản phẩm đạt không hợp lệ' })
-  returnedSilverWeight!: string;
+  returnedSilverWeight?: string | null;
 
   /** Khâu Vào đá: số viên đá gắn lên. Khâu khác không nhận hai trường đá này. */
   @IsOptional()
