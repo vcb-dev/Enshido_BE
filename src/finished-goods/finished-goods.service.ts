@@ -18,8 +18,10 @@ import { ProductionCostingService } from '../production-orders/production-costin
 import { randomUUID } from 'node:crypto';
 import { nextOrderSeq, orderCode } from '../production-orders/intake-order';
 import {
+  decimalOrNull,
   FINISHED_STATUSES,
   finishedStatusOf,
+  skipsStone,
 } from '../production-orders/order-detail';
 import { availabilityOf, decStr, METAL_KIND_LABEL } from '../util/money';
 import {
@@ -29,6 +31,12 @@ import {
   UpsertReceiptDto,
   UpsertShipmentDto,
 } from './dto/shipment.dto';
+import {
+  gramOf,
+  invoiceAmount,
+  invoiceComplete,
+  netGramPerUnit,
+} from './shipment-weight';
 
 const DEFAULT_PAYMENT_METHODS = ['Tiền mặt', 'Chuyển khoản', 'VCB'];
 const OPENING_COST_NAME = 'Giá vốn đầu kỳ';
@@ -85,6 +93,17 @@ function mapNvl(row: NvlSnapshot) {
 
 const CREATE_RETRIES = 3;
 
+const weightStageSelect = {
+  stage: true,
+  subTicketId: true,
+  attempt: true,
+  returnedAt: true,
+  handedQty: true,
+  returnedQty: true,
+  returnedSilverWeight: true,
+  stoneWeight: true,
+} satisfies Prisma.ProductionStageEntrySelect;
+
 const shipmentInclude = {
   lines: {
     orderBy: { sortOrder: 'asc' },
@@ -97,6 +116,13 @@ const shipmentInclude = {
           sizeLabel: true,
           size: true,
           mainMaterial: true,
+          requestType: true,
+          customerCode: true,
+          customerName: true,
+          stoneCount: true,
+          stoneWeight: true,
+          stoneSkipped: true,
+          stages: { select: weightStageSelect },
           images: {
             where: { kind: ProductionImageKind.PRODUCT },
             select: { url: true },
@@ -159,6 +185,10 @@ export class FinishedGoodsService {
             mainMaterial: true,
             platingColor: true,
             trackingCode: true,
+            stoneCount: true,
+            stoneWeight: true,
+            stoneSkipped: true,
+            stages: { select: weightStageSelect },
             images: {
               where: { kind: ProductionImageKind.PRODUCT },
               select: { url: true },
@@ -245,6 +275,9 @@ export class FinishedGoodsService {
         receivedAt: receipt.receivedAt.toISOString(),
         receivedByName: receipt.receivedByName,
         unitCost: cost.unitCost,
+        netWeightPerUnit: decOrNull(
+          netGramPerUnit(receipt.order.stages, !skipsStone(receipt.order)),
+        ),
         stockValue: decStr(amount),
         costWarnings: cost.warnings.length,
         availability: availability.code,
@@ -981,6 +1014,9 @@ export class FinishedGoodsService {
           row.lines.reduce((sum, line) => sum.add(line.costAmount), zero),
         ),
         autoIssued: row.autoIssued,
+        pendingApproval: row.pendingApproval,
+        approvedAt: row.approvedAt?.toISOString() ?? null,
+        approvedByName: row.approvedByName,
         createdByName: row.createdByName,
         createdAt: row.createdAt.toISOString(),
         lines: row.lines.map((line) => ({
@@ -1019,6 +1055,7 @@ export class FinishedGoodsService {
               code: shipmentCode(seq),
               createdByUserId: actor.id,
               createdByName: changedBy,
+              pendingApproval: true,
               lines: { create: lines },
             },
             select: { id: true, code: true },
@@ -1045,6 +1082,11 @@ export class FinishedGoodsService {
     if (existing.autoIssued) {
       throw new BadRequestException(
         'Phiếu xuất do lên đơn tự tạo — sửa mã / số lượng trên đơn',
+      );
+    }
+    if (existing.approvedAt) {
+      throw new BadRequestException(
+        'Phiếu đã được kế toán xác nhận — không sửa được',
       );
     }
     const header = shipmentHeader(dto);
@@ -1101,8 +1143,53 @@ export class FinishedGoodsService {
     return { success: true };
   }
 
+  /**
+   * Mô tả luồng bước 23: kế toán xác nhận phiếu xuất — ghi nhận doanh thu, đơn được tính số đã
+   * giao (đủ thì Đã giao). Phiếu phải đủ các khoản như lúc in.
+   */
+  async approve(code: string, actor: AuthUserPayload) {
+    const existing = await this.requireShipment(code);
+    if (!existing.pendingApproval) {
+      throw new BadRequestException(
+        'Phiếu không ở trạng thái chờ kế toán xác nhận',
+      );
+    }
+    if (!shipmentPrintable(existing)) {
+      throw new BadRequestException(
+        'Nhập đủ trọng lượng, đơn giá NL, tiền công, tiền đá, chi phí khác cho mọi dòng rồi mới xác nhận',
+      );
+    }
+    const changedBy = actorName(actor);
+    await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.shipment.updateMany({
+        where: { id: existing.id, pendingApproval: true },
+        data: {
+          pendingApproval: false,
+          approvedAt: new Date(),
+          approvedByUserId: actor.id,
+          approvedByName: changedBy,
+        },
+      });
+      if (claimed.count !== 1) {
+        throw new ConflictException('Phiếu vừa được xác nhận — tải lại trang');
+      }
+      await this.syncOrders(
+        tx,
+        existing.lines.map((line) => line.orderId),
+        existing.code,
+        changedBy,
+      );
+    });
+    return this.shipment(existing.code);
+  }
+
   async markPrinted(code: string) {
     const existing = await this.requireShipment(code);
+    if (!shipmentPrintable(existing)) {
+      throw new BadRequestException(
+        'Nhập đủ trọng lượng, đơn giá NL, tiền công, tiền đá, chi phí khác cho mọi dòng rồi mới in',
+      );
+    }
     const updated = await this.prisma.shipment.update({
       where: { id: existing.id },
       data: { lastPrintedAt: new Date() },
@@ -1140,8 +1227,12 @@ export class FinishedGoodsService {
       select: {
         id: true,
         code: true,
+        stoneCount: true,
+        stoneWeight: true,
+        stoneSkipped: true,
         receipt: { select: { stockedQty: true } },
         shipmentLines: { select: { qty: true } },
+        stages: { select: weightStageSelect },
       },
     });
     const byCode = new Map(orders.map((order) => [order.code, order]));
@@ -1185,13 +1276,24 @@ export class FinishedGoodsService {
     return input.map((line, index) => {
       const orderCode = line.orderCode.trim().toUpperCase();
       const order = byCode.get(orderCode)!;
-      const unitPrice = new Prisma.Decimal(line.unitPrice);
+      const parts = {
+        weightGram:
+          gramOf(netGramPerUnit(order.stages, !skipsStone(order)), line.qty) ??
+          decimalOrNull(line.weightGram),
+        materialUnitPrice: decimalOrNull(line.materialUnitPrice),
+        laborAmount: decimalOrNull(line.laborAmount),
+        stoneAmount: decimalOrNull(line.stoneAmount),
+        otherAmount: decimalOrNull(line.otherAmount),
+      };
+      const amount = invoiceAmount(parts);
       const unitCost = unitCosts.get(orderCode)!;
       return {
         orderId: order.id,
         qty: line.qty,
-        unitPrice,
-        amount: unitPrice.mul(line.qty).toDecimalPlaces(2),
+        ...parts,
+        // Đơn giá giữ cho các bảng cũ (sổ xuất, danh sách) — suy ra từ thành tiền.
+        unitPrice: amount.div(line.qty).toDecimalPlaces(2),
+        amount,
         unitCost,
         costAmount: unitCost.mul(line.qty).toDecimalPlaces(2),
         note: line.note?.trim() || null,
@@ -1201,8 +1303,8 @@ export class FinishedGoodsService {
   }
 
   /**
-   * Cập nhật "Đã trả" = tổng đã xuất. Xuất đủ số lượng đơn thì Đã giao; bớt phiếu làm
-   * đơn không còn đủ thì trả về Hoàn thiện.
+   * Cập nhật "Đã trả" = tổng đã xuất trên các phiếu kế toán đã xác nhận. Đủ số lượng đơn thì Đã
+   * giao; bớt phiếu làm đơn không còn đủ thì trả về Hoàn thiện.
    */
   private async syncOrders(
     tx: Prisma.TransactionClient,
@@ -1219,7 +1321,11 @@ export class FinishedGoodsService {
           status: true,
           returnedQty: true,
           receipt: { select: { qty: true, stockedQty: true } },
-          shipmentLines: { select: { qty: true } },
+          // Phiếu chờ kế toán đã giữ hàng khỏi tồn nhưng chưa tính là đã giao.
+          shipmentLines: {
+            where: { shipment: { pendingApproval: false } },
+            select: { qty: true },
+          },
         },
       });
       if (!order) continue;
@@ -1264,6 +1370,15 @@ export class FinishedGoodsService {
   }
 }
 
+/** Phiếu lên đơn tự tạo là chuyển kho nội bộ, không phải hoá đơn khách — không đòi đủ khoản. */
+function shipmentPrintable(
+  row: Pick<ShipmentDetail, 'autoIssued'> & {
+    lines: Parameters<typeof invoiceComplete>[0][];
+  },
+) {
+  return row.autoIssued || row.lines.every(invoiceComplete);
+}
+
 function toShipment(row: ShipmentDetail) {
   const zero = new Prisma.Decimal(0);
   return {
@@ -1273,11 +1388,15 @@ function toShipment(row: ShipmentDetail) {
     paymentMethod: row.paymentMethod,
     note: row.note,
     autoIssued: row.autoIssued,
+    pendingApproval: row.pendingApproval,
+    approvedAt: row.approvedAt?.toISOString() ?? null,
+    approvedByName: row.approvedByName,
     createdByName: row.createdByName,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     lastPrintedAt: row.lastPrintedAt?.toISOString() ?? null,
     dataChangedAt: row.dataChangedAt.toISOString(),
+    printable: shipmentPrintable(row),
     lines: row.lines.map((line) => ({
       id: line.id,
       orderCode: line.order.code,
@@ -1285,8 +1404,19 @@ function toShipment(row: ShipmentDetail) {
       sizeLabel: line.order.sizeLabel,
       size: line.order.size,
       mainMaterial: line.order.mainMaterial,
+      requestType: line.order.requestType,
+      customerCode: line.order.customerCode,
+      orderCustomerName: line.order.customerName,
       imageUrl: line.order.images[0]?.url ?? null,
       qty: line.qty,
+      netWeightPerUnit: decOrNull(
+        netGramPerUnit(line.order.stages, !skipsStone(line.order)),
+      ),
+      weightGram: decOrNull(line.weightGram),
+      materialUnitPrice: decOrNull(line.materialUnitPrice),
+      laborAmount: decOrNull(line.laborAmount),
+      stoneAmount: decOrNull(line.stoneAmount),
+      otherAmount: decOrNull(line.otherAmount),
       unitPrice: decStr(line.unitPrice),
       amount: decStr(line.amount),
       unitCost: decStr(line.unitCost),
@@ -1337,4 +1467,8 @@ function isUniqueViolation(error: unknown) {
     error instanceof Prisma.PrismaClientKnownRequestError &&
     error.code === 'P2002'
   );
+}
+
+function decOrNull(value: Prisma.Decimal | null) {
+  return value != null ? decStr(value) : null;
 }

@@ -27,7 +27,12 @@ import {
 } from './dto/shipment.dto';
 import { FinishedGoodsService } from './finished-goods.service';
 
+/**
+ * Kho thành phẩm + phiếu xuất hàng (mô tả luồng bước 22–23): tài khoản thợ không vào được; nhập /
+ * sửa kho và lập phiếu xuất là việc của thủ kho, kế toán xác nhận phiếu xuất.
+ */
 @Controller('finished-goods')
+@BlockWorker()
 export class FinishedGoodsController {
   constructor(private readonly finishedGoods: FinishedGoodsService) {}
 
@@ -52,6 +57,7 @@ export class FinishedGoodsController {
   }
 
   @Post('receipts')
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
   createReceipt(
     @Body() dto: UpsertReceiptDto,
     @CurrentUser() user: AuthUserPayload,
@@ -61,7 +67,6 @@ export class FinishedGoodsController {
 
   // Mô tả luồng bước 22: thủ kho xác nhận nhập kho thành phẩm (U → V).
   @Post('receipts/:id/receive')
-  @BlockWorker()
   @RequirePermissions(Permission.WAREHOUSE_KEEPER)
   receiveReceipt(
     @Param('id', ParseUUIDPipe) id: string,
@@ -72,6 +77,7 @@ export class FinishedGoodsController {
   }
 
   @Patch('receipts/:id')
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
   updateReceipt(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpsertReceiptDto,
@@ -81,6 +87,7 @@ export class FinishedGoodsController {
   }
 
   @Delete('receipts/:id')
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
   deleteReceipt(@Param('id', ParseUUIDPipe) id: string) {
     return this.finishedGoods.deleteReceipt(id);
   }
@@ -101,11 +108,13 @@ export class FinishedGoodsController {
   }
 
   @Post('shipments')
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
   create(@Body() dto: UpsertShipmentDto, @CurrentUser() user: AuthUserPayload) {
     return this.finishedGoods.create(dto, user);
   }
 
   @Patch('shipments/:code')
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
   update(
     @Param('code') code: string,
     @Body() dto: UpsertShipmentDto,
@@ -121,7 +130,18 @@ export class FinishedGoodsController {
   }
 
   @Post('shipments/:code/printed')
+  @RequirePermissions(
+    Permission.WAREHOUSE_KEEPER,
+    Permission.ACCOUNTING_APPROVE,
+  )
   markPrinted(@Param('code') code: string) {
     return this.finishedGoods.markPrinted(code);
+  }
+
+  // Mô tả luồng bước 23: kế toán xác nhận phiếu xuất — đơn mới tính Đã giao.
+  @Post('shipments/:code/approve')
+  @RequirePermissions(Permission.ACCOUNTING_APPROVE)
+  approve(@Param('code') code: string, @CurrentUser() user: AuthUserPayload) {
+    return this.finishedGoods.approve(code, user);
   }
 }

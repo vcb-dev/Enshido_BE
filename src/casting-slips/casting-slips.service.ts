@@ -315,21 +315,24 @@ export class CastingSlipsService {
    * Bước 7b: đã in phiếu và cấp vật tư — thủ kho chụp ảnh phiếu đúc + vật tư kèm theo, ấn Lưu
    * → phiếu và mọi đơn trên phiếu sang Chờ đúc (F).
    */
-  async issue(id: string, dto: IssueCastingSlipDto) {
+  async issue(id: string, dto: IssueCastingSlipDto, actor: AuthUserPayload) {
     const images = this.normalizeImages(dto.images);
     if (images.length === 0) {
       throw new BadRequestException('Chụp ảnh phiếu đúc và vật tư kèm theo');
     }
+    const issuedBy = actorName(actor);
     await this.prisma.runTx(async (tx) => {
       const slip = await tx.castingSlip.findUnique({
         where: { id },
         select: {
+          code: true,
           waxWeightGram: true,
           orders: { select: { orderId: true } },
         },
       });
       if (!slip) throw new NotFoundException('Không tìm thấy phiếu đúc');
       const issued = resolveIssuedGrams(slip, dto);
+      const stockLines = issueStockLines(issued, dto);
       const claimed = await tx.castingSlip.updateMany({
         where: { id, status: CastingSlipStatus.PENDING_ISSUE },
         data: {
@@ -339,6 +342,18 @@ export class CastingSlipsService {
       });
       if (claimed.count !== 1) {
         throw new BadRequestException('Phiếu đúc đã cấp vật tư rồi');
+      }
+      // Bạc / hội cấp cho lần đúc ra khỏi kho NVL chính; phần cây còn lại nhập lại ở bước cắt cây.
+      const issuedAt = new Date();
+      for (const line of stockLines) {
+        await this.inventory.issueStockForCastingSlip(tx, {
+          castingSlipId: id,
+          materialId: line.materialId,
+          grams: line.grams,
+          issuedAt,
+          issuedBy,
+          note: `Cấp đúc phiếu ${slip.code} — ${line.label}`,
+        });
       }
       await tx.castingSlipImage.createMany({
         data: images.map((image) => ({
@@ -358,6 +373,7 @@ export class CastingSlipsService {
         );
       }
     });
+    this.inventory.bustNvlStock();
     return this.getById(id);
   }
 
@@ -1414,6 +1430,31 @@ function resolveIssuedGrams(
     issueMasterAlloyGram: estimate.masterAlloy,
     issueS925Gram: estimate.s925,
   };
+}
+
+const ISSUE_STOCK_LINES = [
+  ['issueS999Gram', 'issueS999MaterialId', 'Bạc S999'],
+  ['issueMasterAlloyGram', 'issueMasterAlloyMaterialId', 'Hội'],
+  ['issueS925Gram', 'issueS925MaterialId', 'Bạc S925'],
+] as const;
+
+/** Dòng xuất kho cho từng loại vật tư có số gram — dòng nào có gram thì phải chọn mã NVL. */
+function issueStockLines(
+  issued: ReturnType<typeof resolveIssuedGrams>,
+  dto: Pick<
+    IssueCastingSlipDto,
+    'issueS999MaterialId' | 'issueMasterAlloyMaterialId' | 'issueS925MaterialId'
+  >,
+) {
+  return ISSUE_STOCK_LINES.flatMap(([gramKey, materialKey, label]) => {
+    const grams = issued[gramKey];
+    if (grams == null || grams.lte(0)) return [];
+    const materialId = dto[materialKey];
+    if (!materialId) {
+      throw new BadRequestException(`Chọn mã NVL xuất cho ${label}`);
+    }
+    return [{ grams: grams.toDecimalPlaces(4), materialId, label }];
+  });
 }
 
 function issueTotal(row: {

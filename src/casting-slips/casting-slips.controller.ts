@@ -99,8 +99,9 @@ export class CastingSlipsController {
   issue(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: IssueCastingSlipDto,
+    @CurrentUser() user: AuthUserPayload,
   ) {
-    return this.slips.issue(id, dto);
+    return this.slips.issue(id, dto, user);
   }
 
   @Delete(':id')

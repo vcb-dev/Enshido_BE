@@ -401,6 +401,8 @@ model StockOutbound {
   /// Xuất chuyển sang kho khác — phiếu nhập đối ứng.
   destWarehouseId   String?  @map("dest_warehouse_id") @db.Uuid
   destInboundId     String?  @unique @map("dest_inbound_id") @db.Uuid
+  /// Phiếu đúc cấp bạc / hội (bước 7) — xuất kho NVL chính, chưa chia vào giá vốn đơn.
+  castingSlipId     String?  @map("casting_slip_id") @db.Uuid
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
 
@@ -413,6 +415,7 @@ model StockOutbound {
   materialRequest ProductionMaterialRequest?
   /// Phiếu xuất nháp (đá Vào đá) đã chuyển thành phiếu này lúc thủ kho xác nhận.
   fromDraft       StockOutboundDraft?
+  castingSlip     CastingSlip?               @relation(fields: [castingSlipId], references: [id], onDelete: SetNull)
 
   @@unique([warehouseId, sortOrder])
   @@index([warehouseId, issuedAt])
@@ -420,6 +423,7 @@ model StockOutbound {
   @@index([warehouseId, materialId, applyToStock], map: "stock_outbounds_wh_mat_apply_idx")
   @@index([materialId], map: "stock_outbounds_material_id_idx")
   @@index([productionOrderId])
+  @@index([castingSlipId])
   @@map("stock_outbounds")
 }
 
@@ -1183,27 +1187,41 @@ model Shipment {
   /// Phiếu xuất tự tạo khi lên Đơn mới (lấy thành phẩm có sẵn).
   autoIssued       Boolean   @default(false) @map("auto_issued")
   createdByOrderId String?   @map("created_by_order_id") @db.Uuid
+  /// Mô tả luồng bước 23: thủ kho lập phiếu thì chờ kế toán xác nhận — hàng đã ra khỏi tồn nhưng
+  /// đơn chưa tính Đã giao. Phiếu lập trước khi có bước này và phiếu tự tạo khi lên đơn là false.
+  pendingApproval  Boolean   @default(false) @map("pending_approval")
+  approvedAt       DateTime? @map("approved_at")
+  approvedByUserId String?   @map("approved_by_user_id") @db.Uuid
+  approvedByName   String?   @map("approved_by_name")
 
   lines          ShipmentLine[]
   createdByOrder ProductionOrder? @relation("OrderAutoShipment", fields: [createdByOrderId], references: [id], onDelete: SetNull)
 
   @@index([shippedAt])
   @@index([createdByOrderId])
+  @@index([pendingApproval])
   @@map("shipments")
 }
 
 /// Một dòng hàng trên phiếu xuất. Chi phí được chụp lại lúc lập / sửa phiếu.
 model ShipmentLine {
-  id         String  @id @default(uuid()) @db.Uuid
-  shipmentId String  @map("shipment_id") @db.Uuid
-  orderId    String  @map("order_id") @db.Uuid
-  qty        Int
-  unitPrice  Decimal @map("unit_price") @db.Decimal(18, 2)
-  amount     Decimal @db.Decimal(18, 2)
-  unitCost   Decimal @map("unit_cost") @db.Decimal(18, 2)
-  costAmount Decimal @map("cost_amount") @db.Decimal(18, 2)
-  note       String?
-  sortOrder  Int     @default(0) @map("sort_order")
+  id                String   @id @default(uuid()) @db.Uuid
+  shipmentId        String   @map("shipment_id") @db.Uuid
+  orderId           String   @map("order_id") @db.Uuid
+  qty               Int
+  unitPrice         Decimal  @map("unit_price") @db.Decimal(18, 2)
+  amount            Decimal  @db.Decimal(18, 2)
+  unitCost          Decimal  @map("unit_cost") @db.Decimal(18, 2)
+  costAmount        Decimal  @map("cost_amount") @db.Decimal(18, 2)
+  /// TL tính tiền (g) = (TL sau Xi − TL đá) × 0,95 theo SL dòng; đơn giá NL tính theo gram. Đơn không có TL Xi thì người lập nhập tay.
+  weightGram        Decimal? @map("weight_gram") @db.Decimal(18, 2)
+  /// Bốn khoản người lập tự nhập; đủ cả bốn (và TL) mới cho in. Thành tiền = TL × đơn giá NL + công + đá + khác.
+  materialUnitPrice Decimal? @map("material_unit_price") @db.Decimal(18, 2)
+  laborAmount       Decimal? @map("labor_amount") @db.Decimal(18, 2)
+  stoneAmount       Decimal? @map("stone_amount") @db.Decimal(18, 2)
+  otherAmount       Decimal? @map("other_amount") @db.Decimal(18, 2)
+  note              String?
+  sortOrder         Int      @default(0) @map("sort_order")
 
   shipment Shipment        @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
   order    ProductionOrder @relation(fields: [orderId], references: [id], onDelete: Restrict)
@@ -1351,11 +1369,13 @@ model CastingSlip {
   createdAt               DateTime          @default(now()) @map("created_at")
   updatedAt               DateTime          @updatedAt @map("updated_at")
 
-  orders CastingSlipOrder[]
-  images CastingSlipImage[]
+  orders         CastingSlipOrder[]
+  images         CastingSlipImage[]
+  /// Phiếu xuất NVL bạc S999 / hội / S925 lúc cấp vật tư.
+  issueOutbounds StockOutbound[]
   /// Phiếu làm lại sinh từ phiếu đúc lỗi (mọi phiếu làm lại trỏ thẳng phiếu gốc).
-  redoOf CastingSlip?       @relation("CastingSlipRedo", fields: [redoOfSlipId], references: [id], onDelete: SetNull)
-  redos  CastingSlip[]      @relation("CastingSlipRedo")
+  redoOf         CastingSlip?       @relation("CastingSlipRedo", fields: [redoOfSlipId], references: [id], onDelete: SetNull)
+  redos          CastingSlip[]      @relation("CastingSlipRedo")
 
   @@index([slipDate])
   @@index([status])
