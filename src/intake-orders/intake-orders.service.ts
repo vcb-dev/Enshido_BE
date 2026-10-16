@@ -263,7 +263,7 @@ export class IntakeOrdersService {
 
   async create(dto: UpsertIntakeOrderDto, actor: AuthUserPayload) {
     const data = this.fields(dto);
-    const placedBy = actor.fullName?.trim() || actor.username;
+    const actorName = actor.fullName?.trim() || actor.username;
     const images = this.newImages(dto.images, new Set());
 
     for (let attempt = 1; ; attempt += 1) {
@@ -282,8 +282,8 @@ export class IntakeOrdersService {
               sxCode: randomSxCode(),
               source: ProductionSource.NVL,
               customerName: INTAKE_CUSTOMER_NAME,
-              closedBy: placedBy,
-              createdBy: placedBy,
+              // createdBy giữ người thao tác thật để truy vết; closedBy là người đặt đơn sửa được trên form.
+              createdBy: actorName,
               createdByUserId: actor.id,
               status: ProductionStatus.PENDING_APPROVAL,
               images: { create: images },
@@ -783,6 +783,8 @@ export class IntakeOrdersService {
       qty: dto.qty,
       trackingCode: dto.trackingCode?.trim() || null,
       customerCode: dto.customerCode?.trim() || null,
+      // Người đặt đơn nhập tay trên form, không nhất thiết là người đang đăng nhập.
+      closedBy: dto.placedBy.trim(),
       description: dto.description.trim(),
       receivedDate: createdDate,
       dueDate,
