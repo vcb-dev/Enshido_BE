@@ -55,6 +55,12 @@ export const ACTIVITY = {
   /** Thủ kho đánh dấu / bỏ đánh dấu đơn không có đá (bỏ khâu Vào đá). */
   STONE_SKIP: 'STONE_SKIP',
   STONE_UNSKIP: 'STONE_UNSKIP',
+  /** Thợ 3D gắn file 3D (đơn không khuôn) — báo cáo hiệu suất thợ 3D. */
+  MODEL3D_DONE: 'MODEL3D_DONE',
+  /** In sáp resin (thợ 3D) hoặc bơm sáp (thợ sáp) xong, đã báo số liệu. */
+  WAX_DONE: 'WAX_DONE',
+  /** Thợ sáp gắn cây sáp, báo TL cây thông. */
+  WAX_TREE_DONE: 'WAX_TREE_DONE',
 } as const;
 
 export type ActivityAction = (typeof ACTIVITY)[keyof typeof ACTIVITY];
