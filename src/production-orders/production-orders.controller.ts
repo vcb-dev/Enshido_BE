@@ -29,8 +29,8 @@ import {
   SkipStoneDto,
   StageDefectDto,
   ListProductionOrdersQuery,
-  OrderSummaryQuery,
   OpenOrderStageDto,
+  WorkerPerformanceQuery,
   AssignOrderDto,
   OrderCostDto,
   OrderOptionsQuery,
@@ -49,6 +49,7 @@ import {
 import { ProductionCostingService } from './production-costing.service';
 import { ProductionMaterialRequestsService } from './production-material-requests.service';
 import { ProductionOrdersService } from './production-orders.service';
+import { ProductionOverviewService } from './production-overview.service';
 import { HideLaborCostInterceptor } from './hide-labor-cost.interceptor';
 import { ProductionSubTicketsService } from './production-sub-tickets.service';
 
@@ -60,6 +61,7 @@ export class ProductionOrdersController {
     private readonly costing: ProductionCostingService,
     private readonly subTickets: ProductionSubTicketsService,
     private readonly materials: ProductionMaterialRequestsService,
+    private readonly overviewService: ProductionOverviewService,
   ) {}
 
   /** Hàng chờ xuất NVL của kho — yêu cầu thợ xin trong lúc làm khâu. */
@@ -140,11 +142,20 @@ export class ProductionOrdersController {
     return this.orders.listStatusCounts(query);
   }
 
-  /** Màn Tổng quan: bao nhiêu đơn đã tạo / hoàn thành / chưa hoàn thành. */
-  @Get('summary')
+  /** Màn Tổng quan sản xuất: KPI, hàng theo công đoạn, thành phẩm 7 ngày, vật tư, phiếu cần theo dõi. */
+  @Get('overview')
   @BlockWorker()
-  summary(@Query() query: OrderSummaryQuery) {
-    return this.orders.orderSummary(query);
+  @RequirePermissions(Permission.SCREEN_DASHBOARD)
+  overview() {
+    return this.overviewService.overview();
+  }
+
+  /** Màn Tổng quan, tab Hiệu suất thợ: số đơn / sản phẩm mỗi thợ làm xong ở từng khâu. */
+  @Get('worker-performance')
+  @BlockWorker()
+  @RequirePermissions(Permission.SCREEN_DASHBOARD)
+  workerPerformance(@Query() query: WorkerPerformanceQuery) {
+    return this.overviewService.workerPerformance(query);
   }
 
   @Get('options')
