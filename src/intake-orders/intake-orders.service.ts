@@ -811,7 +811,9 @@ export class IntakeOrdersService {
     const dueDate = dto.dueDate
       ? parseDate(dto.dueDate, 'Thời gian trả hàng')
       : null;
-    // Ngày trả được trước ngày tạo / ở quá khứ — để nhập bù đơn cũ.
+    if (dueDate && dueDate < createdDate) {
+      throw new BadRequestException('Ngày trả hàng không được trước ngày tạo');
+    }
     return {
       requestType: dto.requestType,
       productName: dto.productName.trim(),

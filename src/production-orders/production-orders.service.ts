@@ -2458,6 +2458,9 @@ export class ProductionOrdersService {
     const receivedDate = dateOnly(dto.receivedDate);
     if (!dto.dueDate) throw new BadRequestException('Nhập ngày cần trả');
     const dueDate = dateOnly(dto.dueDate);
+    if (!selfId && dueDate < dateOnly(todayYmdVn())) {
+      throw new BadRequestException('Ngày cần trả không được ở quá khứ');
+    }
     if (dueDate < receivedDate) {
       throw new BadRequestException(
         'Ngày cần trả không được trước ngày đặt đơn',
@@ -3079,6 +3082,11 @@ function uniqueSorted(values: string[]) {
 
 function dateOnly(value: string) {
   return new Date(`${value.slice(0, 10)}T00:00:00.000Z`);
+}
+
+function todayYmdVn() {
+  const vn = new Date(Date.now() + 7 * 60 * 60 * 1000);
+  return vn.toISOString().slice(0, 10);
 }
 
 function isUniqueViolation(error: unknown) {
