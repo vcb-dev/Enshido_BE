@@ -315,7 +315,7 @@ export class IntakeOrdersService {
       );
     }
 
-    const { receivedDate: _created, ...data } = this.fields(dto);
+    const data = this.fields(dto);
     const existing = new Set(order.images.map((image) => image.publicId));
     const images = this.newImages(dto.images, existing);
     const kept = new Set(images.map((image) => image.publicId));
