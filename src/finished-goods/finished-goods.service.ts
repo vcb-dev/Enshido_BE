@@ -181,6 +181,7 @@ export class FinishedGoodsService {
             code: true,
             intakeCode: true,
             sxCode: true,
+            customerCode: true,
             model3dCode: true,
             description: true,
             requestType: true,
@@ -258,6 +259,7 @@ export class FinishedGoodsService {
         model3dCode: receipt.order.model3dCode?.trim() || null,
         intakeCode: receipt.order.intakeCode,
         sxCode: receipt.order.sxCode,
+        customerCode: receipt.order.customerCode,
         description: receipt.order.description,
         requestType: receipt.order.requestType,
         qtyUnit: receipt.order.qtyUnit,
@@ -1303,6 +1305,7 @@ export class FinishedGoodsService {
         unitCost,
         costAmount: unitCost.mul(line.qty).toDecimalPlaces(2),
         note: line.note?.trim() || null,
+        customerCode: line.customerCode?.trim() || null,
         sortOrder: index,
       };
     });
@@ -1411,7 +1414,8 @@ function toShipment(row: ShipmentDetail) {
       size: line.order.size,
       mainMaterial: line.order.mainMaterial,
       requestType: line.order.requestType,
-      customerCode: line.order.customerCode,
+      // Mã người lập nhập trên dòng phiếu, chưa nhập thì lấy mã của khách trên đơn.
+      customerCode: line.customerCode ?? line.order.customerCode,
       orderCustomerName: line.order.customerName,
       imageUrl: line.order.images[0]?.url ?? null,
       qty: line.qty,

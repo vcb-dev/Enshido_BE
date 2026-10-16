@@ -2401,6 +2401,7 @@ export class ProductionSubTicketsService {
           productName: order.productName,
           qty: defectQty,
           trackingCode: order.trackingCode,
+          customerCode: order.customerCode,
           model3dCode: order.model3dCode,
           closedBy: actorName(actor),
           createdBy: actorName(actor),
