@@ -102,3 +102,25 @@ export async function nextIntakeSeq(tx: Prisma.TransactionClient) {
   });
   return (last?.intakeSeq ?? 0) + 1;
 }
+
+/**
+ * Tên mã BTP tự sinh trong kho BTP: tiền tố khâu + tên sản phẩm + mã đơn hàng (DH…) + mã sản phẩm,
+ * vd "Phôi nhẫn cá heo - DH006 - V-233345". Tên là khoá gom tồn (`ensureNamedMaterial`), nên đơn bù
+ * dùng chung mã DH với đơn gốc vẫn vào cùng mã BTP. Thiếu tên sản phẩm thì dùng mã SX.
+ */
+export function btpMaterialName(
+  prefix: string,
+  order: {
+    code: string;
+    productName?: string | null;
+    intakeCode?: string | null;
+    trackingCode?: string | null;
+  },
+) {
+  const parts = [
+    order.productName?.trim() || order.code,
+    order.intakeCode?.trim(),
+    order.trackingCode?.trim(),
+  ].filter(Boolean);
+  return `${prefix} ${parts.join(' - ')}`;
+}

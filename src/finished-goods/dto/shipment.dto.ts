@@ -65,6 +65,12 @@ export class ShipmentLineDto {
   @IsString()
   @MaxLength(500)
   note?: string;
+
+  /** Mã của khách in trên phiếu; bỏ trống thì lấy mã của khách trên đơn. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  customerCode?: string;
 }
 
 export class UpsertShipmentDto {
