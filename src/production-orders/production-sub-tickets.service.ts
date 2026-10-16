@@ -26,7 +26,12 @@ import type { AuthUserPayload } from '../auth/types';
 import { dbTable } from '../prisma/database-url';
 import { poolAll } from '../prisma/pool-all';
 import { InventoryService } from '../inventory/inventory.service';
-import { nextOrderSeq, orderCode, randomSxCode } from './intake-order';
+import {
+  btpMaterialName,
+  nextOrderSeq,
+  orderCode,
+  randomSxCode,
+} from './intake-order';
 import { PrismaService } from '../prisma/prisma.service';
 import { decStr } from '../util/money';
 import {
@@ -1977,7 +1982,7 @@ export class ProductionSubTicketsService {
       if (goodQty > 0 && goodWeight && goodWeight.gt(0)) {
         outputMaterialId = await this.inventory.ensureNamedMaterial(tx, {
           warehouseCode: BTP_WAREHOUSE,
-          name: `BTP đã ${stageName.toLowerCase()} ${order.code}`,
+          name: btpMaterialName(`BTP đã ${stageName.toLowerCase()}`, order),
           unitCode: 'chiec',
         });
         inboundIds.push(
