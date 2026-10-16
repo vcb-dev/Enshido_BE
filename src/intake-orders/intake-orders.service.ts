@@ -18,11 +18,6 @@ import {
   ProductionStatus,
 } from '@prisma/client';
 import type { AuthUserPayload } from '../auth/types';
-import {
-  ACTIVITY,
-  activity,
-  logActivity,
-} from '../production-orders/activity-log';
 import { recordEditLog } from '../edit-logs/edit-log';
 import { PrismaService } from '../prisma/prisma.service';
 import { CloudinaryService } from '../uploads/cloudinary.service';
@@ -433,7 +428,7 @@ export class IntakeOrdersService {
   async attachModel3d(
     id: string,
     dto: IntakeModel3dDto,
-    actor: AuthUserPayload,
+    _actor: AuthUserPayload,
   ) {
     const order = await this.prisma.productionOrder.findUnique({
       where: { id },
@@ -453,11 +448,6 @@ export class IntakeOrdersService {
           model3dUrl,
           ...stoneData(dto),
           status: ProductionStatus.READY_FOR_PRODUCTION,
-          activityLogs: {
-            create: activity(actor, ACTIVITY.MODEL3D_DONE, {
-              orderCode: order.intakeCode ?? order.code,
-            }),
-          },
         },
       });
       return tx.productionOrder.findUniqueOrThrow({
@@ -533,11 +523,6 @@ export class IntakeOrdersService {
             : {}),
           ...stoneData(dto),
           images: { deleteMany: {}, create: merged },
-          activityLogs: {
-            create: activity(actor, ACTIVITY.WAX_DONE, {
-              orderCode: order.intakeCode ?? order.code,
-            }),
-          },
         },
       });
       return tx.productionOrder.findUniqueOrThrow({
@@ -555,10 +540,7 @@ export class IntakeOrdersService {
    * Bước 4: thợ 3D in sáp nhiều đơn một lần, chụp ảnh cả khay rồi điền cân nặng từng đơn.
    * Chỉ đơn không khuôn ở C; ảnh khay gắn vào mọi đơn trong lượt in.
    */
-  async submitWaxPrintBatch(
-    dto: IntakeWaxPrintBatchDto,
-    actor: AuthUserPayload,
-  ) {
+  async submitWaxPrintBatch(dto: IntakeWaxPrintBatchDto) {
     const ids = dto.items.map((item) => item.id);
     if (new Set(ids).size !== ids.length) {
       throw new BadRequestException('Một đơn chỉ nhập một lần trong lượt in');
@@ -599,9 +581,6 @@ export class IntakeOrdersService {
             `Đơn ${order.intakeCode ?? order.code} vừa được cập nhật — tải lại danh sách`,
           );
         }
-        await logActivity(tx, order.id, actor, ACTIVITY.WAX_DONE, {
-          orderCode: order.intakeCode ?? order.code,
-        });
         const start = order.images.filter(
           (image) => image.kind === ProductionImageKind.PRODUCT,
         ).length;
@@ -622,7 +601,7 @@ export class IntakeOrdersService {
    * Bước 4: thợ 3D in sáp nhiều đơn một lần, chụp ảnh cả khay rồi tách cân nặng từng đơn.
    * Ảnh khay gắn chung cho mọi đơn trong lượt; các đơn sang Đã in sáp (D).
    */
-  async waxPrintBatch(dto: WaxPrintBatchDto, actor: AuthUserPayload) {
+  async waxPrintBatch(dto: WaxPrintBatchDto) {
     const ids = dto.items.map((item) => item.id);
     if (new Set(ids).size !== ids.length) {
       throw new BadRequestException('Một đơn chỉ nhập một lần trong lượt in');
@@ -669,9 +648,6 @@ export class IntakeOrdersService {
             `Đơn ${order.intakeCode ?? order.code} vừa được cập nhật — tải lại danh sách`,
           );
         }
-        await logActivity(tx, order.id, actor, ACTIVITY.WAX_DONE, {
-          orderCode: order.intakeCode ?? order.code,
-        });
         if (added.length) {
           await tx.productionOrderImage.createMany({
             data: added.map((image, index) => ({
@@ -740,7 +716,7 @@ export class IntakeOrdersService {
   async submitCastingTreeSpecs(
     id: string,
     dto: IntakeCastingTreeSpecsDto,
-    actor: AuthUserPayload,
+    _actor: AuthUserPayload,
   ) {
     const order = await this.prisma.productionOrder.findUnique({
       where: { id },
@@ -774,11 +750,6 @@ export class IntakeOrdersService {
           status: ProductionStatus.PENDING_WAREHOUSE_CONFIRMATION,
           castingTreeWeightGram: dto.castingTreeWeightGram,
           images: { deleteMany: {}, create: merged },
-          activityLogs: {
-            create: activity(actor, ACTIVITY.WAX_TREE_DONE, {
-              orderCode: order.intakeCode ?? order.code,
-            }),
-          },
         },
       });
       return tx.productionOrder.findUniqueOrThrow({

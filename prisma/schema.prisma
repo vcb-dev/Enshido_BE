@@ -1232,8 +1232,6 @@ model ShipmentLine {
   stoneAmount       Decimal? @map("stone_amount") @db.Decimal(18, 2)
   otherAmount       Decimal? @map("other_amount") @db.Decimal(18, 2)
   note              String?
-  /// Mã của khách in trên phiếu — người lập nhập / sửa; trống thì lấy mã của khách trên đơn.
-  customerCode      String?  @map("customer_code")
   sortOrder         Int      @default(0) @map("sort_order")
 
   shipment Shipment        @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
