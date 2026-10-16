@@ -10,6 +10,7 @@ import {
   Post,
   Put,
   Query,
+  UseInterceptors,
 } from '@nestjs/common';
 import { RoleCode, SubTicketOutcome } from '@prisma/client';
 import {
@@ -28,6 +29,7 @@ import {
   SkipStoneDto,
   StageDefectDto,
   ListProductionOrdersQuery,
+  OrderSummaryQuery,
   OpenOrderStageDto,
   AssignOrderDto,
   OrderCostDto,
@@ -47,9 +49,11 @@ import {
 import { ProductionCostingService } from './production-costing.service';
 import { ProductionMaterialRequestsService } from './production-material-requests.service';
 import { ProductionOrdersService } from './production-orders.service';
+import { HideLaborCostInterceptor } from './hide-labor-cost.interceptor';
 import { ProductionSubTicketsService } from './production-sub-tickets.service';
 
 @Controller('production-orders')
+@UseInterceptors(HideLaborCostInterceptor)
 export class ProductionOrdersController {
   constructor(
     private readonly orders: ProductionOrdersService,
@@ -136,6 +140,13 @@ export class ProductionOrdersController {
     return this.orders.listStatusCounts(query);
   }
 
+  /** Màn Tổng quan: bao nhiêu đơn đã tạo / hoàn thành / chưa hoàn thành. */
+  @Get('summary')
+  @BlockWorker()
+  summary(@Query() query: OrderSummaryQuery) {
+    return this.orders.orderSummary(query);
+  }
+
   @Get('options')
   options(@Query() query: OrderOptionsQuery) {
     return this.orders.options(query.search);
@@ -174,18 +185,29 @@ export class ProductionOrdersController {
 
   @Get(':code/costing')
   @BlockWorker()
+  @RequirePermissions(
+    Permission.WAREHOUSE_KEEPER,
+    Permission.ACCOUNTING_APPROVE,
+  )
   costingOf(@Param('code') code: string) {
     return this.costing.costingByCode(code);
   }
 
   /** Chi tiết đơn xem từ mã phiếu con — đường dành cho trang phiếu con và thợ. */
   @Get('tickets/:ticketCode')
-  ticketDetail(@Param('ticketCode') ticketCode: string) {
-    return this.subTickets.detailByTicket(ticketCode);
+  ticketDetail(
+    @Param('ticketCode') ticketCode: string,
+    @CurrentUser() user: AuthUserPayload,
+  ) {
+    return this.subTickets.detailByTicket(ticketCode, user);
   }
 
   @Post(':code/costs')
   @BlockWorker()
+  @RequirePermissions(
+    Permission.WAREHOUSE_KEEPER,
+    Permission.ACCOUNTING_APPROVE,
+  )
   addCost(
     @Param('code') code: string,
     @Body() dto: OrderCostDto,
@@ -196,6 +218,10 @@ export class ProductionOrdersController {
 
   @Patch(':code/costs/:costId')
   @BlockWorker()
+  @RequirePermissions(
+    Permission.WAREHOUSE_KEEPER,
+    Permission.ACCOUNTING_APPROVE,
+  )
   updateCost(
     @Param('code') code: string,
     @Param('costId', ParseUUIDPipe) costId: string,
@@ -207,6 +233,10 @@ export class ProductionOrdersController {
 
   @Patch(':code/stages/:stageId/labor')
   @BlockWorker()
+  @RequirePermissions(
+    Permission.WAREHOUSE_KEEPER,
+    Permission.ACCOUNTING_APPROVE,
+  )
   updateStageLabor(
     @Param('code') code: string,
     @Param('stageId', ParseUUIDPipe) stageId: string,
@@ -218,6 +248,10 @@ export class ProductionOrdersController {
 
   @Delete(':code/costs/:costId')
   @BlockWorker()
+  @RequirePermissions(
+    Permission.WAREHOUSE_KEEPER,
+    Permission.ACCOUNTING_APPROVE,
+  )
   removeCost(
     @Param('code') code: string,
     @Param('costId', ParseUUIDPipe) costId: string,
@@ -228,8 +262,8 @@ export class ProductionOrdersController {
 
   /** Thông tin đơn chỉ-đọc cho thợ quét QR trên phiếu giấy đã in. */
   @Get(':code/reference')
-  reference(@Param('code') code: string) {
-    return this.orders.reference(code);
+  reference(@Param('code') code: string, @CurrentUser() user: AuthUserPayload) {
+    return this.orders.reference(code, user);
   }
 
   @Get(':code/activity')
@@ -246,6 +280,7 @@ export class ProductionOrdersController {
 
   @Post()
   @BlockWorker()
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
   create(
     @Body() dto: UpsertProductionOrderDto,
     @CurrentUser() user: AuthUserPayload,
@@ -255,6 +290,7 @@ export class ProductionOrdersController {
 
   @Patch(':code')
   @BlockWorker()
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
   update(
     @Param('code') code: string,
     @Body() dto: UpsertProductionOrderDto,
@@ -271,6 +307,7 @@ export class ProductionOrdersController {
 
   @Patch(':code/status')
   @BlockWorker()
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER, Permission.PRODUCTION_QC)
   changeStatus(
     @Param('code') code: string,
     @Body() dto: ChangeStatusDto,
@@ -281,6 +318,7 @@ export class ProductionOrdersController {
 
   @Patch(':code/casting')
   @BlockWorker()
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER, Permission.PRODUCTION_CAST)
   updateCasting(
     @Param('code') code: string,
     @Body() dto: CastingDto,
@@ -549,6 +587,7 @@ export class ProductionOrdersController {
   }
 
   @Delete(':code/sub-tickets/:no/pending')
+  @BlockWorker()
   cancelSubTicketPending(
     @Param('code') code: string,
     @Param('no', ParseIntPipe) no: number,

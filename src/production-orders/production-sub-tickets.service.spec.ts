@@ -589,6 +589,26 @@ describe('phiếu mẹ: giao → nhận hàng → xuất kho → nộp QC', () =
     },
   );
 
+  it.each([
+    ['người ngoài', actor('outsider')],
+    ['thợ được chỉ định', worker],
+  ])('%s không huỷ được lượt giao phiếu con', async (_label, by) => {
+    const { service, order, tx } = setup(
+      makeOrder({
+        subTickets: [
+          makeTicket(1, 10, {
+            pendingStage: 'FILING',
+            claimedByUserId: worker.id,
+          }),
+        ],
+      }),
+    );
+    await expect(
+      service.cancelPending(order.code, 1, by),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(tx.productionSubTicket.update).not.toHaveBeenCalled();
+  });
+
   it('lỗi xuất kho được trả về và không phát thông báo cache đã đổi', async () => {
     const { service, order, materials } = setup();
     await service.assignOrder(order.code, assignment, manager);

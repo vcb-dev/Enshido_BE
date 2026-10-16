@@ -40,3 +40,36 @@ describe('production list handoff', () => {
     expect(where.AND).not.toContainEqual({ cutAt: null });
   });
 });
+
+describe('khách VCB sửa đơn', () => {
+  const vcb = {
+    id: 'vcb',
+    username: 'vcb',
+    email: null,
+    fullName: 'VCB',
+    roleCode: 'USER' as const,
+    extraRoles: [],
+    allowedScreens: ['screen.intake-orders', 'intake.create', 'customer'],
+    department: null,
+  };
+
+  it.each(['APPROVED', 'REJECTED'])(
+    'đơn đã qua chờ duyệt (%s) thì khách không sửa được',
+    async (status) => {
+      const productionOrder = {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ id: 'o1', status, cutAt: null, images: [] }),
+        update: jest.fn(),
+      };
+      const service = new IntakeOrdersService(
+        { productionOrder } as unknown as PrismaService,
+        {} as CloudinaryService,
+      );
+      await expect(service.update('o1', {} as never, vcb)).rejects.toThrow(
+        'Chỉ sửa được đơn đang chờ duyệt',
+      );
+      expect(productionOrder.update).not.toHaveBeenCalled();
+    },
+  );
+});

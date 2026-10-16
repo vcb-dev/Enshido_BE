@@ -44,6 +44,19 @@ export const ORDER_SORT_KEYS = [
   'closedBy',
 ] as const;
 
+/** Báo cáo số đơn ở màn Tổng quan — lọc theo lúc tạo đơn, mốc giờ do FE tính theo giờ máy. */
+export class OrderSummaryQuery {
+  @IsOptional()
+  @Transform(emptyToNull)
+  @IsDateString()
+  from?: string;
+
+  @IsOptional()
+  @Transform(emptyToNull)
+  @IsDateString()
+  to?: string;
+}
+
 export class ListProductionOrdersQuery {
   @IsOptional()
   @Transform(({ value }) => value === true || value === 'true')

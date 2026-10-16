@@ -166,6 +166,8 @@ export class FinishedGoodsService {
                   { code: { contains: keyword, mode: 'insensitive' } },
                   { description: { contains: keyword, mode: 'insensitive' } },
                   { model3dCode: { contains: keyword, mode: 'insensitive' } },
+                  { sxCode: { contains: keyword, mode: 'insensitive' } },
+                  { intakeCode: { contains: keyword, mode: 'insensitive' } },
                 ],
               },
             }
@@ -177,6 +179,8 @@ export class FinishedGoodsService {
           select: {
             id: true,
             code: true,
+            intakeCode: true,
+            sxCode: true,
             model3dCode: true,
             description: true,
             requestType: true,
@@ -252,6 +256,8 @@ export class FinishedGoodsService {
         id: receipt.id,
         orderCode: receipt.order.code,
         model3dCode: receipt.order.model3dCode?.trim() || null,
+        intakeCode: receipt.order.intakeCode,
+        sxCode: receipt.order.sxCode,
         description: receipt.order.description,
         requestType: receipt.order.requestType,
         qtyUnit: receipt.order.qtyUnit,

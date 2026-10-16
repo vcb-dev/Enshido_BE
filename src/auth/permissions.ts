@@ -35,6 +35,11 @@ export const Permission = {
   PRODUCTION_QC: 'production.qc',
   /** Bước 23: kế toán xác nhận phiếu xuất hàng (ghi nhận doanh thu, đơn sang Đã giao). */
   ACCOUNTING_APPROVE: 'accounting.approve',
+  /**
+   * Đánh dấu tài khoản khách (VCB) — không mở thêm gì, mà khoá tài khoản lại: chỉ gọi được
+   * endpoint gắn `@AllowCustomer()` (tạo / xem / sửa đơn).
+   */
+  CUSTOMER: 'customer',
 } as const;
 
 export type PermissionCode = (typeof Permission)[keyof typeof Permission];
@@ -169,6 +174,19 @@ export function isWorkerOnly(
     return false;
   }
   return true;
+}
+
+/**
+ * Tài khoản khách ngoài xưởng (VCB): chỉ lên đơn, xem và sửa đơn. Đọc thẳng `allowedScreens`
+ * vì admin có mọi quyền, kể cả mã đánh dấu này — admin không bao giờ là khách.
+ */
+export function isCustomerOnly(
+  roleCode: RoleCode,
+  extraRoles: readonly RoleCode[] = [],
+  allowedScreens: readonly string[] = [],
+): boolean {
+  if (userHasRole(roleCode, extraRoles, RoleCode.ADMIN)) return false;
+  return allowedScreens.includes(Permission.CUSTOMER);
 }
 
 /** Thợ 3D — chỉ các bước trước / in sáp, không phải quản lý văn phòng. */

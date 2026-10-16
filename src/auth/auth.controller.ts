@@ -11,7 +11,7 @@ import type { Request, Response } from 'express';
 import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
-import { CurrentUser, Public } from './decorators';
+import { AllowCustomer, CurrentUser, Public } from './decorators';
 import { CookieAuthService } from '../cookie/cookie-auth.service';
 import { COOKIE_REFRESH } from '../cookie/cookie.constants';
 import type { AuthUserPayload } from './types';
@@ -64,6 +64,7 @@ export class AuthController {
   }
 
   @Get('me')
+  @AllowCustomer()
   me(@CurrentUser() user: AuthUserPayload, @Req() req: Request) {
     return {
       user: this.authService.meFromPayload(user),

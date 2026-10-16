@@ -10,6 +10,7 @@ import {
   Query,
 } from '@nestjs/common';
 import {
+  AllowCustomer,
   BlockWorker,
   CurrentUser,
   RequirePermissions,
@@ -37,6 +38,7 @@ export class IntakeOrdersController {
 
   @Get()
   @BlockWorker()
+  @AllowCustomer()
   list(@Query() query: ListIntakeOrdersQuery) {
     return this.orders.list(query);
   }
@@ -55,6 +57,7 @@ export class IntakeOrdersController {
 
   @Post()
   @BlockWorker()
+  @AllowCustomer()
   @RequirePermissions(Permission.INTAKE_CREATE)
   create(
     @Body() dto: UpsertIntakeOrderDto,
@@ -147,6 +150,7 @@ export class IntakeOrdersController {
 
   @Patch(':id')
   @BlockWorker()
+  @AllowCustomer()
   @RequirePermissions(Permission.INTAKE_CREATE, Permission.INTAKE_APPROVE)
   update(
     @Param('id', ParseUUIDPipe) id: string,
