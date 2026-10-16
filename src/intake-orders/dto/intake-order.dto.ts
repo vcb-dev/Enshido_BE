@@ -19,6 +19,7 @@ import {
 } from 'class-validator';
 import {
   IntakeOrderStatus,
+  OrderMetalType,
   ProductionImageKind,
   ProductionRequestType,
 } from '@prisma/client';
@@ -72,6 +73,12 @@ export class UpsertIntakeOrderDto {
   @IsString()
   @MaxLength(120)
   customerCode?: string | null;
+
+  /// Đơn cũ chưa chọn loại vàng/bạc nên để trống được; form tạo đơn mới thì bắt chọn.
+  @IsOptional()
+  @Transform(emptyToNull)
+  @IsEnum(OrderMetalType)
+  metalType?: OrderMetalType | null;
 
   @IsString()
   @IsNotEmpty()

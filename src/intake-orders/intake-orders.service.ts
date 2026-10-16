@@ -783,6 +783,7 @@ export class IntakeOrdersService {
       qty: dto.qty,
       trackingCode: dto.trackingCode?.trim() || null,
       customerCode: dto.customerCode?.trim() || null,
+      metalType: dto.metalType ?? null,
       // Người đặt đơn nhập tay trên form, không nhất thiết là người đang đăng nhập.
       closedBy: dto.placedBy.trim(),
       description: dto.description.trim(),

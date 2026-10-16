@@ -1,4 +1,5 @@
 import {
+  OrderMetalType,
   Prisma,
   ProductionImageKind,
   ProductionRequestType,
@@ -29,6 +30,7 @@ export const intakeListSelect = {
   trackingCode: true,
   customerCode: true,
   customerName: true,
+  metalType: true,
   closedBy: true,
   description: true,
   receivedDate: true,
@@ -76,6 +78,7 @@ type IntakeRow = {
   qty: number;
   trackingCode: string | null;
   customerCode: string | null;
+  metalType: OrderMetalType | null;
   customerName: string | null;
   closedBy: string | null;
   description: string | null;
@@ -128,6 +131,7 @@ export function toIntakeRow(
     trackingCode: row.trackingCode,
     customerCode: row.customerCode,
     customerName: row.customerName?.trim() || INTAKE_CUSTOMER_NAME,
+    metalType: row.metalType,
     placedBy: row.closedBy,
     description: row.description,
     createdDate: row.receivedDate.toISOString().slice(0, 10),

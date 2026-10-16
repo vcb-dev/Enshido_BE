@@ -52,6 +52,15 @@ enum MetalKind {
   COPPER
 }
 
+/// Loại vàng/bạc của sản phẩm, chọn lúc tạo đơn.
+enum OrderMetalType {
+  SILVER_925
+  GOLD_10K
+  GOLD_14K
+  GOLD_18K
+  GOLD_24K
+}
+
 enum MaterialClass {
   RAW_MATERIAL
   CONSUMABLE
@@ -615,6 +624,8 @@ model ProductionOrder {
   customerName          String?               @map("customer_name")
   /// Mã khách tự đặt cho sản phẩm — khách dùng mã này để đối chiếu đơn.
   customerCode          String?               @map("customer_code")
+  /// Loại vàng/bạc chọn trên form tạo đơn. Đơn cũ chưa có nên để trống được.
+  metalType             OrderMetalType?       @map("metal_type")
   description           String
   stoneColor            String?               @map("stone_color")
   stoneTypes            String[]              @default([]) @map("stone_types")
