@@ -1171,7 +1171,8 @@ export class InventoryService {
     if (!warehouse) throw new NotFoundException('Không tìm thấy kho');
 
     const rows = await this.prisma.stockOutbound.findMany({
-      where: { warehouseId: warehouse.id, applyToStock: true, qty: { gt: 0 } },
+      // Gồm cả phiếu seed lịch sử (applyToStock = false) như bên danh sách nhập.
+      where: { warehouseId: warehouse.id, qty: { gt: 0 } },
       orderBy: [{ issuedAt: 'asc' }, { sortOrder: 'asc' }],
       select: outboundListSelect,
     });

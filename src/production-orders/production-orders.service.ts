@@ -423,7 +423,9 @@ export class ProductionOrdersService {
     // Bảng đếm theo trạng thái đã cho sẵn tổng số dòng của đúng bộ lọc này, nên không
     // cần `count` thêm lần nữa — `where` có `contains` trên chín cột nên không index nào đỡ.
     const knownTotal = computedCounts
-      ? (query.status ? computedCounts[query.status] : computedCounts.ALL)
+      ? query.status
+        ? computedCounts[query.status]
+        : computedCounts.ALL
       : undefined;
 
     const [rows, total] = await Promise.all([
@@ -2496,9 +2498,10 @@ export class ProductionOrdersService {
     const receivedDate = dateOnly(dto.receivedDate);
     if (!dto.dueDate) throw new BadRequestException('Nhập ngày cần trả');
     const dueDate = dateOnly(dto.dueDate);
-    if (!selfId && dueDate < dateOnly(todayYmdVn())) {
-      throw new BadRequestException('Ngày cần trả không được ở quá khứ');
-    }
+    // Tạm tắt theo yêu cầu để nhập được đơn cũ; mở lại khi nhập xong dữ liệu quá khứ.
+    // if (!selfId && dueDate < dateOnly(todayYmdVn())) {
+    //   throw new BadRequestException('Ngày cần trả không được ở quá khứ');
+    // }
     if (dueDate < receivedDate) {
       throw new BadRequestException(
         'Ngày cần trả không được trước ngày đặt đơn',
@@ -3122,6 +3125,8 @@ function dateOnly(value: string) {
   return new Date(`${value.slice(0, 10)}T00:00:00.000Z`);
 }
 
+// Giữ lại cho lúc bật lại chặn ngày cần trả ở quá khứ trong orderFields().
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function todayYmdVn() {
   const vn = new Date(Date.now() + 7 * 60 * 60 * 1000);
   return vn.toISOString().slice(0, 10);
