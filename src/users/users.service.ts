@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -194,6 +195,14 @@ function workerStagesFor(
     return STAGE_ORDER.filter((stage) => stages.includes(stage));
   }
   const unique = STAGE_ORDER.filter((stage) => stages.includes(stage));
-  // Form Nhân sự không còn chọn khâu: thợ sản xuất mặc định nhận mọi khâu.
-  return unique.length ? unique : [...STAGE_ORDER];
+  // Thợ sau đúc chọn vai trò theo khâu (Thợ nguội / đá / khắc / bóng / xi) — không còn thợ
+  // mặc định nhận mọi khâu.
+  const admin =
+    roleCode === RoleCode.ADMIN || extraRoles.includes(RoleCode.ADMIN);
+  if (!unique.length && !admin) {
+    throw new BadRequestException(
+      'Thợ phải có khâu làm — chọn vai trò thợ theo khâu (Thợ nguội, Thợ đá, …)',
+    );
+  }
+  return unique;
 }

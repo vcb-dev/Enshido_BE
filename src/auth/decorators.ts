@@ -17,6 +17,10 @@ export const Roles = (...roles: RoleCode[]) => SetMetadata(ROLES_KEY, roles);
 export const BLOCK_WORKER_KEY = 'blockWorker';
 export const BlockWorker = () => SetMetadata(BLOCK_WORKER_KEY, true);
 
+/** Endpoint tài khoản khách (VCB) được gọi — mọi endpoint khác đều chặn khách. */
+export const ALLOW_CUSTOMER_KEY = 'allowCustomer';
+export const AllowCustomer = () => SetMetadata(ALLOW_CUSTOMER_KEY, true);
+
 export const PERMISSIONS_KEY = 'permissions';
 export const RequirePermissions = (...permissions: PermissionCode[]) =>
   SetMetadata(PERMISSIONS_KEY, permissions);

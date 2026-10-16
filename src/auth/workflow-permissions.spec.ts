@@ -1,6 +1,7 @@
 import { ForbiddenException, type ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { RoleCode } from '@prisma/client';
+import { CastingOrdersController } from '../casting-orders/casting-orders.controller';
 import { CastingSlipsController } from '../casting-slips/casting-slips.controller';
 import { FinishedGoodsController } from '../finished-goods/finished-goods.controller';
 import { IntakeOrdersController } from '../intake-orders/intake-orders.controller';
@@ -14,6 +15,114 @@ const P = Permission;
 
 /** Endpoint → các quyền được phép (chỉ cần một). Khớp cột "Người thực hiện" trong file mô tả luồng. */
 const MATRIX: [string, object, string, PermissionCode[]][] = [
+  [
+    'xem giá vốn đơn',
+    ProductionOrdersController.prototype,
+    'costingOf',
+    [P.WAREHOUSE_KEEPER, P.ACCOUNTING_APPROVE],
+  ],
+  [
+    'thêm chi phí đơn',
+    ProductionOrdersController.prototype,
+    'addCost',
+    [P.WAREHOUSE_KEEPER, P.ACCOUNTING_APPROVE],
+  ],
+  [
+    'sửa chi phí đơn',
+    ProductionOrdersController.prototype,
+    'updateCost',
+    [P.WAREHOUSE_KEEPER, P.ACCOUNTING_APPROVE],
+  ],
+  [
+    'xoá chi phí đơn',
+    ProductionOrdersController.prototype,
+    'removeCost',
+    [P.WAREHOUSE_KEEPER, P.ACCOUNTING_APPROVE],
+  ],
+  [
+    'sửa tiền công khâu',
+    ProductionOrdersController.prototype,
+    'updateStageLabor',
+    [P.WAREHOUSE_KEEPER, P.ACCOUNTING_APPROVE],
+  ],
+  [
+    'lên lệnh SX tay',
+    ProductionOrdersController.prototype,
+    'create',
+    [P.WAREHOUSE_KEEPER],
+  ],
+  [
+    'sửa lệnh SX',
+    ProductionOrdersController.prototype,
+    'update',
+    [P.WAREHOUSE_KEEPER],
+  ],
+  [
+    'đổi trạng thái lệnh SX',
+    ProductionOrdersController.prototype,
+    'changeStatus',
+    [P.WAREHOUSE_KEEPER, P.PRODUCTION_QC],
+  ],
+  [
+    'báo đúc trên lệnh SX',
+    ProductionOrdersController.prototype,
+    'updateCasting',
+    [P.WAREHOUSE_KEEPER, P.PRODUCTION_CAST],
+  ],
+  [
+    'tạo lệnh đúc cũ',
+    CastingOrdersController.prototype,
+    'create',
+    [P.WAREHOUSE_KEEPER],
+  ],
+  [
+    'sửa lệnh đúc cũ',
+    CastingOrdersController.prototype,
+    'update',
+    [P.WAREHOUSE_KEEPER],
+  ],
+  [
+    'xem kho thành phẩm: stock',
+    FinishedGoodsController.prototype,
+    'stock',
+    [P.SCREEN_WAREHOUSE_THANH_PHAM, P.WAREHOUSE_KEEPER, P.ACCOUNTING_APPROVE],
+  ],
+  [
+    'xem kho thành phẩm: receipts',
+    FinishedGoodsController.prototype,
+    'receipts',
+    [P.SCREEN_WAREHOUSE_THANH_PHAM, P.WAREHOUSE_KEEPER, P.ACCOUNTING_APPROVE],
+  ],
+  [
+    'xem kho thành phẩm: orderOptions',
+    FinishedGoodsController.prototype,
+    'orderOptions',
+    [P.SCREEN_WAREHOUSE_THANH_PHAM, P.WAREHOUSE_KEEPER, P.ACCOUNTING_APPROVE],
+  ],
+  [
+    'xem kho thành phẩm: nvlOptions',
+    FinishedGoodsController.prototype,
+    'nvlOptions',
+    [P.SCREEN_WAREHOUSE_THANH_PHAM, P.WAREHOUSE_KEEPER, P.ACCOUNTING_APPROVE],
+  ],
+  [
+    'xem kho thành phẩm: lookups',
+    FinishedGoodsController.prototype,
+    'lookups',
+    [P.SCREEN_WAREHOUSE_THANH_PHAM, P.WAREHOUSE_KEEPER, P.ACCOUNTING_APPROVE],
+  ],
+  [
+    'xem kho thành phẩm: shipments',
+    FinishedGoodsController.prototype,
+    'shipments',
+    [P.SCREEN_WAREHOUSE_THANH_PHAM, P.WAREHOUSE_KEEPER, P.ACCOUNTING_APPROVE],
+  ],
+  [
+    'xem kho thành phẩm: shipment',
+    FinishedGoodsController.prototype,
+    'shipment',
+    [P.SCREEN_WAREHOUSE_THANH_PHAM, P.WAREHOUSE_KEEPER, P.ACCOUNTING_APPROVE],
+  ],
   [
     'báo lỗi phiếu mẹ',
     ProductionOrdersController.prototype,
@@ -294,6 +403,18 @@ describe('tài khoản chỉ làm thợ không gọi được việc của QC / 
     expect(() => guard.canActivate(contextFor(proto, method, worker))).toThrow(
       ForbiddenException,
     );
+  });
+
+  it('huỷ lượt giao phiếu con là việc của thủ kho — thợ bị chặn', () => {
+    expect(() =>
+      guard.canActivate(
+        contextFor(
+          ProductionOrdersController.prototype,
+          'cancelSubTicketPending',
+          user(RoleCode.WORKER),
+        ),
+      ),
+    ).toThrow(ForbiddenException);
   });
 
   it('thợ kiêm admin thì không bị chặn', () => {

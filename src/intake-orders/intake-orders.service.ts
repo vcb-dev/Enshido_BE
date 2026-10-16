@@ -34,7 +34,7 @@ import {
   ListIntakeOrdersQuery,
   UpsertIntakeOrderDto,
 } from './dto/intake-order.dto';
-import { Permission, userCan } from '../auth/permissions';
+import { isCustomerOnly, Permission, userCan } from '../auth/permissions';
 import { canConfirmIntakeWarehouse } from './intake-warehouse-access';
 import {
   INTAKE_ORDER_WHERE,
@@ -307,6 +307,15 @@ export class IntakeOrdersService {
       include: { images: true },
     });
     if (!order) throw new NotFoundException('Không tìm thấy đơn');
+    // Khách VCB chỉ sửa đơn đang chờ duyệt — đã duyệt / từ chối là xưởng đã xử lý.
+    if (
+      isCustomerOnly(actor.roleCode, actor.extraRoles, actor.allowedScreens) &&
+      toIntakeStatus(order) !== IntakeOrderStatus.PENDING_APPROVAL
+    ) {
+      throw new ForbiddenException(
+        'Chỉ sửa được đơn đang chờ duyệt — liên hệ xưởng nếu cần sửa',
+      );
+    }
     // Trạng thái chỉ đổi qua đúng thao tác của từng bước (duyệt, gắn 3D, cân sáp, thủ kho
     // xác nhận, phiếu đúc). Sửa đơn chỉ sửa thông tin, không nhảy bước được.
     if (dto.status !== undefined && dto.status !== toIntakeStatus(order)) {

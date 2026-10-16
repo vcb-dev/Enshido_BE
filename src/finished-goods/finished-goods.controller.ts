@@ -31,27 +31,38 @@ import { FinishedGoodsService } from './finished-goods.service';
  * Kho thành phẩm + phiếu xuất hàng (mô tả luồng bước 22–23): tài khoản thợ không vào được; nhập /
  * sửa kho và lập phiếu xuất là việc của thủ kho, kế toán xác nhận phiếu xuất.
  */
+/** Xem kho thành phẩm và phiếu xuất: thủ kho, kế toán, người được tick màn Kho thành phẩm. */
+const FINISHED_GOODS_READERS = [
+  Permission.SCREEN_WAREHOUSE_THANH_PHAM,
+  Permission.WAREHOUSE_KEEPER,
+  Permission.ACCOUNTING_APPROVE,
+] as const;
+
 @Controller('finished-goods')
 @BlockWorker()
 export class FinishedGoodsController {
   constructor(private readonly finishedGoods: FinishedGoodsService) {}
 
   @Get('stock')
+  @RequirePermissions(...FINISHED_GOODS_READERS)
   stock(@Query() query: StockQuery) {
     return this.finishedGoods.stock(query.search);
   }
 
   @Get('receipts')
+  @RequirePermissions(...FINISHED_GOODS_READERS)
   receipts(@Query() query: StockQuery) {
     return this.finishedGoods.receipts(query.search);
   }
 
   @Get('order-options')
+  @RequirePermissions(...FINISHED_GOODS_READERS)
   orderOptions(@Query() query: StockQuery) {
     return this.finishedGoods.orderOptions(query.search);
   }
 
   @Get('nvl-options')
+  @RequirePermissions(...FINISHED_GOODS_READERS)
   nvlOptions(@Query() query: StockQuery) {
     return this.finishedGoods.nvlOptions(query.search);
   }
@@ -93,16 +104,19 @@ export class FinishedGoodsController {
   }
 
   @Get('lookups')
+  @RequirePermissions(...FINISHED_GOODS_READERS)
   lookups() {
     return this.finishedGoods.lookups();
   }
 
   @Get('shipments')
+  @RequirePermissions(...FINISHED_GOODS_READERS)
   shipments(@Query() query: ListShipmentsQuery) {
     return this.finishedGoods.listShipments(query);
   }
 
   @Get('shipments/:code')
+  @RequirePermissions(...FINISHED_GOODS_READERS)
   shipment(@Param('code') code: string) {
     return this.finishedGoods.shipment(code);
   }

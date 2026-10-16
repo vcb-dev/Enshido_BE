@@ -8,7 +8,12 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
-import { BlockWorker, CurrentUser } from '../auth/decorators';
+import {
+  BlockWorker,
+  CurrentUser,
+  RequirePermissions,
+} from '../auth/decorators';
+import { Permission } from '../auth/permissions';
 import type { AuthUserPayload } from '../auth/types';
 import { CastingOrdersService } from './casting-orders.service';
 import {
@@ -34,12 +39,14 @@ export class CastingOrdersController {
 
   @Post()
   @BlockWorker()
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
   create(@Body() dto: CreateCastingOrderDto) {
     return this.orders.create(dto);
   }
 
   @Patch(':id')
   @BlockWorker()
+  @RequirePermissions(Permission.WAREHOUSE_KEEPER)
   update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: CreateCastingOrderDto,

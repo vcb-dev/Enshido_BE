@@ -1,3 +1,4 @@
+import { assertWorkerCanView } from './ticket-visibility';
 import {
   BadRequestException,
   ForbiddenException,
@@ -15,7 +16,12 @@ import {
   RoleCode,
   SubTicketOutcome,
 } from '@prisma/client';
-import { Permission, userCan, userHasRole } from '../auth/permissions';
+import {
+  isWorkerOnly,
+  Permission,
+  userCan,
+  userHasRole,
+} from '../auth/permissions';
 import type { AuthUserPayload } from '../auth/types';
 import { dbTable } from '../prisma/database-url';
 import { poolAll } from '../prisma/pool-all';
@@ -1427,6 +1433,7 @@ export class ProductionSubTicketsService {
   /** Huỷ khâu đang mở (kể cả khi thợ đã nhận nhưng chưa được giao). */
   async cancelPending(code: string, no: number, actor: AuthUserPayload) {
     return this.mutate(code, async (tx, order) => {
+      assertHandoverManager(order, actor);
       const ticket = requireSubTicket(order, no);
       const { state } = subTicketState(ticket, entriesOf(order, ticket.id));
       if (state !== 'WAITING' && state !== 'CLAIMED') {
@@ -3062,20 +3069,27 @@ export class ProductionSubTicketsService {
    * Chi tiết đơn xem từ một phiếu con. Trang phiếu con dùng đường này thay vì đi qua
    * endpoint đơn mẹ, nhờ vậy màn quản lý đơn chặn được tài khoản thợ.
    */
-  async detailByTicket(ticketCode: string) {
+  async detailByTicket(ticketCode: string, actor: AuthUserPayload) {
     const parsed = parseTicketCode(ticketCode);
     const order = await this.prisma.productionOrder.findUnique({
       where: { code: parsed?.orderCode ?? normalizeCode(ticketCode) },
       include: detailInclude,
     });
     if (!order) throw new NotFoundException('Không tìm thấy đơn sản xuất');
+    let subTicketId: string | undefined;
     if (parsed) {
       // Ném 404 nếu phiếu con không tồn tại trên đơn.
-      requireSubTicket(order, parsed.no);
+      subTicketId = requireSubTicket(order, parsed.no).id;
     } else if (order.subTickets.length > 1) {
       throw new BadRequestException(
         'Đơn đã chia phiếu con — quét mã phiếu con để nhận việc',
       );
+    } else {
+      subTicketId = order.subTickets[0]?.id;
+    }
+    if (isWorkerOnly(actor.roleCode, actor.extraRoles, actor.allowedScreens)) {
+      const stages = (await stagesOf(this.prisma, actor)) ?? [];
+      assertWorkerCanView(order, actor, stages, subTicketId);
     }
     return toDetail(order);
   }
