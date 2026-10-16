@@ -112,4 +112,8 @@ describe('invoiceAmount', () => {
     expect(invoiceComplete({ ...parts, stoneAmount: null })).toBe(false);
     expect(invoiceComplete({ ...parts, stoneAmount: d('0') })).toBe(true);
   });
+
+  it('chi phí khác để trống vẫn in được, tính 0', () => {
+    expect(invoiceComplete({ ...parts, otherAmount: null })).toBe(true);
+  });
 });

@@ -23,7 +23,10 @@ import { poolAll } from '../prisma/pool-all';
 import { PrismaService } from '../prisma/prisma.service';
 import { actorName } from '../production-orders/order-detail';
 import { ACTIVITY, logActivity } from '../production-orders/activity-log';
-import { toIntakeStatus } from '../production-orders/intake-order';
+import {
+  btpMaterialName,
+  toIntakeStatus,
+} from '../production-orders/intake-order';
 import { todayVn } from '../production-orders/production-material-requests.service';
 import { CloudinaryService } from '../uploads/cloudinary.service';
 import {
@@ -922,7 +925,7 @@ export class CastingSlipsService {
       });
       const materialId = await this.inventory.ensureNamedMaterial(tx, {
         warehouseCode: 'btp-cho-vao-da',
-        name: `Phôi ${order.productName?.trim() || order.trackingCode?.trim() || order.code}`,
+        name: btpMaterialName('Phôi', order),
         unitCode: 'chiec',
         warehouse: btpWarehouse,
         unit: pieceUnit,
