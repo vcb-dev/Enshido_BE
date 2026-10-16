@@ -44,17 +44,13 @@ export const ORDER_SORT_KEYS = [
   'closedBy',
 ] as const;
 
-/** Báo cáo số đơn ở màn Tổng quan — lọc theo lúc tạo đơn, mốc giờ do FE tính theo giờ máy. */
-export class OrderSummaryQuery {
-  @IsOptional()
-  @Transform(emptyToNull)
-  @IsDateString()
-  from?: string;
+/** Hiệu suất thợ trên màn Tổng quan — khoảng ngày theo giờ Việt Nam, tính cả hai đầu. */
+export class WorkerPerformanceQuery {
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Ngày bắt đầu không hợp lệ' })
+  from!: string;
 
-  @IsOptional()
-  @Transform(emptyToNull)
-  @IsDateString()
-  to?: string;
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Ngày kết thúc không hợp lệ' })
+  to!: string;
 }
 
 export class ListProductionOrdersQuery {
