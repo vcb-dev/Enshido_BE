@@ -46,6 +46,7 @@ import {
   ChangeStatusDto,
   FinishOrderDto,
   ListProductionOrdersQuery,
+  OrderSummaryQuery,
   OrderCostDto,
   OrderImageDto,
   ReturnStageDto,
@@ -119,6 +120,29 @@ type ResolvedNvlLine = {
  * hàng — để phiếu thợ, kho thành phẩm và hệ thống luôn khớp.
  */
 const MANUAL_STATUSES: ProductionStatus[] = [S.NEW, S.REDO_3D, S.DEFECT];
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
+
+/** Báo cáo Tổng quan: đơn đã ra khỏi xưởng hoặc đã vào kho thành phẩm. */
+const SUMMARY_DONE: ProductionStatus[] = [S.FINISHING, S.DELIVERED];
+/** Đơn dừng giữa chừng — không tính vào "chưa hoàn thành". */
+const SUMMARY_STOPPED: ProductionStatus[] = [S.REJECTED, S.DEFECT];
+/** Đơn còn ở luồng tạo đơn → 3D → sáp → đúc (kể cả trạng thái cũ của đơn tạo tay). */
+const SUMMARY_PRE_STAGE: ProductionStatus[] = [
+  S.PENDING_APPROVAL,
+  S.APPROVED,
+  S.READY_FOR_PRODUCTION,
+  S.WAX_PRINTED,
+  S.PENDING_WAREHOUSE_CONFIRMATION,
+  S.WAX_CONFIRMED,
+  S.WAIT_CASTING,
+  S.CAST_PENDING_CONFIRMATION,
+  S.CAST_DONE,
+  S.NEW,
+  S.REDO_3D,
+  S.CASTING,
+];
 
 const DEFAULT_LEAD_TIMES = ['3-5 ngày', '7-15 ngày', '15-30 ngày'];
 
@@ -226,6 +250,126 @@ export class ProductionOrdersService {
   async listStatusCounts(query: ListProductionOrdersQuery) {
     const { statusCounts } = await this.getStatusCountsAndSplitIndex(query);
     return { statusCounts };
+  }
+
+  /**
+   * Số đơn cho màn Tổng quan. Một đơn hàng tính một lần: bỏ phiếu bù (dùng lại mã DH của đơn gốc)
+   * và bản ghi tồn kho đầu kỳ (KHO-…). Đơn đã chia phiếu con lấy trạng thái tổng của đơn mẹ.
+   */
+  async orderSummary(query: OrderSummaryQuery) {
+    const scope: Prisma.ProductionOrderWhereInput = {
+      reworkOfOrderId: null,
+      OR: [
+        { trackingCode: null },
+        { NOT: { trackingCode: { startsWith: 'KHO-' } } },
+      ],
+    };
+    const createdAt: Prisma.DateTimeFilter = {};
+    if (query.from) createdAt.gte = new Date(query.from);
+    if (query.to) createdAt.lt = new Date(query.to);
+    const [grouped, trend] = await Promise.all([
+      this.prisma.productionOrder.groupBy({
+        by: ['status'],
+        where: { ...scope, ...(query.from || query.to ? { createdAt } : {}) },
+        _count: { _all: true },
+      }),
+      this.orderSummaryTrend(scope, query),
+    ]);
+    const byStatus = Object.fromEntries(
+      Object.values(S).map((status) => [status, 0]),
+    ) as Record<ProductionStatus, number>;
+    for (const group of grouped) byStatus[group.status] = group._count._all;
+    const sum = (statuses: ProductionStatus[]) =>
+      statuses.reduce((total, status) => total + byStatus[status], 0);
+
+    const created = sum(Object.values(S));
+    const completed = sum(SUMMARY_DONE);
+    const stopped = sum(SUMMARY_STOPPED);
+    const preStage = sum(SUMMARY_PRE_STAGE);
+    const awaitingStock = byStatus[S.PLATED];
+    const inProgress = created - completed - stopped;
+    return {
+      created,
+      completed,
+      inProgress,
+      stopped,
+      breakdown: {
+        delivered: byStatus[S.DELIVERED],
+        finished: byStatus[S.FINISHING],
+        preStage,
+        inStage: inProgress - preStage - awaitingStock,
+        awaitingStock,
+        rejected: byStatus[S.REJECTED],
+        defect: byStatus[S.DEFECT],
+      },
+      trend,
+    };
+  }
+
+  /**
+   * Biểu đồ Tổng quan: số đơn tạo mới và số đơn hoàn thành theo ngày (khoảng ≤ 62 ngày, kể cả
+   * "Tất cả" khi dữ liệu còn ít) hoặc theo tháng (tối đa 24 tháng gần nhất). Lúc hoàn thành = lần đầu đơn sang Sản xuất xong / Đã
+   * giao; đơn không có nhật ký thì lấy updatedAt. Chia mốc theo giờ Việt Nam (UTC+7).
+   */
+  private async orderSummaryTrend(
+    scope: Prisma.ProductionOrderWhereInput,
+    query: OrderSummaryQuery,
+  ) {
+    const [orders, doneLogs] = await Promise.all([
+      this.prisma.productionOrder.findMany({
+        where: scope,
+        select: { id: true, createdAt: true, status: true, updatedAt: true },
+      }),
+      this.prisma.productionStatusLog.groupBy({
+        by: ['orderId'],
+        where: { toStatus: { in: SUMMARY_DONE }, order: scope },
+        _min: { changedAt: true },
+      }),
+    ]);
+    const doneAt = new Map(
+      doneLogs.map((log) => [log.orderId, log._min.changedAt]),
+    );
+
+    const to = query.to ? new Date(query.to) : new Date();
+    let from = query.from ? new Date(query.from) : null;
+    if (!from) {
+      const first = Math.min(...orders.map((o) => o.createdAt.getTime()));
+      from = new Date(Number.isFinite(first) ? first : to.getTime());
+    }
+    const unit = to.getTime() - from.getTime() <= 62 * DAY_MS ? 'day' : 'month';
+    const vn = (date: Date) => new Date(date.getTime() + VN_OFFSET_MS);
+    const keyOf = (date: Date) =>
+      vn(date)
+        .toISOString()
+        .slice(0, unit === 'day' ? 10 : 7);
+
+    const buckets: { key: string; created: number; completed: number }[] = [];
+    const lastKey = keyOf(new Date(to.getTime() - 1));
+    const cursor = vn(from);
+    cursor.setUTCHours(0, 0, 0, 0);
+    if (unit === 'month') cursor.setUTCDate(1);
+    for (;;) {
+      const key = cursor.toISOString().slice(0, unit === 'day' ? 10 : 7);
+      if (key > lastKey) break;
+      buckets.push({ key, created: 0, completed: 0 });
+      if (unit === 'day') cursor.setUTCDate(cursor.getUTCDate() + 1);
+      else cursor.setUTCMonth(cursor.getUTCMonth() + 1);
+    }
+    const shown = buckets.slice(-(unit === 'day' ? 62 : 24));
+    const index = new Map(shown.map((bucket) => [bucket.key, bucket]));
+    for (const order of orders) {
+      const createdBucket = index.get(keyOf(order.createdAt));
+      if (createdBucket && order.createdAt >= from && order.createdAt < to) {
+        createdBucket.created += 1;
+      }
+      const completedAt =
+        doneAt.get(order.id) ??
+        (SUMMARY_DONE.includes(order.status) ? order.updatedAt : null);
+      if (!completedAt || completedAt < from || completedAt >= to) continue;
+      const doneBucket = index.get(keyOf(completedAt));
+      if (doneBucket) doneBucket.completed += 1;
+    }
+    return { unit, buckets: shown };
   }
 
   private statusCountsCacheKey(query: ListProductionOrdersQuery) {

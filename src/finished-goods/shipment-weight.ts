@@ -86,16 +86,14 @@ export type InvoiceParts = {
   otherAmount: Prisma.Decimal | null;
 };
 
-/**
- * Đủ TL + đơn giá NL + tiền công + tiền đá thì dòng mới in được. Chi phí khác
- * không bắt buộc — để trống là không có, tính 0.
- */
+/** Đủ TL + bốn khoản người lập nhập thì dòng mới in được. */
 export function invoiceComplete(parts: InvoiceParts) {
   return (
     parts.weightGram != null &&
     parts.materialUnitPrice != null &&
     parts.laborAmount != null &&
-    parts.stoneAmount != null
+    parts.stoneAmount != null &&
+    parts.otherAmount != null
   );
 }
 

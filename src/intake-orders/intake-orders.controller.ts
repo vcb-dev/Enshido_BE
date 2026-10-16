@@ -92,11 +92,8 @@ export class IntakeOrdersController {
   @Post('wax-print')
   @BlockWorker()
   @RequirePermissions(Permission.PRODUCTION_MODEL3D)
-  waxPrintBatch(
-    @Body() dto: WaxPrintBatchDto,
-    @CurrentUser() user: AuthUserPayload,
-  ) {
-    return this.orders.waxPrintBatch(dto, user);
+  waxPrintBatch(@Body() dto: WaxPrintBatchDto) {
+    return this.orders.waxPrintBatch(dto);
   }
 
   @Post(':id/product-specs')
@@ -114,11 +111,8 @@ export class IntakeOrdersController {
   @Post('wax-print-batch')
   @BlockWorker()
   @RequirePermissions(Permission.PRODUCTION_MODEL3D)
-  submitWaxPrintBatch(
-    @Body() dto: IntakeWaxPrintBatchDto,
-    @CurrentUser() user: AuthUserPayload,
-  ) {
-    return this.orders.submitWaxPrintBatch(dto, user);
+  submitWaxPrintBatch(@Body() dto: IntakeWaxPrintBatchDto) {
+    return this.orders.submitWaxPrintBatch(dto);
   }
 
   @Post(':id/confirm-warehouse')
