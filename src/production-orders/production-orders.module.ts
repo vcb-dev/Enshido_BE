@@ -5,6 +5,7 @@ import { ProductionOrdersController } from './production-orders.controller';
 import { ProductionCostingService } from './production-costing.service';
 import { ProductionMaterialRequestsService } from './production-material-requests.service';
 import { ProductionOrdersService } from './production-orders.service';
+import { ProductionOverviewService } from './production-overview.service';
 import { ProductionSubTicketsService } from './production-sub-tickets.service';
 
 @Module({
@@ -15,6 +16,7 @@ import { ProductionSubTicketsService } from './production-sub-tickets.service';
     ProductionCostingService,
     ProductionSubTicketsService,
     ProductionMaterialRequestsService,
+    ProductionOverviewService,
   ],
   exports: [ProductionCostingService],
 })
