@@ -668,15 +668,26 @@ describe.each(['parent', 'child'] as const)(
       },
     );
 
-    it('admin được giao cho admin', async () => {
+    it('admin được giao cho admin đã gán khâu đó', async () => {
+      const { service, order, tx } = context();
+      tx.user.findFirst.mockResolvedValueOnce({
+        ...actor(worker.id, RoleCode.ADMIN),
+        workerStages: ['FILING'],
+      });
+      await expect(
+        assignSelected(service, order, admin),
+      ).resolves.toBeDefined();
+    });
+
+    it('tài khoản admin chưa gán khâu thì không nhận được khâu đó', async () => {
       const { service, order, tx } = context();
       tx.user.findFirst.mockResolvedValueOnce({
         ...actor(worker.id, RoleCode.ADMIN),
         workerStages: [],
       });
-      await expect(
-        assignSelected(service, order, admin),
-      ).resolves.toBeDefined();
+      await expect(assignSelected(service, order, admin)).rejects.toThrow(
+        'chưa được giao khâu',
+      );
     });
 
     it('không giao cho nhân viên chỉ được gắn khâu nhưng chưa có quyền thợ', async () => {
