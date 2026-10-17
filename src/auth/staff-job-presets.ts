@@ -3,7 +3,6 @@ import {
   Permission,
   type PermissionCode,
   isProductionStageWorker,
-  permissionsForUser,
   userHasRole,
 } from './permissions';
 
@@ -147,62 +146,65 @@ export function workerStagesForPreset(
   return [];
 }
 
+/**
+ * Mọi vai trò của một tài khoản, theo thứ tự cố định (Admin, thợ 3D / sáp / đúc, thợ theo khâu,
+ * Thủ kho, QC, Kế toán). Một người có thể kiêm nhiều vai trò: vai trò việc đọc từ quyền đã lưu
+ * (`allowedScreens` — admin cũng lưu cột này dù có mọi quyền), thợ khâu đọc từ `workerStages`.
+ * Khách VCB bị khoá riêng nên luôn đứng một mình.
+ */
+export function inferStaffJobPresets(user: {
+  roleCode: RoleCode;
+  extraRoles?: readonly RoleCode[];
+  allowedScreens?: readonly string[];
+  workerStages?: readonly ProductionStage[];
+}): StaffJobPreset[] {
+  const screens = new Set(user.allowedScreens ?? []);
+  const admin = userHasRole(
+    user.roleCode,
+    user.extraRoles ?? [],
+    RoleCode.ADMIN,
+  );
+  if (!admin && screens.has(Permission.CUSTOMER)) return ['vcb'];
+  const worker = user.roleCode === RoleCode.WORKER;
+
+  const found: StaffJobPreset[] = admin ? ['admin'] : [];
+  if (screens.has(Permission.PRODUCTION_MODEL3D)) found.push('worker_3d');
+  if (screens.has(Permission.PRODUCTION_WAX)) found.push('worker_wax');
+  if (
+    screens.has(Permission.PRODUCTION_CAST) ||
+    (worker && screens.has(Permission.SCREEN_CASTING_ORDERS))
+  ) {
+    found.push('worker_casting');
+  }
+  const stages = user.workerStages ?? [];
+  const stagePresets = (
+    Object.keys(STAGE_WORKER_PRESETS) as StageWorkerPreset[]
+  ).filter((preset) => stages.includes(STAGE_WORKER_PRESETS[preset]));
+  found.push(...stagePresets);
+  // Tài khoản Thợ cũ chưa gán khâu nào.
+  if (worker && !stagePresets.length && found.length === 0) {
+    found.push('worker_sx');
+  }
+  if (screens.has(Permission.WAREHOUSE_KEEPER)) found.push('warehouse');
+  if (screens.has(Permission.PRODUCTION_QC)) found.push('kcs');
+  if (screens.has(Permission.ACCOUNTING_APPROVE)) found.push('accountant');
+  if (found.length > 0) return found;
+  // Nhân viên cũ chỉ có màn Tổng quan = QC (màn Nhân sự cũng đổi Nhân viên cũ sang QC).
+  return [
+    screens.size === 1 && screens.has(Permission.SCREEN_DASHBOARD)
+      ? 'kcs'
+      : 'staff',
+  ];
+}
+
+/** Vai trò chính (đầu danh sách) — giữ cho nơi chỉ cần một vai trò. */
 export function inferStaffJobPreset(user: {
   roleCode: RoleCode;
+  extraRoles?: readonly RoleCode[];
   allowedScreens?: readonly string[];
   workerStages?: readonly ProductionStage[];
 }): StaffJobPreset {
-  if (user.roleCode === RoleCode.ADMIN) return 'admin';
-  const screens = new Set(user.allowedScreens ?? []);
-  const granted = permissionsForUser(
-    user.roleCode,
-    [],
-    user.allowedScreens ?? [],
-  );
-  if (screens.has(Permission.CUSTOMER)) return 'vcb';
-  if (user.roleCode === RoleCode.WORKER) {
-    if (granted.includes(Permission.PRODUCTION_MODEL3D)) return 'worker_3d';
-    if (granted.includes(Permission.PRODUCTION_WAX)) return 'worker_wax';
-    if (
-      screens.has(Permission.SCREEN_CASTING_ORDERS) ||
-      granted.includes(Permission.PRODUCTION_CAST)
-    ) {
-      return 'worker_casting';
-    }
-    const stages = user.workerStages ?? [];
-    if (stages.length === 1) {
-      const match = (
-        Object.keys(STAGE_WORKER_PRESETS) as StageWorkerPreset[]
-      ).find((preset) => STAGE_WORKER_PRESETS[preset] === stages[0]);
-      if (match) return match;
-    }
-    return 'worker_sx';
-  }
-  if (screens.size === 1 && screens.has(Permission.SCREEN_DASHBOARD)) {
-    return 'kcs';
-  }
-  if (
-    granted.includes(Permission.PRODUCTION_QC) &&
-    screens.has(Permission.SCREEN_DASHBOARD)
-  ) {
-    return 'kcs';
-  }
-  if (
-    granted.includes(Permission.ACCOUNTING_APPROVE) &&
-    !granted.includes(Permission.WAREHOUSE_KEEPER) &&
-    !granted.includes(Permission.PRODUCTION_QC)
-  ) {
-    return 'accountant';
-  }
-  if (
-    granted.includes(Permission.WAREHOUSE_KEEPER) &&
-    WAREHOUSE_SCREENS.some((key) => screens.has(key)) &&
-    !granted.includes(Permission.PRODUCTION_MODEL3D) &&
-    !granted.includes(Permission.PRODUCTION_WAX)
-  ) {
-    return 'warehouse';
-  }
-  return 'staff';
+  return inferStaffJobPresets(user)[0];
 }
 
 const STAFF_JOB_LABELS: Record<StaffJobPreset, string> = {
@@ -225,31 +227,26 @@ const STAFF_JOB_LABELS: Record<StaffJobPreset, string> = {
 
 export function staffJobLabelFor(user: {
   roleCode: RoleCode;
+  extraRoles?: readonly RoleCode[];
   allowedScreens?: readonly string[];
   workerStages?: readonly ProductionStage[];
 }): string {
-  const preset = inferStaffJobPreset(user);
-  // Thợ theo khâu làm được nhiều khâu — nhãn ghép "Thợ đánh bóng + Thợ xi" như màn Nhân sự.
-  if (preset === 'worker_sx' || isStageWorkerPreset(preset)) {
-    const stages = user.workerStages ?? [];
-    const labels = (Object.keys(STAGE_WORKER_PRESETS) as StageWorkerPreset[])
-      .filter((key) => stages.includes(STAGE_WORKER_PRESETS[key]))
-      .map((key) => STAFF_JOB_LABELS[key]);
-    if (labels.length) return labels.join(' + ');
-  }
-  return STAFF_JOB_LABELS[preset];
+  // Nhiều vai trò thì ghép "Thủ kho + QC + Thợ nguội"; thợ nhiều khâu ghép theo thứ tự luồng.
+  return inferStaffJobPresets(user)
+    .map((preset) => STAFF_JOB_LABELS[preset])
+    .join(' + ');
 }
 
-/** Giao phiếu đúc — chỉ vai trò Thợ đúc (không gồm admin / thủ kho / nhân viên tick lẻ quyền đúc). */
+/**
+ * Giao phiếu đúc — nhân sự có vai trò Thợ đúc (kể cả khi kiêm vai trò khác, kể cả admin được
+ * gán vai trò này). Không gồm admin / thủ kho không có vai trò Thợ đúc.
+ */
 export function isCastWorkerAssignee(user: {
   roleCode: RoleCode;
   extraRoles?: readonly RoleCode[];
   allowedScreens?: readonly string[];
 }): boolean {
-  if (userHasRole(user.roleCode, user.extraRoles ?? [], RoleCode.ADMIN)) {
-    return false;
-  }
-  return inferStaffJobPreset(user) === 'worker_casting';
+  return inferStaffJobPresets(user).includes('worker_casting');
 }
 
 export { isProductionStageWorker };

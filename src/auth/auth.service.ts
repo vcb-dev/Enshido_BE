@@ -260,6 +260,7 @@ export class AuthService {
       extraRoles: user.extraRoles ?? [],
       allowedScreens: user.allowedScreens ?? [],
       department: user.department,
+      workerStages: user.workerStages ?? [],
     };
   }
 
