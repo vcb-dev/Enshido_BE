@@ -17,6 +17,10 @@ export const Permission = {
   SCREEN_CASTING_ORDERS: 'screen.casting-orders',
   /** Màn Phiếu của tôi (thợ sản xuất). */
   SCREEN_MY_TICKETS: 'screen.my-tickets',
+  /** Màn Phiếu QC — vào xem; QC cân lại / hoàn thiện vẫn cần `production.qc`. */
+  SCREEN_QC_TICKETS: 'screen.qc-tickets',
+  /** Màn Cắt cây thông — vào xem; cân phôi / cắt cây vẫn cần `warehouse.keeper`. */
+  SCREEN_CASTING_CUTS: 'screen.casting-cuts',
   /** Thợ sản xuất: tự nhận phiếu mẹ hoặc phiếu con ở màn "Phiếu của tôi". */
   PRODUCTION_WORKER: 'production.worker',
   /** Bước 1: tạo đơn. */

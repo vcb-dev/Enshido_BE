@@ -110,6 +110,7 @@ export function roleAndScreensForPreset(preset: StaffJobPreset): {
         allowedScreens: [
           ...WAREHOUSE_SCREENS,
           Permission.SCREEN_PRODUCTION_ORDERS,
+          Permission.SCREEN_CASTING_CUTS,
           Permission.WAREHOUSE_KEEPER,
           Permission.INTAKE_CREATE,
           Permission.INTAKE_APPROVE,
@@ -121,6 +122,7 @@ export function roleAndScreensForPreset(preset: StaffJobPreset): {
         allowedScreens: [
           Permission.SCREEN_DASHBOARD,
           Permission.SCREEN_PRODUCTION_ORDERS,
+          Permission.SCREEN_QC_TICKETS,
           Permission.PRODUCTION_QC,
         ],
       };
