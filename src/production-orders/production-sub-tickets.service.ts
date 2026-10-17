@@ -3241,10 +3241,12 @@ export class ProductionSubTicketsService {
     const adminView = isAdmin(actor);
     const stages = adminView ? null : await stagesOf(this.prisma, actor);
     const openStage = stages ? { in: stages } : { not: null };
+    // startedByUserId được ghi lúc lên phiếu (giao thợ), không phải lúc thợ nhận.
+    // PENDING_ISSUE = chờ thủ kho cấp vật tư — chưa phải phiếu đang giữ / chờ nhận.
+    // Chờ nhận chỉ là WAIT_CASTING (đã cấp, thợ bấm Nhận phiếu).
     const castingHeldStatuses: CastingSlipStatus[] = [
       CastingSlipStatus.CASTING,
       CastingSlipStatus.PENDING_CONFIRMATION,
-      CastingSlipStatus.PENDING_ISSUE,
     ];
     // Phiếu mẹ chạy đúng bốn nhánh như phiếu con, mỗi nhánh một câu truy vấn riêng. Gộp
     // chung một câu rồi lọc trong bộ nhớ thì `take` sẽ dùng chung: phiếu người khác đang mở
