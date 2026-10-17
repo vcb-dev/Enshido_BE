@@ -758,14 +758,8 @@ export class ProductionSubTicketsService {
         throw new BadRequestException('Tài khoản thợ không còn hoạt động');
       }
       assertAssignableWorker(actor, craftsman);
-      if (
-        !userHasRole(
-          craftsman.roleCode,
-          craftsman.extraRoles,
-          RoleCode.ADMIN,
-        ) &&
-        !craftsman.workerStages.includes(dto.stage)
-      ) {
+      // Kể cả tài khoản admin: giao khâu nào thì người nhận phải được gán khâu đó ở Nhân sự.
+      if (!craftsman.workerStages.includes(dto.stage)) {
         throw new BadRequestException(
           `${actorName(craftsman)} chưa được giao khâu ${STAGE_LABEL[dto.stage]} — thêm khâu ở màn Nhân sự`,
         );
@@ -1544,14 +1538,8 @@ export class ProductionSubTicketsService {
         throw new BadRequestException('Tài khoản thợ không còn hoạt động');
       }
       assertAssignableWorker(actor, craftsman);
-      if (
-        !userHasRole(
-          craftsman.roleCode,
-          craftsman.extraRoles,
-          RoleCode.ADMIN,
-        ) &&
-        !craftsman.workerStages.includes(stage)
-      ) {
+      // Kể cả tài khoản admin: giao khâu nào thì người nhận phải được gán khâu đó ở Nhân sự.
+      if (!craftsman.workerStages.includes(stage)) {
         throw new BadRequestException(
           `${actorName(craftsman)} chưa được giao khâu ${STAGE_LABEL[stage]} — thêm khâu ở màn Nhân sự`,
         );
