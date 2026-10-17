@@ -12,7 +12,11 @@ import { actorName } from '../production-orders/order-detail';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateUserDto, UpdateUserDto } from './dto/user.dto';
 import { AuthService, BCRYPT_COST } from '../auth/auth.service';
-import { isProductionStageWorker, sanitizeScreens } from '../auth/permissions';
+import {
+  isProductionStageWorker,
+  Permission,
+  sanitizeScreens,
+} from '../auth/permissions';
 import { DEFAULT_STAFF_SCREENS } from '../auth/screens';
 import { InventoryService } from '../inventory/inventory.service';
 import { InflightMap, TtlCache } from '../util/ttl-cache';
@@ -77,13 +81,13 @@ export class UsersService {
     }
 
     const passwordHash = await bcrypt.hash(dto.password, BCRYPT_COST);
-    // Admin xem hết nên bỏ qua cột này; thợ đã có quyền kèm role, không cần preset văn phòng.
+    // Admin xem hết nên không có màn mặc định; vẫn lưu quyền việc nếu được gán thêm vai trò
+    // (Thợ đúc, Thủ kho, …) để màn Nhân sự hiện đủ vai trò. Thợ đã có quyền kèm role, không cần
+    // preset văn phòng.
     const allowedScreens =
-      dto.roleCode === RoleCode.ADMIN
-        ? []
-        : dto.roleCode === RoleCode.WORKER
-          ? sanitizeScreens(dto.allowedScreens ?? [])
-          : sanitizeScreens(dto.allowedScreens ?? DEFAULT_STAFF_SCREENS);
+      dto.roleCode === RoleCode.ADMIN || dto.roleCode === RoleCode.WORKER
+        ? sanitizeScreens(dto.allowedScreens ?? [])
+        : sanitizeScreens(dto.allowedScreens ?? DEFAULT_STAFF_SCREENS);
 
     const workerStages = workerStagesFor(
       dto.roleCode,
@@ -133,7 +137,9 @@ export class UsersService {
       data.roleCode = dto.roleCode;
     }
     if (dto.extraRoles !== undefined) data.extraRoles = dto.extraRoles;
-    if (dto.allowedScreens !== undefined && user.roleCode !== RoleCode.ADMIN) {
+    // Admin cũng lưu được: quyền việc đi kèm vai trò (Thợ đúc, Thủ kho, …) chỉ để nhận diện vai trò,
+    // admin vẫn có mọi quyền.
+    if (dto.allowedScreens !== undefined) {
       data.allowedScreens = sanitizeScreens(dto.allowedScreens);
     }
     if (dto.department !== undefined) {
@@ -181,25 +187,31 @@ export class UsersService {
 
 const STAGE_ORDER = Object.values(ProductionStage);
 
-/** Tài khoản thợ phải có ít nhất một khâu; không còn là thợ thì bỏ khâu. */
-function workerStagesFor(
+/**
+ * Khâu lưu kèm tài khoản.
+ * - Admin kiêm Thợ khâu nào thì lưu khâu đó (không gán thì thôi).
+ * - Tài khoản role Thợ phải có ít nhất một khâu (trừ thợ 3D / sáp / đúc, khâu tuỳ chọn).
+ * - Nhân viên văn phòng (Thủ kho, QC, Kế toán, …) kiêm Thợ khâu: có quyền Thợ sản xuất thì lưu
+ *   khâu; không có thì bỏ khâu.
+ */
+export function workerStagesFor(
   roleCode: RoleCode,
   extraRoles: RoleCode[],
   stages: ProductionStage[],
   allowedScreens: readonly string[] = [],
 ) {
-  const isWorker =
-    roleCode === RoleCode.WORKER || extraRoles.includes(RoleCode.WORKER);
-  if (!isWorker) return [];
-  if (isProductionStageWorker(roleCode, extraRoles, allowedScreens)) {
-    return STAGE_ORDER.filter((stage) => stages.includes(stage));
-  }
   const unique = STAGE_ORDER.filter((stage) => stages.includes(stage));
+  const roles = [roleCode, ...extraRoles];
+  if (roles.includes(RoleCode.ADMIN)) return unique;
+  if (!roles.includes(RoleCode.WORKER)) {
+    return allowedScreens.includes(Permission.PRODUCTION_WORKER) ? unique : [];
+  }
+  if (isProductionStageWorker(roleCode, extraRoles, allowedScreens)) {
+    return unique;
+  }
   // Thợ sau đúc chọn vai trò theo khâu (Thợ nguội / đá / khắc / bóng / xi) — không còn thợ
   // mặc định nhận mọi khâu.
-  const admin =
-    roleCode === RoleCode.ADMIN || extraRoles.includes(RoleCode.ADMIN);
-  if (!unique.length && !admin) {
+  if (!unique.length) {
     throw new BadRequestException(
       'Thợ phải có khâu làm — chọn vai trò thợ theo khâu (Thợ nguội, Thợ đá, …)',
     );
