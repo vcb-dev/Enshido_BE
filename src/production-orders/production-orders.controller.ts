@@ -189,7 +189,8 @@ export class ProductionOrdersController {
   /** Màn "Phiếu QC": chờ QC cân lại, chờ thủ kho xác nhận, chờ hoàn thiện, gần đây. */
   @Get('qc-tickets')
   @BlockWorker()
-  @RequirePermissions(Permission.PRODUCTION_QC)
+  // Tích màn Phiếu QC là xem được; thao tác QC vẫn khoá theo `production.qc` ở từng endpoint.
+  @RequirePermissions(Permission.PRODUCTION_QC, Permission.SCREEN_QC_TICKETS)
   qcTickets(@CurrentUser() user: AuthUserPayload) {
     return this.subTickets.qcTickets(user);
   }
