@@ -1,6 +1,7 @@
 import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
+  ArrayMinSize,
   IsArray,
   IsEnum,
   IsInt,
@@ -324,4 +325,14 @@ export class CreateStockDto {
   @IsOptional()
   @Matches(DECIMAL, { message: 'Tồn kho TT không hợp lệ' })
   amount?: string;
+}
+
+/** Nhiều dòng Nhập NVL — server ghi một lần, lỗi thì không dòng nào vào Tồn. */
+export class CreateStockBatchDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
+  @Type(() => CreateStockDto)
+  items!: CreateStockDto[];
 }

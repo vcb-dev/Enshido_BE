@@ -17,6 +17,7 @@ import type { AuthUserPayload } from '../auth/types';
 import { CreateInboundDto } from '../inventory/dto/inbound.dto';
 import { CreateOutboundDto } from '../inventory/dto/outbound.dto';
 import {
+  CreateStockBatchDto,
   CreateStockDto,
   UpdateStockDto,
 } from '../inventory/dto/update-stock.dto';
@@ -106,6 +107,14 @@ export class WarehousesController {
   @Get(':code/stock')
   stock(@Param('code') code: string, @Query('layers') layers?: string) {
     return this.inventory.listStock(code, layers === '1' || layers === 'true');
+  }
+
+  @Post(':code/stock/batch')
+  createStockBatch(
+    @Param('code') code: string,
+    @Body() dto: CreateStockBatchDto,
+  ) {
+    return this.inventory.createStockMany(code, dto.items);
   }
 
   @Post(':code/stock')

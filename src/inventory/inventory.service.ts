@@ -426,138 +426,61 @@ export class InventoryService {
   }
 
   async createStock(code: string, dto: CreateStockDto) {
+    const [row] = await this.createStockMany(code, [dto]);
+    return row;
+  }
+
+  /** Nhiều dòng một giao dịch — lỗi vị trí / tên thì không dòng nào vào Tồn. */
+  async createStockMany(code: string, dtos: CreateStockDto[]) {
     assertNvlWarehouse(code);
+    if (!dtos.length) throw new BadRequestException('Chưa có dòng NVL');
+    this.assertStockBatchUniqueness(dtos);
+
     const warehouse = await this.prisma.warehouse.findUnique({
       where: { code },
       select: { id: true, code: true },
     });
     if (!warehouse) throw new NotFoundException('Không tìm thấy kho');
 
-    const name = dto.name.trim();
-    if (!name) throw new BadRequestException('Tên NVL không được trống');
-
-    const unit = await this.prisma.unit.findUnique({
-      where: { id: dto.unitId },
-      select: { id: true, name: true },
+    const last = await this.prisma.material.aggregate({
+      where: { warehouseId: warehouse.id, isActive: true },
+      _max: { sortOrder: true },
     });
-    if (!unit) throw new NotFoundException('Không tìm thấy đơn vị');
-
-    const colorId = await this.resolveColorId(dto.colorName, dto.colorId);
-    const [last] = await Promise.all([
-      this.prisma.material.aggregate({
-        where: { warehouseId: warehouse.id, isActive: true },
-        _max: { sortOrder: true },
-      }),
-      this.assertLookups(
-        dto.shapeId,
-        dto.colorName !== undefined ? null : dto.colorId,
-        dto.materialTypeId,
-        dto.bodyMetalId,
-        dto.productKindId,
-        dto.btpCategoryId,
-        dto.platingColorId,
-      ),
-    ]);
-    const images = this.materialImages(dto.images);
-
-    const nameClash = await this.prisma.material.findFirst({
-      where: {
-        warehouseId: warehouse.id,
-        name: { equals: name, mode: 'insensitive' },
-        isActive: true,
-      },
-      select: { id: true },
-    });
-    if (nameClash)
-      throw new ConflictException('Tên NVL đã tồn tại trong kho này');
-
-    const sortOrder = (last._max.sortOrder ?? 0) + 1;
-    const dec = (value?: string) =>
-      value == null || value === ''
-        ? new Prisma.Decimal(0)
-        : new Prisma.Decimal(value);
-
-    const openingQty = dec(dto.openingQty);
-    const stockUnitPrice = dec(dto.stockUnitPrice);
-    const openingAmount = openingMoney(openingQty, stockUnitPrice);
-    await this.assertAssignableLocation(warehouse.id, dto.locationCode);
-    const isBtp = warehouse.code === 'btp-cho-vao-da';
-    const isConsumable = warehouse.code === 'nvl-tieu-hao';
-    if (isConsumable) {
-      await this.assertConsumableClass(dto.otherClassId);
-      if (!dto.otherClassId) {
-        throw new BadRequestException('Chọn danh mục');
-      }
-    }
-    const otherClassId = isBtp
-      ? dto.btpCategoryId || null
-      : isConsumable
-        ? dto.otherClassId || null
-        : await this.resolveOtherClassId(dto.otherClassName);
-    const metalKind =
-      isBtp || otherClassId
-        ? null
-        : (dto.metalKind ?? defaultMetalKind(warehouse.code));
-
-    const materialId = await this.prisma.runTx(async (tx) => {
-      const sku = isBtp
-        ? await this.productCodeOf(tx, dto.sku)
-        : await allocateMaterialSku(tx, warehouse.code);
-      const material = await tx.material.create({
-        data: {
-          warehouseId: warehouse.id,
-          sku,
-          name,
-          locationCode: dto.locationCode?.trim() || null,
-          unitId: dto.unitId,
-          shapeId: dto.shapeId || null,
-          colorId: colorId || null,
-          materialTypeId:
-            isBtp || otherClassId ? null : dto.materialTypeId || null,
-          otherClassId,
-          bodyMetalId: dto.bodyMetalId || null,
-          productKindId: dto.productKindId || null,
-          platingColorId: dto.platingColorId || null,
-          sizeLabel: dto.sizeLabel?.trim() || null,
-          stoneWeight: isBtp ? null : optionalDecimal(dto.stoneWeight),
-          weight: isBtp ? null : optionalDecimal(dto.weight),
-          images: { create: images },
-          classification: classificationOf(warehouse.code),
-          metalKind,
-          note: dto.note?.trim() || null,
-          sortOrder,
-        },
-      });
-      await tx.stockBalance.create({
-        data: {
-          warehouseId: warehouse.id,
-          materialId: material.id,
-          openingQty,
-          openingAmount,
-          stockUnitPrice,
-          qty: openingQty,
-          amount: openingAmount,
-        },
-      });
-      return material.id;
-    });
-
-    // Đọc lại sau commit — select nhiều quan hệ, để trong transaction dễ quá timeout.
-    const created = await this.prisma.material.findUniqueOrThrow({
-      where: { id: materialId },
-      select: materialStockSelect,
-    });
-    this.bustWarehouseCaches(code);
-    return this.toStockRow(
-      created,
-      undefined,
-      undefined,
-      undefined,
-      consumeLayers(
-        buildPriceLayers(created.balance, []),
-        new Prisma.Decimal(0),
+    const prepared = await Promise.all(
+      dtos.map((dto, index) =>
+        this.prepareStockCreate(
+          warehouse,
+          dto,
+          (last._max.sortOrder ?? 0) + 1 + index,
+        ),
       ),
     );
+
+    const materialIds = await this.prisma.runTx(async (tx) => {
+      const ids: string[] = [];
+      for (const item of prepared) {
+        ids.push(await this.insertPreparedStock(tx, item));
+      }
+      return ids;
+    });
+
+    const created = await this.prisma.material.findMany({
+      where: { id: { in: materialIds } },
+      select: materialStockSelect,
+    });
+    const byId = new Map(created.map((row) => [row.id, row]));
+    this.bustWarehouseCaches(code);
+    return materialIds.map((id) => {
+      const row = byId.get(id);
+      if (!row) throw new NotFoundException('Không tìm thấy NVL vừa tạo');
+      return this.toStockRow(
+        row,
+        undefined,
+        undefined,
+        undefined,
+        consumeLayers(buildPriceLayers(row.balance, []), new Prisma.Decimal(0)),
+      );
+    });
   }
 
   async updateStock(
@@ -1830,6 +1753,158 @@ export class InventoryService {
         source: take.kind,
       })),
     };
+  }
+
+  private assertStockBatchUniqueness(dtos: CreateStockDto[]) {
+    const names = new Set<string>();
+    const locations = new Set<string>();
+    for (const dto of dtos) {
+      const name = dto.name.trim().toLocaleLowerCase('vi');
+      if (name) {
+        if (names.has(name)) {
+          throw new ConflictException('Tên NVL trùng với dòng khác trên form');
+        }
+        names.add(name);
+      }
+      const location = dto.locationCode?.trim();
+      if (location) {
+        if (locations.has(location)) {
+          throw new BadRequestException(
+            `Vị trí ${location} trùng với dòng khác trên form`,
+          );
+        }
+        locations.add(location);
+      }
+    }
+  }
+
+  private async prepareStockCreate(
+    warehouse: { id: string; code: string },
+    dto: CreateStockDto,
+    sortOrder: number,
+  ) {
+    const name = dto.name.trim();
+    if (!name) throw new BadRequestException('Tên NVL không được trống');
+
+    const unit = await this.prisma.unit.findUnique({
+      where: { id: dto.unitId },
+      select: { id: true, name: true },
+    });
+    if (!unit) throw new NotFoundException('Không tìm thấy đơn vị');
+
+    const colorId = await this.resolveColorId(dto.colorName, dto.colorId);
+    await this.assertLookups(
+      dto.shapeId,
+      dto.colorName !== undefined ? null : dto.colorId,
+      dto.materialTypeId,
+      dto.bodyMetalId,
+      dto.productKindId,
+      dto.btpCategoryId,
+      dto.platingColorId,
+    );
+    const images = this.materialImages(dto.images);
+
+    const nameClash = await this.prisma.material.findFirst({
+      where: {
+        warehouseId: warehouse.id,
+        name: { equals: name, mode: 'insensitive' },
+        isActive: true,
+      },
+      select: { id: true },
+    });
+    if (nameClash)
+      throw new ConflictException('Tên NVL đã tồn tại trong kho này');
+
+    const dec = (value?: string) =>
+      value == null || value === ''
+        ? new Prisma.Decimal(0)
+        : new Prisma.Decimal(value);
+
+    const openingQty = dec(dto.openingQty);
+    const stockUnitPrice = dec(dto.stockUnitPrice);
+    const openingAmount = openingMoney(openingQty, stockUnitPrice);
+    await this.assertAssignableLocation(warehouse.id, dto.locationCode);
+    const isBtp = warehouse.code === 'btp-cho-vao-da';
+    const isConsumable = warehouse.code === 'nvl-tieu-hao';
+    if (isConsumable) {
+      await this.assertConsumableClass(dto.otherClassId);
+      if (!dto.otherClassId) {
+        throw new BadRequestException('Chọn danh mục');
+      }
+    }
+    const otherClassId = isBtp
+      ? dto.btpCategoryId || null
+      : isConsumable
+        ? dto.otherClassId || null
+        : await this.resolveOtherClassId(dto.otherClassName);
+    const metalKind =
+      isBtp || otherClassId
+        ? null
+        : (dto.metalKind ?? defaultMetalKind(warehouse.code));
+
+    return {
+      warehouse,
+      dto,
+      name,
+      colorId,
+      images,
+      sortOrder,
+      openingQty,
+      openingAmount,
+      stockUnitPrice,
+      otherClassId,
+      metalKind,
+      isBtp,
+    };
+  }
+
+  private async insertPreparedStock(
+    tx: Prisma.TransactionClient,
+    prepared: Awaited<ReturnType<InventoryService['prepareStockCreate']>>,
+  ) {
+    const { warehouse, dto, name, colorId, images, sortOrder } = prepared;
+    const sku = prepared.isBtp
+      ? await this.productCodeOf(tx, dto.sku)
+      : await allocateMaterialSku(tx, warehouse.code);
+    const material = await tx.material.create({
+      data: {
+        warehouseId: warehouse.id,
+        sku,
+        name,
+        locationCode: dto.locationCode?.trim() || null,
+        unitId: dto.unitId,
+        shapeId: dto.shapeId || null,
+        colorId: colorId || null,
+        materialTypeId:
+          prepared.isBtp || prepared.otherClassId
+            ? null
+            : dto.materialTypeId || null,
+        otherClassId: prepared.otherClassId,
+        bodyMetalId: dto.bodyMetalId || null,
+        productKindId: dto.productKindId || null,
+        platingColorId: dto.platingColorId || null,
+        sizeLabel: dto.sizeLabel?.trim() || null,
+        stoneWeight: prepared.isBtp ? null : optionalDecimal(dto.stoneWeight),
+        weight: prepared.isBtp ? null : optionalDecimal(dto.weight),
+        images: { create: images },
+        classification: classificationOf(warehouse.code),
+        metalKind: prepared.metalKind,
+        note: dto.note?.trim() || null,
+        sortOrder,
+      },
+    });
+    await tx.stockBalance.create({
+      data: {
+        warehouseId: warehouse.id,
+        materialId: material.id,
+        openingQty: prepared.openingQty,
+        openingAmount: prepared.openingAmount,
+        stockUnitPrice: prepared.stockUnitPrice,
+        qty: prepared.openingQty,
+        amount: prepared.openingAmount,
+      },
+    });
+    return material.id;
   }
 
   private async assertAssignableLocation(
