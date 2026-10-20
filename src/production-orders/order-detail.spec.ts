@@ -28,7 +28,9 @@ import {
   subTicketState,
   subTicketSummary,
   ticketPosition,
+  ticketMaterials,
   ticketStatus,
+  type MaterialRequest,
   type OrderDetail,
   type SubTicket,
 } from './order-detail';
@@ -1010,5 +1012,119 @@ describe('subTicketSummary — cột Phiếu con ở danh sách đơn', () => {
     expect(
       subTicketSummary('A001', ticket({ outcome: 'FINISH' }), [nguoiDone, xi]),
     ).toMatchObject({ state: 'FINISH', stage: 'PLATING', workerName: null });
+  });
+});
+
+describe('ticketMaterials — bạc vào phiếu khi Khắc xuất lại BTP', () => {
+  const DONE = new Date('2026-10-12T07:15:00Z');
+  const issue = (
+    stageEntryId: string,
+    weight: string,
+    warehouse: string,
+  ): MaterialRequest =>
+    ({
+      stageEntryId,
+      materialId: `m-${stageEntryId}`,
+      kind: MaterialRequestKind.METAL,
+      status: MaterialRequestStatus.ISSUED,
+      atHandover: true,
+      issuedQty: dec('200'),
+      issuedWeight: dec(weight),
+      issuedStoneCount: null,
+      material: {
+        id: `m-${stageEntryId}`,
+        sku: null,
+        name: 'BTP',
+        unit: { name: 'chiếc' },
+        warehouse: { code: warehouse, shortName: null },
+      },
+    }) as unknown as MaterialRequest;
+
+  it('BTP Khắc xuất lại là hàng của Nguội — không cộng đôi vào bạc vào phiếu', () => {
+    const filing = entry({
+      id: 'e1',
+      stage: 'FILING',
+      handedSilverWeight: null,
+      returnedAt: DONE,
+      returnedSilverWeight: dec('7900'),
+    });
+    const engraving = entry({
+      id: 'e2',
+      stage: 'ENGRAVING',
+      handedSilverWeight: null,
+      returnedAt: DONE,
+      returnedSilverWeight: dec('7800'),
+    });
+    const result = ticketMaterials(
+      [filing, engraving],
+      [
+        issue('e1', '8000', 'btp-cho-vao-da'),
+        issue('e2', '7900', 'btp-cho-vao-da'),
+      ],
+    );
+    expect(result.silverIn).toBe('8000');
+    expect(result.silverLoss).toBe('200');
+    expect(result.silverLossPercent).toBe('2.5');
+    // Ô "Bạc xuất thêm" chỉ tính bạc S925, không tính BTP.
+    expect(result.issuedSilverWeight).toBe('0');
+  });
+
+  it('phiếu mẹ: mỗi phiếu con có khâu Nguội đầu riêng — cộng đủ BTP từng phiếu', () => {
+    const t1 = entry({
+      id: 'e1',
+      subTicketId: 't1',
+      handedSilverWeight: null,
+      returnedAt: DONE,
+      returnedSilverWeight: dec('7900'),
+    });
+    const t1Engraving = entry({
+      id: 'e2',
+      subTicketId: 't1',
+      stage: 'ENGRAVING',
+      handedSilverWeight: null,
+      returnedAt: DONE,
+      returnedSilverWeight: dec('7800'),
+    });
+    const t2 = entry({
+      id: 'e3',
+      subTicketId: 't2',
+      handedSilverWeight: null,
+      returnedAt: DONE,
+      returnedSilverWeight: dec('7888'),
+    });
+    const result = ticketMaterials(
+      [t1, t1Engraving, t2],
+      [
+        issue('e1', '8000', 'btp-cho-vao-da'),
+        issue('e2', '7900', 'btp-cho-vao-da'),
+        issue('e3', '8000', 'btp-cho-vao-da'),
+      ],
+    );
+    expect(result.silverIn).toBe('16000');
+    expect(result.silverLoss).toBe('312');
+    expect(result.silverLossPercent).toBe('1.95');
+  });
+
+  it('bạc S925 thợ xin thêm ở khâu sau vẫn cộng vào bạc vào phiếu', () => {
+    const filing = entry({
+      id: 'e1',
+      stage: 'FILING',
+      handedSilverWeight: dec('8000'),
+      returnedAt: DONE,
+      returnedSilverWeight: dec('7900'),
+    });
+    const engraving = entry({
+      id: 'e2',
+      stage: 'ENGRAVING',
+      handedSilverWeight: dec('7900'),
+      returnedAt: DONE,
+      returnedSilverWeight: dec('7950'),
+    });
+    const result = ticketMaterials(
+      [filing, engraving],
+      [issue('e2', '100', 'nvl-chinh')],
+    );
+    expect(result.silverIn).toBe('8100');
+    expect(result.issuedSilverWeight).toBe('100');
   });
 });

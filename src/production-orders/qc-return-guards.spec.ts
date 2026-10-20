@@ -109,6 +109,32 @@ describe('QC cân lại Nguội / Vào đá — chặn kết quả lỗi thiếu
     ).rejects.toThrow(new BadRequestException('Có hàng lỗi — ghi lý do lỗi'));
   });
 
+  it('Đánh bóng vẫn được nhận lại 0 sp (chốt Lỗi)', async () => {
+    // Qua bước chặn "không báo lỗi" thì tới bước khác (ảnh / lý do) — không phải lỗi chặn khâu.
+    await expect(
+      serviceFor(ProductionStage.POLISHING).returnStage(
+        'A002',
+        'stage-1',
+        dto({ returnedQty: 0, returnedSilverWeight: undefined, note: 'Xước' }),
+        actor,
+      ),
+    ).rejects.not.toThrow(/không báo lỗi/);
+  });
+
+  it.each([ProductionStage.ENGRAVING, ProductionStage.PLATING])(
+    '%s: không báo lỗi — nhận lại 0 sp thì chặn',
+    async (stage) => {
+      await expect(
+        serviceFor(stage).returnStage(
+          'A002',
+          'stage-1',
+          dto({ returnedQty: 0, returnedSilverWeight: undefined, note: 'Gãy' }),
+          actor,
+        ),
+      ).rejects.toThrow(/không báo lỗi — QC nhận lại ít nhất 1 sản phẩm/);
+    },
+  );
+
   it('lỗi hết có SL lỗi + lý do thì qua được bước chặn', async () => {
     const service = serviceFor(ProductionStage.FILING);
     // Qua bước chặn thì tới phần ghi DB — mock rỗng nên lỗi khác, không phải lỗi chặn.

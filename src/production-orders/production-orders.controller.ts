@@ -482,7 +482,7 @@ export class ProductionOrdersController {
     return this.subTickets.assignOrder(code, dto, user);
   }
 
-  /** QC / admin báo lỗi khâu đang làm trên phiếu mẹ. */
+  /** QC / admin báo lỗi khâu đang làm trên phiếu mẹ (Nguội / Vào đá / Đánh bóng). */
   @Post(':code/work/stage-defect')
   @BlockWorker()
   @RequirePermissions(Permission.PRODUCTION_QC)
@@ -670,7 +670,7 @@ export class ProductionOrdersController {
     return this.subTickets.unsubmit(code, no, user);
   }
 
-  /** QC / admin báo lỗi khâu đang làm trên phiếu con (lý do bắt buộc). */
+  /** QC / admin báo lỗi khâu đang làm trên phiếu con (Nguội / Vào đá / Đánh bóng, lý do bắt buộc). */
   @Post(':code/sub-tickets/:no/stage-defect')
   @BlockWorker()
   @RequirePermissions(Permission.PRODUCTION_QC)

@@ -269,6 +269,13 @@ export function ticketNetQty(
 }
 export type MaterialRequest = OrderDetail['materialRequests'][number];
 
+const BTP_WAREHOUSE_CODE = 'btp-cho-vao-da';
+
+/** Yêu cầu xuất từ kho BTP — hàng của chính đơn đi qua khâu, không phải bạc mới. */
+function isBtpRequest(request: MaterialRequest) {
+  return request.material.warehouse.code === BTP_WAREHOUSE_CODE;
+}
+
 /** Mã NVL kèm theo mỗi yêu cầu xuất — đủ để hiện dòng trên phiếu. */
 export function materialRequestMaterial() {
   return {
@@ -445,6 +452,13 @@ export function skipsStone(order: {
 export const KEEPER_CONFIRM_STAGES: ProductionStage[] = [
   G.FILING,
   G.STONE_SETTING,
+];
+
+/** Khâu được báo lỗi (nút Báo lỗi, QC nhận lại 0 sp chốt Lỗi). Khắc / Xi không báo lỗi. */
+export const DEFECT_REPORT_STAGES: ProductionStage[] = [
+  G.FILING,
+  G.STONE_SETTING,
+  G.POLISHING,
 ];
 
 /**
@@ -1663,6 +1677,8 @@ export function toStage(
         name: request.material.name,
         unit: request.material.unit.name,
         kind: request.kind,
+        /** Xuất từ kho BTP — phiếu in tách TL giao thành S925 / BTP. */
+        btp: isBtpRequest(request),
         qty: dec(request.issuedQty),
         weight: dec(request.issuedWeight),
         stoneCount: request.issuedStoneCount,
@@ -1783,11 +1799,20 @@ export function ticketMaterials(
   let silverLoss: Prisma.Decimal | null = null;
   let stonesIn = 0;
   let stoneLoss: number | null = null;
-  entries.forEach((entry, index) => {
+  // Phiếu mẹ cộng nhiều phiếu con: mỗi phiếu con có khâu đầu riêng. Khâu giao cả đơn (trước khi
+  // chia phiếu) là khâu đầu chung — phiếu con sau đó nhận hàng của nó.
+  const started = new Set<string>();
+  entries.forEach((entry) => {
     const own = requests.filter((request) => request.stageEntryId === entry.id);
     const issued = issuedOf(own);
-    // Khâu đầu lấy TL giao làm mốc; các khâu sau TL giao chính là hàng của khâu trước.
-    const base = index === 0 ? silverInOf(entry, issued.metal) : issued.metal;
+    const lineage = entry.subTicketId ?? 'order';
+    const first = !started.has(lineage) && !started.has('order');
+    started.add(lineage);
+    // Khâu đầu lấy TL giao + phần xuất làm mốc. Các khâu sau nhận hàng của khâu trước — kể cả
+    // BTP xuất từ kho (vd Khắc xuất lại BTP Nguội vừa nhập) — nên chỉ cộng bạc S925 xuất mới.
+    const base = first
+      ? silverInOf(entry, issued.metal)
+      : issuedOf(own.filter((request) => !isBtpRequest(request))).metal;
     if (base != null) silverIn = (silverIn ?? zero).add(base);
     if (!entry.returnedAt) return;
     if (base != null) returnedBase = (returnedBase ?? zero).add(base);
@@ -1808,6 +1833,11 @@ export function ticketMaterials(
       weight: dec(line.weight),
     })),
     issuedMetalWeight: decStr(issuedOf(issuedRequests).metal),
+    /** Chỉ bạc S925 (kho NVL) — không tính BTP xuất lúc giao. */
+    issuedSilverWeight: decStr(
+      issuedOf(issuedRequests.filter((request) => !isBtpRequest(request)))
+        .metal,
+    ),
     issuedStoneCount: issuedOf(issuedRequests).stones,
     pendingCount: requests.filter(
       (request) => request.status === MaterialRequestStatus.PENDING,

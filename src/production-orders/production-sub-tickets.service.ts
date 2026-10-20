@@ -81,6 +81,7 @@ import {
   blankLeftOf,
   ticketNetQty,
   KEEPER_CONFIRM_STAGES,
+  DEFECT_REPORT_STAGES,
   SELF_TAKE_STAGES,
   selfTakeStageAfter,
   carriedSilverOf,
@@ -1855,7 +1856,8 @@ export class ProductionSubTicketsService {
   /**
    * QC / admin báo lỗi ngay ở khâu đang làm của phiếu mẹ / con. Khâu coi như
    * đã nộp để QC cân lại — không ghi đè lên "thợ báo xong". Nguội / Vào đá đạt 0 thì sau khi
-   * thủ kho xác nhận phiếu tự chốt Lỗi tại khâu đó; các khâu khác QC chốt Lỗi sau khi nhận lại.
+   * thủ kho xác nhận phiếu tự chốt Lỗi tại khâu đó; Đánh bóng QC chốt Lỗi khi nhận lại 0 sp.
+   * Khắc / Xi không báo lỗi.
    */
   async reportStageDefect(
     code: string,
@@ -1880,6 +1882,11 @@ export class ProductionSubTicketsService {
       if (!open) {
         throw new BadRequestException(
           `Phiếu ${label} không có khâu nào đang làm để báo lỗi`,
+        );
+      }
+      if (!DEFECT_REPORT_STAGES.includes(open.stage)) {
+        throw new BadRequestException(
+          `Khâu ${STAGE_LABEL[open.stage]} không báo lỗi — chỉ báo lỗi ở khâu Nguội / Vào đá / Đánh bóng`,
         );
       }
       if (open.defectReportedAt) {
