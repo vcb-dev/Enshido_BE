@@ -1,5 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
-import { Prisma, ProductionStatus, RoleCode } from '@prisma/client';
+import { CastingSlipStatus, Prisma, ProductionStatus, RoleCode } from '@prisma/client';
 import type { AuthUserPayload } from '../auth/types';
 import { Permission } from '../auth/permissions';
 import { CastingSlipsService } from './casting-slips.service';
@@ -240,19 +240,26 @@ describe('cắt cây thông sau Đúc xong → Chờ nguội', () => {
 });
 
 describe('bước 7 cấp vật tư đúc xuất kho NVL chính', () => {
-  function issueSetup() {
+  function issueSetup(slip?: { isServiceCast?: boolean; startedByName?: string | null; startedByUserId?: string | null }) {
     const tx = {
       castingSlip: {
         findUnique: jest.fn().mockResolvedValue({
           code: 'DABCDE',
           waxWeightGram: new Prisma.Decimal(10),
+          isServiceCast: false,
+          startedByName: 'Mạnh',
+          startedByUserId: 'caster-1',
           orders: [{ orderId: '1' }, { orderId: '2' }],
+          ...slip,
         }),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       castingSlipImage: { createMany: jest.fn() },
       productionOrder: {
         updateMany: jest.fn().mockResolvedValue({ count: 2 }),
+      },
+      material: {
+        findUnique: jest.fn().mockResolvedValue(null),
       },
     };
     const prisma = {
@@ -308,6 +315,50 @@ describe('bước 7 cấp vật tư đúc xuất kho NVL chính', () => {
     expect(inventory.bustNvlStock).toHaveBeenCalled();
   });
 
+  it('xuất vàng độc lập, bạc vẫn lấy ước tính khi không nhập thực xuất bạc', async () => {
+    const { service, inventory } = issueSetup();
+    await service.issue(
+      'slip',
+      {
+        images: [image],
+        issueGoldGram: 2,
+        issueGoldMaterialId: 'm-gold',
+        issueS999MaterialId: 'm-999',
+        issueMasterAlloyMaterialId: 'm-hoi',
+        issueS925MaterialId: 'm-925',
+      },
+      actor,
+    );
+    expect(inventory.issueStockForCastingSlip).toHaveBeenCalledTimes(4);
+    expect(inventory.issueStockForCastingSlip).toHaveBeenNthCalledWith(
+      4,
+      expect.anything(),
+      expect.objectContaining({
+        materialId: 'm-gold',
+        grams: new Prisma.Decimal(2),
+      }),
+    );
+  });
+
+  it('có gram vàng mà chưa chọn mã NVL vàng thì không cấp', async () => {
+    const { service, tx, inventory } = issueSetup();
+    await expect(
+      service.issue(
+        'slip',
+        {
+          images: [image],
+          issueGoldGram: 2,
+          issueS999MaterialId: 'm-999',
+          issueMasterAlloyMaterialId: 'm-hoi',
+          issueS925MaterialId: 'm-925',
+        },
+        actor,
+      ),
+    ).rejects.toThrow('Chọn mã NVL xuất cho Vàng');
+    expect(tx.castingSlip.updateMany).not.toHaveBeenCalled();
+    expect(inventory.issueStockForCastingSlip).not.toHaveBeenCalled();
+  });
+
   it('dòng có gram mà chưa chọn mã NVL thì không cấp', async () => {
     const { service, tx, inventory } = issueSetup();
     await expect(
@@ -337,5 +388,136 @@ describe('bước 7 cấp vật tư đúc xuất kho NVL chính', () => {
       actor,
     );
     expect(inventory.issueStockForCastingSlip).toHaveBeenCalledTimes(3);
+  });
+
+  it('chọn mã vàng 14k mà không nhập gram thì xuất TL sáp × 13', async () => {
+    const { service, tx, inventory } = issueSetup();
+    tx.material.findUnique.mockResolvedValue({
+      name: 'Vàng nguyên liệu 14K',
+      sku: 'V14K',
+      otherClass: { code: 'vang-14k', name: 'Vàng 14K' },
+      materialType: null,
+    });
+    await service.issue(
+      'slip',
+      {
+        images: [image],
+        issueS999Gram: 50,
+        issueS999MaterialId: 'm-999',
+        issueGoldMaterialId: 'm-gold',
+      },
+      actor,
+    );
+    expect(inventory.issueStockForCastingSlip).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        materialId: 'm-gold',
+        grams: new Prisma.Decimal(130),
+      }),
+    );
+  });
+
+  it('đúc trong xưởng: cấp xong sang Chờ đúc', async () => {
+    const { service, tx } = issueSetup();
+    await service.issue(
+      'slip',
+      {
+        images: [image],
+        issueS999Gram: 50,
+        issueS999MaterialId: 'm-999',
+      },
+      actor,
+    );
+    expect(tx.castingSlip.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: CastingSlipStatus.WAIT_CASTING }),
+      }),
+    );
+    expect(tx.productionOrder.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { status: ProductionStatus.WAIT_CASTING },
+      }),
+    );
+  });
+
+  it('đúc dịch vụ: cấp xong sang Đang đúc, không chờ thợ nhận', async () => {
+    const { service, tx } = issueSetup({
+      isServiceCast: true,
+      startedByName: 'Đúc dịch vụ',
+      startedByUserId: null,
+    });
+    await service.issue(
+      'slip',
+      {
+        images: [image],
+        issueS999Gram: 50,
+        issueS999MaterialId: 'm-999',
+      },
+      actor,
+    );
+    expect(tx.castingSlip.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: CastingSlipStatus.CASTING,
+          isServiceCast: true,
+          startedAt: expect.any(Date),
+        }),
+      }),
+    );
+    expect(tx.productionOrder.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { status: ProductionStatus.CASTING },
+      }),
+    );
+  });
+
+  it('mã NVL cấp vật tư kèm tồn khả dụng để FE báo thiếu ngay khi chọn', async () => {
+    const prisma = {
+      material: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'm-999',
+            sku: 'A00305',
+            name: 'Bạc nguyên liệu S999 bạc bi',
+            otherClass: null,
+            materialType: null,
+          },
+        ]),
+      },
+    };
+    const inventory = {
+      stockSnapshot: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'm-999',
+            {
+              onHand: new Prisma.Decimal('1266.9508'),
+              held: new Prisma.Decimal(0),
+              available: new Prisma.Decimal('1266.9508'),
+              ledgerQty: new Prisma.Decimal('1266.9508'),
+              gramOnHand: new Prisma.Decimal('1266.9508'),
+              gramBaseAt: null,
+            },
+          ],
+        ]),
+      ),
+    };
+    const service = new CastingSlipsService(
+      prisma as never,
+      {} as never,
+      inventory as never,
+    );
+    await expect(service.restMaterialOptions()).resolves.toEqual({
+      defaultName: 'Bạc thu hồi / đầu cây S925',
+      items: [
+        expect.objectContaining({
+          id: 'm-999',
+          sku: 'A00305',
+          availableQty: '1266.9508',
+          onHandQty: '1266.9508',
+          heldQty: '0',
+        }),
+      ],
+    });
   });
 });

@@ -305,15 +305,7 @@ export class InventoryService {
           () => this.listCatalogChildrenByParent('chat-lieu'),
           () => this.listCatalogChildrenByParent('danh-muc-btp'),
           () => this.listCatalogChildrenByParent('phan-loai-san-pham'),
-          () =>
-            this.prisma.otherClass.findMany({
-              where: {
-                parentId: null,
-                code: { in: ['ccdc', 'nvl-phu', 'nvl-chinh'] },
-              },
-              select: lookupSelect,
-              orderBy: { sortOrder: 'asc' },
-            }),
+          () => this.listConsumableCategories(),
           () => this.listCatalogChildrenByParent('mau-xi'),
         ]);
         return {
@@ -570,15 +562,12 @@ export class InventoryService {
     }
     const otherClassId =
       dto.otherClassId !== undefined
-        ? dto.otherClassId
+        ? await this.resolveConsumableClassId(dto.otherClassId)
         : dto.btpCategoryId !== undefined
           ? dto.btpCategoryId
           : dto.otherClassName === undefined
             ? undefined
             : await this.resolveOtherClassId(dto.otherClassName);
-    if (dto.otherClassId !== undefined) {
-      await this.assertConsumableClass(dto.otherClassId);
-    }
     await this.prisma.runTx(async (tx) => {
       await tx.material.update({
         where: { id: material.id },
@@ -798,16 +787,19 @@ export class InventoryService {
     const unitName = dto.unitName?.trim() || unit?.name || 'viên';
     const receivedAt = inboundReceivedAt(dto.receivedAt);
 
+    const inboundClassId =
+      !existing && warehouse.code === 'nvl-tieu-hao'
+        ? await this.resolveConsumableClassId(dto.otherClassId)
+        : null;
     if (!existing) {
       if (warehouse.code !== 'nvl-tieu-hao') {
         throw new BadRequestException(
           'Chọn NVL đã có ở Tồn. Không tạo tên hàng mới từ Nhập.',
         );
       }
-      if (!dto.otherClassId) {
+      if (!inboundClassId) {
         throw new BadRequestException('Chọn danh mục');
       }
-      await this.assertConsumableClass(dto.otherClassId);
     }
 
     if (dto.locationCode !== undefined) {
@@ -826,7 +818,7 @@ export class InventoryService {
             warehouse,
             name,
             unit,
-            dto.otherClassId,
+            inboundClassId,
           );
       if (existing && dto.locationCode !== undefined) {
         await tx.material.update({
@@ -1826,16 +1818,16 @@ export class InventoryService {
     await this.assertAssignableLocation(warehouse.id, dto.locationCode);
     const isBtp = warehouse.code === 'btp-cho-vao-da';
     const isConsumable = warehouse.code === 'nvl-tieu-hao';
-    if (isConsumable) {
-      await this.assertConsumableClass(dto.otherClassId);
-      if (!dto.otherClassId) {
-        throw new BadRequestException('Chọn danh mục');
-      }
+    const resolvedConsumable = isConsumable
+      ? await this.resolveConsumableClassId(dto.otherClassId)
+      : null;
+    if (isConsumable && !resolvedConsumable) {
+      throw new BadRequestException('Chọn danh mục');
     }
     const otherClassId = isBtp
       ? dto.btpCategoryId || null
       : isConsumable
-        ? dto.otherClassId || null
+        ? resolvedConsumable
         : await this.resolveOtherClassId(dto.otherClassName);
     const metalKind =
       isBtp || otherClassId
@@ -2659,17 +2651,43 @@ export class InventoryService {
     return code;
   }
 
-  private async assertConsumableClass(id?: string | null) {
-    if (!id) return;
-    const found = await this.prisma.otherClass.findFirst({
+  private static readonly CONSUMABLE_CLASS_CODES = [
+    'ccdc',
+    'nvl-phu',
+    'nvl-chinh',
+  ] as const;
+
+  /**
+   * Danh mục NVL tiêu hao: nhận id otherClass (nhóm hoặc danh mục con) hoặc id
+   * materialType cũ (ccdc / nvl-phu từ import) — trả id nhóm otherClass để lưu.
+   */
+  private async resolveConsumableClassId(id?: string | null) {
+    if (!id) return null;
+    const codes = InventoryService.CONSUMABLE_CLASS_CODES as unknown as string[];
+    const asClass = await this.prisma.otherClass.findFirst({
       where: {
         id,
-        parentId: null,
-        code: { in: ['ccdc', 'nvl-phu', 'nvl-chinh'] },
+        OR: [{ code: { in: codes } }, { parent: { code: { in: codes } } }],
       },
-      select: { id: true },
+      select: { id: true, parentId: true },
     });
-    if (!found) throw new NotFoundException('Danh mục không hợp lệ');
+    if (asClass) return asClass.parentId ?? asClass.id;
+
+    const asType = await this.prisma.materialType.findFirst({
+      where: { id, code: { in: codes } },
+      select: { code: true, name: true },
+    });
+    if (asType) {
+      const sortOrder =
+        asType.code === 'ccdc' ? 6 : asType.code === 'nvl-phu' ? 7 : 8;
+      const parent = await this.ensureCatalogParent(
+        asType.code,
+        asType.name,
+        sortOrder,
+      );
+      return parent.id;
+    }
+    throw new NotFoundException('Danh mục không hợp lệ');
   }
 
   private async listConsumableCategories() {

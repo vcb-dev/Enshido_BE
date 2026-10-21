@@ -3387,11 +3387,12 @@ export class ProductionSubTicketsService {
         needCasting
           ? this.prisma.castingSlip.findMany({
               where: adminView
-                ? { status: CastingSlipStatus.WAIT_CASTING, startedAt: null }
+                ? { status: CastingSlipStatus.WAIT_CASTING, startedAt: null, isServiceCast: false }
                 : {
                     startedByUserId: actor.id,
                     status: CastingSlipStatus.WAIT_CASTING,
                     startedAt: null,
+                    isServiceCast: false,
                   },
               select: castingSlipSelect,
               orderBy: [{ slipDate: 'desc' }, { code: 'desc' }],
@@ -3402,10 +3403,11 @@ export class ProductionSubTicketsService {
         needCasting
           ? this.prisma.castingSlip.findMany({
               where: adminView
-                ? { status: { in: castingHeldStatuses } }
+                ? { status: { in: castingHeldStatuses }, isServiceCast: false }
                 : {
                     startedByUserId: actor.id,
                     status: { in: castingHeldStatuses },
+                    isServiceCast: false,
                   },
               select: castingSlipSelect,
               orderBy: [{ slipDate: 'desc' }, { code: 'desc' }],
@@ -3416,8 +3418,12 @@ export class ProductionSubTicketsService {
         needCasting
           ? this.prisma.castingSlip.findMany({
               where: adminView
-                ? { status: CastingSlipStatus.DONE }
-                : { startedByUserId: actor.id, status: CastingSlipStatus.DONE },
+                ? { status: CastingSlipStatus.DONE, isServiceCast: false }
+                : {
+                    startedByUserId: actor.id,
+                    status: CastingSlipStatus.DONE,
+                    isServiceCast: false,
+                  },
               select: castingSlipSelect,
               orderBy: { confirmedAt: 'desc' },
               take: RECENT_LIMIT,

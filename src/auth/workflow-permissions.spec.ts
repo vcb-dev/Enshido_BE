@@ -249,7 +249,7 @@ const MATRIX: [string, object, string, PermissionCode[]][] = [
     'B9 nhập kết quả đúc',
     CastingSlipsController.prototype,
     'submitResult',
-    [P.PRODUCTION_CAST],
+    [P.PRODUCTION_CAST, P.WAREHOUSE_KEEPER],
   ],
   [
     'B9 thủ kho xác nhận đúc',

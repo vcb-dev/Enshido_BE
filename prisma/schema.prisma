@@ -1352,16 +1352,23 @@ model CastingSlip {
   issueS999Gram           Decimal?          @map("issue_s999_gram") @db.Decimal(18, 4)
   issueMasterAlloyGram    Decimal?          @map("issue_master_alloy_gram") @db.Decimal(18, 4)
   issueS925Gram           Decimal?          @map("issue_s925_gram") @db.Decimal(18, 4)
+  /// Vàng cấp lúc xuất vật tư — ước tính = TL sáp × hệ số K của mã NVL vàng.
+  estimateGoldGram        Decimal?          @map("estimate_gold_gram") @db.Decimal(18, 4)
+  issueGoldGram           Decimal?          @map("issue_gold_gram") @db.Decimal(18, 4)
   status                  CastingSlipStatus @default(WAIT_CASTING)
   /// Bước 8: thợ đúc quét phiếu, bấm bắt đầu đúc.
   startedAt               DateTime?         @map("started_at")
   startedByName           String?           @map("started_by_name")
   /// Thợ đúc nhận phiếu — hao hụt đúc tính theo người này.
   startedByUserId         String?           @map("started_by_user_id") @db.Uuid
+  /// Đúc gửi ngoài xưởng: không giao thợ đúc trong hệ thống.
+  isServiceCast           Boolean           @default(false) @map("is_service_cast")
   /// Bước 9: TL cây thông sau đúc, bạc và thạch cao đã dùng (g).
   castTreeWeightGram      Decimal?          @map("cast_tree_weight_gram") @db.Decimal(18, 4)
   silverUsedGram          Decimal?          @map("silver_used_gram") @db.Decimal(18, 4)
   plasterUsedGram         Decimal?          @map("plaster_used_gram") @db.Decimal(18, 4)
+  /// Đúc dịch vụ: đơn giá dịch vụ (đ) — thay cho thạch cao đã dùng.
+  serviceUnitPrice        Decimal?          @map("service_unit_price") @db.Decimal(18, 2)
   submittedAt             DateTime?         @map("submitted_at")
   submittedByName         String?           @map("submitted_by_name")
   submittedByUserId       String?           @map("submitted_by_user_id") @db.Uuid

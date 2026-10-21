@@ -81,9 +81,19 @@ export class CreateCastingSlipDto {
   @Min(0)
   issueS925Gram?: number;
 
-  /** Thợ đúc được giao phiếu (quyền production.cast). */
+  /** Thợ đúc được giao phiếu. Bỏ trống khi đúc dịch vụ. */
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    value === '' || value == null ? undefined : value,
+  )
   @IsUUID('4')
-  assignedUserId!: string;
+  assignedUserId?: string;
+
+  /** Đúc gửi ngoài xưởng — không chọn thợ đúc. */
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true')
+  @IsBoolean()
+  isServiceCast?: boolean;
 }
 
 /** Bước 7 (sau khi in phiếu): nhập thực xuất (không nhập thì lấy ước tính) + ảnh rồi Lưu. */
@@ -113,6 +123,12 @@ export class IssueCastingSlipDto {
   @Min(0)
   issueS925Gram?: number;
 
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  issueGoldGram?: number;
+
   /** Mã NVL (kho NVL chính, đơn vị gram) xuất cho từng dòng — bắt buộc khi dòng đó có số gram. */
   @IsOptional()
   @IsUUID()
@@ -125,6 +141,10 @@ export class IssueCastingSlipDto {
   @IsOptional()
   @IsUUID()
   issueS925MaterialId?: string;
+
+  @IsOptional()
+  @IsUUID()
+  issueGoldMaterialId?: string;
 }
 
 export class CastingLossQuery {
@@ -144,7 +164,7 @@ export class CastingSlipCandidatesQuery {
   search?: string;
 }
 
-/** Bước 9: thợ đúc nhập kết quả sau đúc — ảnh cân cây thông + bạc, thạch cao đã dùng. */
+/** Bước 9: kết quả sau đúc — ảnh cân cây thông + bạc; thạch cao (trong xưởng) hoặc đơn giá dịch vụ. */
 export class CastingSlipResultDto {
   @Type(() => Number)
   @IsNumber()
@@ -156,10 +176,17 @@ export class CastingSlipResultDto {
   @Min(0)
   silverUsedGram!: number;
 
+  @IsOptional()
   @Type(() => Number)
   @IsNumber()
   @Min(0)
-  plasterUsedGram!: number;
+  plasterUsedGram?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  serviceUnitPrice?: number;
 
   @IsArray()
   @ArrayMinSize(1)

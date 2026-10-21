@@ -13,11 +13,11 @@ import {
   ProductionStatus,
   RoleCode,
 } from '@prisma/client';
-import { userHasRole } from '../auth/permissions';
+import { Permission, userCan, userHasRole } from '../auth/permissions';
 import { isCastWorkerAssignee } from '../auth/staff-job-presets';
 import type { AuthUserPayload } from '../auth/types';
 import { canConfirmIntakeWarehouse } from '../intake-orders/intake-warehouse-access';
-import { InventoryService } from '../inventory/inventory.service';
+import { InventoryService, snapshotFields } from '../inventory/inventory.service';
 import { dbTable } from '../prisma/database-url';
 import { poolAll } from '../prisma/pool-all';
 import { PrismaService } from '../prisma/prisma.service';
@@ -43,6 +43,31 @@ import {
 
 const CODE_RETRIES = 8;
 const SLIP_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const SERVICE_CAST_LABEL = 'Đúc dịch vụ';
+
+/** Đúc dịch vụ: không giao thợ, cấp vật tư xong vào Đang đúc luôn. */
+function isServiceCastSlip(slip: {
+  isServiceCast?: boolean | null;
+  startedByUserId?: string | null;
+  startedByName?: string | null;
+}) {
+  return (
+    Boolean(slip.isServiceCast) ||
+    (slip.startedByUserId == null && slip.startedByName === SERVICE_CAST_LABEL)
+  );
+}
+
+function statusAfterIssue(isService: boolean) {
+  return isService
+    ? {
+        slip: CastingSlipStatus.CASTING,
+        order: ProductionStatus.CASTING,
+      }
+    : {
+        slip: CastingSlipStatus.WAIT_CASTING,
+        order: ProductionStatus.WAIT_CASTING,
+      };
+}
 
 function randomSlipCode() {
   let suffix = '';
@@ -261,7 +286,13 @@ export class CastingSlipsService {
     );
     const estimate = silverEstimateFromWax(waxWeightGram);
     const createdByName = actorName(actor);
-    const assignee = await this.resolveCastWorker(dto.assignedUserId);
+    const isServiceCast = Boolean(dto.isServiceCast);
+    if (!isServiceCast && !dto.assignedUserId) {
+      throw new BadRequestException('Chọn thợ đúc được giao phiếu');
+    }
+    const assignee = isServiceCast
+      ? null
+      : await this.resolveCastWorker(dto.assignedUserId!);
 
     for (let attempt = 0; attempt < CODE_RETRIES; attempt++) {
       try {
@@ -278,9 +309,11 @@ export class CastingSlipsService {
               issueS999Gram: null,
               issueMasterAlloyGram: null,
               issueS925Gram: null,
+              issueGoldGram: null,
               createdByName,
-              startedByUserId: assignee.id,
-              startedByName: assignee.name,
+              isServiceCast,
+              startedByUserId: assignee?.id ?? null,
+              startedByName: assignee?.name ?? (isServiceCast ? SERVICE_CAST_LABEL : null),
               status: CastingSlipStatus.PENDING_ISSUE,
               orders: {
                 create: lines.map(
@@ -315,8 +348,8 @@ export class CastingSlipsService {
   }
 
   /**
-   * Bước 7b: đã in phiếu và cấp vật tư — thủ kho chụp ảnh phiếu đúc + vật tư kèm theo, ấn Lưu
-   * → phiếu và mọi đơn trên phiếu sang Chờ đúc (F).
+   * Bước 7b: đã in phiếu và cấp vật tư — thủ kho chụp ảnh phiếu đúc + vật tư kèm theo, ấn Lưu.
+   * Đúc trong xưởng → Chờ đúc (thợ nhận phiếu). Đúc dịch vụ → Đang đúc luôn (thủ kho nhập kết quả).
    */
   async issue(id: string, dto: IssueCastingSlipDto, actor: AuthUserPayload) {
     const images = this.normalizeImages(dto.images);
@@ -330,16 +363,32 @@ export class CastingSlipsService {
         select: {
           code: true,
           waxWeightGram: true,
+          isServiceCast: true,
+          startedByUserId: true,
+          startedByName: true,
           orders: { select: { orderId: true } },
         },
       });
       if (!slip) throw new NotFoundException('Không tìm thấy phiếu đúc');
+      const isService = isServiceCastSlip(slip);
+      const next = statusAfterIssue(isService);
       const issued = resolveIssuedGrams(slip, dto);
+      const goldEstimate = await goldEstimateFromMaterial(
+        tx,
+        dto.issueGoldMaterialId,
+        slip.waxWeightGram,
+      );
+      if (issued.issueGoldGram == null && goldEstimate) {
+        issued.issueGoldGram = goldEstimate;
+      }
       const stockLines = issueStockLines(issued, dto);
       const claimed = await tx.castingSlip.updateMany({
         where: { id, status: CastingSlipStatus.PENDING_ISSUE },
         data: {
-          status: CastingSlipStatus.WAIT_CASTING,
+          status: next.slip,
+          isServiceCast: isService,
+          estimateGoldGram: goldEstimate,
+          ...(isService ? { startedAt: new Date() } : {}),
           ...issued,
         },
       });
@@ -368,7 +417,9 @@ export class CastingSlipsService {
       const ids = slip.orders.map((line) => line.orderId);
       const moved = await tx.productionOrder.updateMany({
         where: { id: { in: ids }, status: ProductionStatus.WAX_CONFIRMED },
-        data: { status: ProductionStatus.WAIT_CASTING },
+        data: {
+          status: next.order,
+        },
       });
       if (moved.count !== ids.length) {
         throw new ConflictException(
@@ -534,9 +585,18 @@ export class CastingSlipsService {
   async start(id: string, actor: AuthUserPayload) {
     const slipBefore = await this.prisma.castingSlip.findUnique({
       where: { id },
-      select: { startedByUserId: true, startedByName: true },
+      select: {
+        startedByUserId: true,
+        startedByName: true,
+        isServiceCast: true,
+      },
     });
     if (!slipBefore) throw new NotFoundException('Không tìm thấy phiếu đúc');
+    if (slipBefore.isServiceCast) {
+      throw new BadRequestException(
+        'Phiếu đúc dịch vụ không giao thợ — thủ kho nhập kết quả trên Lệnh đúc',
+      );
+    }
     // Admin thao tác thay được; phiếu vẫn giữ thợ đã giao để báo hao hụt đúng người.
     if (
       slipBefore.startedByUserId &&
@@ -593,9 +653,16 @@ export class CastingSlipsService {
         issueS999Gram: true,
         issueMasterAlloyGram: true,
         issueS925Gram: true,
+        isServiceCast: true,
       },
     });
     if (!slip) throw new NotFoundException('Không tìm thấy phiếu đúc');
+    if (
+      !userCan(actor, Permission.PRODUCTION_CAST) &&
+      !(slip.isServiceCast && canConfirmIntakeWarehouse(actor))
+    ) {
+      throw new ForbiddenException('Không đủ quyền nhập kết quả đúc');
+    }
     // Giao ≥ bạc đã dùng ≥ cây thông sau đúc: phần giao chưa dùng trả kho, phần dùng mà
     // không thành cây là hao hụt đúc — không số nào được âm.
     const issued = new Prisma.Decimal(issueTotal(slip));
@@ -611,6 +678,13 @@ export class CastingSlipsService {
         `TL cây thông sau đúc (${tree.toString()} g) không được nặng hơn bạc đã dùng (${used.toString()} g)`,
       );
     }
+    if (slip.isServiceCast) {
+      if (dto.serviceUnitPrice == null || dto.serviceUnitPrice < 0) {
+        throw new BadRequestException('Nhập đơn giá dịch vụ');
+      }
+    } else if (dto.plasterUsedGram == null || dto.plasterUsedGram < 0) {
+      throw new BadRequestException('Nhập trọng lượng thạch cao đã dùng (g)');
+    }
     await this.prisma.runTx(async (tx) => {
       const slipOrders = await tx.castingSlip.findUnique({
         where: { id },
@@ -623,7 +697,12 @@ export class CastingSlipsService {
           status: CastingSlipStatus.PENDING_CONFIRMATION,
           castTreeWeightGram: new Prisma.Decimal(dto.castTreeWeightGram),
           silverUsedGram: new Prisma.Decimal(dto.silverUsedGram),
-          plasterUsedGram: new Prisma.Decimal(dto.plasterUsedGram),
+          plasterUsedGram: slip.isServiceCast
+            ? null
+            : new Prisma.Decimal(dto.plasterUsedGram ?? 0),
+          serviceUnitPrice: slip.isServiceCast
+            ? new Prisma.Decimal(dto.serviceUnitPrice ?? 0)
+            : null,
           submittedAt: new Date(),
           submittedByName,
           submittedByUserId: actor.id,
@@ -1011,9 +1090,32 @@ export class CastingSlipsService {
         unit: { code: 'gram' },
       },
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
-      select: { id: true, sku: true, name: true },
+      select: {
+        id: true,
+        sku: true,
+        name: true,
+        otherClass: { select: { code: true, name: true } },
+        materialType: { select: { code: true, name: true } },
+      },
     });
-    return { defaultName: REST_MATERIAL_NAME, items: rows };
+    const snapshot = await this.inventory.stockSnapshot(rows.map((row) => row.id));
+    return {
+      defaultName: REST_MATERIAL_NAME,
+      items: rows.map((row) => ({
+        id: row.id,
+        sku: row.sku,
+        name: row.name,
+        goldKarat: goldKaratFromLabel(
+          row.otherClass?.code,
+          row.otherClass?.name,
+          row.materialType?.code,
+          row.materialType?.name,
+          row.sku,
+          row.name,
+        ),
+        ...snapshotFields(snapshot.get(row.id)),
+      })),
+    };
   }
 
   /**
@@ -1049,17 +1151,21 @@ export class CastingSlipsService {
           estimateS999Gram: true,
           estimateMasterAlloyGram: true,
           estimateS925Gram: true,
+          estimateGoldGram: true,
           issueS999Gram: true,
           issueMasterAlloyGram: true,
           issueS925Gram: true,
+          issueGoldGram: true,
           createdByName: true,
           startedByUserId: true,
           startedByName: true,
+          isServiceCast: true,
         },
       });
       if (!rootRow) {
         throw new NotFoundException('Không tìm thấy phiếu đúc gốc');
       }
+      const isServiceCast = rootRow.isServiceCast || old.isServiceCast;
       /** Thợ đúc: luôn giữ người giao ở phiếu cha gốc (lúc lên phiếu / bắt đầu đúc). */
       let castWorkerId =
         rootRow.startedByUserId ??
@@ -1067,7 +1173,10 @@ export class CastingSlipsService {
       let castWorkerName =
         rootRow.startedByName ??
         (old.redoOfSlipId == null ? old.startedByName : null);
-      if (castWorkerId) {
+      if (isServiceCast) {
+        castWorkerId = null;
+        castWorkerName = SERVICE_CAST_LABEL;
+      } else if (castWorkerId) {
         const assignee = await this.resolveCastWorker(castWorkerId);
         castWorkerId = assignee.id;
         castWorkerName = assignee.name;
@@ -1093,7 +1202,11 @@ export class CastingSlipsService {
           id: { in: intakeIds },
           status: ProductionStatus.CAST_PENDING_CONFIRMATION,
         },
-        data: { status: ProductionStatus.WAIT_CASTING },
+        data: {
+          status: isServiceCast
+            ? ProductionStatus.CASTING
+            : ProductionStatus.WAIT_CASTING,
+        },
       });
       await tx.castingSlipOrder.deleteMany({ where: { slipId: id } });
 
@@ -1108,13 +1221,19 @@ export class CastingSlipsService {
               estimateS999Gram: rootRow.estimateS999Gram,
               estimateMasterAlloyGram: rootRow.estimateMasterAlloyGram,
               estimateS925Gram: rootRow.estimateS925Gram,
+              estimateGoldGram: rootRow.estimateGoldGram,
               issueS999Gram: rootRow.issueS999Gram,
               issueMasterAlloyGram: rootRow.issueMasterAlloyGram,
               issueS925Gram: rootRow.issueS925Gram,
+              issueGoldGram: rootRow.issueGoldGram,
               createdByName: rootRow.createdByName,
+              isServiceCast,
               startedByUserId: castWorkerId,
               startedByName: castWorkerName,
-              status: CastingSlipStatus.WAIT_CASTING,
+              status: isServiceCast
+                ? CastingSlipStatus.CASTING
+                : CastingSlipStatus.WAIT_CASTING,
+              startedAt: isServiceCast ? new Date() : null,
               redoOfSlipId: rootSlipId,
               orders: {
                 create: old.orders.map((line) => ({
@@ -1388,10 +1507,60 @@ function blankWeightTotal(
   );
 }
 
-/** 1 g sáp = 24 g bạc — tổng bạc ước tính cho phiếu đúc. */
-const WAX_TO_SILVER = 24;
+/** 1 g sáp = 14 g bạc — tổng bạc ước tính cho phiếu đúc. */
+const WAX_TO_SILVER = 14;
 /** Bạc 925 = 92.5% bạc nguyên chất, phần còn lại là hội pha. */
 const S999_RATIO = 0.925;
+/** Ước tính vàng = TL sáp × hệ số theo K của mã NVL đã chọn. */
+const WAX_TO_GOLD = { '10': 11, '14': 13, '18': 16, '24': 18 } as const;
+type GoldKarat = keyof typeof WAX_TO_GOLD;
+const GOLD_KARATS = Object.keys(WAX_TO_GOLD) as GoldKarat[];
+
+function goldKaratFromLabel(
+  ...parts: Array<string | null | undefined>
+): GoldKarat | null {
+  const text = parts.filter(Boolean).join(' ');
+  if (!text.trim()) return null;
+  const found = new Set<GoldKarat>();
+  const lower = text.toLowerCase();
+  for (const karat of GOLD_KARATS) {
+    const asCode = new RegExp(`vang[-_]?${karat}k(?:$|[^a-z0-9])`, 'i');
+    const asKarat = new RegExp(
+      `(?:^|[^0-9])${karat}\\s*k(?:$|[^a-z0-9])`,
+      'i',
+    );
+    if (asCode.test(lower) || asKarat.test(lower)) found.add(karat);
+  }
+  return found.size === 1 ? [...found][0] : null;
+}
+
+async function goldEstimateFromMaterial(
+  tx: Prisma.TransactionClient,
+  materialId: string | undefined,
+  wax: Prisma.Decimal,
+) {
+  if (!materialId) return null;
+  const material = await tx.material.findUnique({
+    where: { id: materialId },
+    select: {
+      name: true,
+      sku: true,
+      otherClass: { select: { code: true, name: true } },
+      materialType: { select: { code: true, name: true } },
+    },
+  });
+  if (!material) return null;
+  const karat = goldKaratFromLabel(
+    material.otherClass?.code,
+    material.otherClass?.name,
+    material.materialType?.code,
+    material.materialType?.name,
+    material.sku,
+    material.name,
+  );
+  if (!karat) return null;
+  return wax.mul(WAX_TO_GOLD[karat]).toDecimalPlaces(4);
+}
 
 /**
  * Ước tính bạc cấp cho phiếu đúc. Nửa tổng là S925, nửa còn lại nấu ra từ
@@ -1415,8 +1584,10 @@ function resolveIssuedGrams(
     issueS999Gram?: number;
     issueMasterAlloyGram?: number;
     issueS925Gram?: number;
+    issueGoldGram?: number;
   },
 ) {
+  const gold = optionalIssued(dto.issueGoldGram);
   const entered = {
     issueS999Gram: optionalIssued(dto.issueS999Gram),
     issueMasterAlloyGram: optionalIssued(dto.issueMasterAlloyGram),
@@ -1426,12 +1597,13 @@ function resolveIssuedGrams(
     Number(entered.issueS999Gram ?? 0) +
     Number(entered.issueMasterAlloyGram ?? 0) +
     Number(entered.issueS925Gram ?? 0);
-  if (enteredTotal > 0) return entered;
+  if (enteredTotal > 0) return { ...entered, issueGoldGram: gold };
   const estimate = silverEstimateFromWax(slip.waxWeightGram);
   return {
     issueS999Gram: estimate.s999,
     issueMasterAlloyGram: estimate.masterAlloy,
     issueS925Gram: estimate.s925,
+    issueGoldGram: gold,
   };
 }
 
@@ -1439,6 +1611,7 @@ const ISSUE_STOCK_LINES = [
   ['issueS999Gram', 'issueS999MaterialId', 'Bạc S999'],
   ['issueMasterAlloyGram', 'issueMasterAlloyMaterialId', 'Hội'],
   ['issueS925Gram', 'issueS925MaterialId', 'Bạc S925'],
+  ['issueGoldGram', 'issueGoldMaterialId', 'Vàng'],
 ] as const;
 
 /** Dòng xuất kho cho từng loại vật tư có số gram — dòng nào có gram thì phải chọn mã NVL. */
@@ -1446,7 +1619,10 @@ function issueStockLines(
   issued: ReturnType<typeof resolveIssuedGrams>,
   dto: Pick<
     IssueCastingSlipDto,
-    'issueS999MaterialId' | 'issueMasterAlloyMaterialId' | 'issueS925MaterialId'
+    | 'issueS999MaterialId'
+    | 'issueMasterAlloyMaterialId'
+    | 'issueS925MaterialId'
+    | 'issueGoldMaterialId'
   >,
 ) {
   return ISSUE_STOCK_LINES.flatMap(([gramKey, materialKey, label]) => {
@@ -1555,6 +1731,8 @@ function slipRowBase(row: SlipRowBaseInput) {
     issueS999Gram: dec(row.issueS999Gram),
     issueMasterAlloyGram: dec(row.issueMasterAlloyGram),
     issueS925Gram: dec(row.issueS925Gram),
+    estimateGoldGram: dec(row.estimateGoldGram),
+    issueGoldGram: dec(row.issueGoldGram),
     issueTotalGram: issueTotal(row),
     createdByName: row.createdByName,
     ...castLossOf(row),
@@ -1563,9 +1741,11 @@ function slipRowBase(row: SlipRowBaseInput) {
     status: row.status,
     startedAt: row.startedAt?.toISOString() ?? null,
     startedByName: row.startedByName,
+    isServiceCast: row.isServiceCast,
     castTreeWeightGram: dec(row.castTreeWeightGram),
     silverUsedGram: dec(row.silverUsedGram),
     plasterUsedGram: dec(row.plasterUsedGram),
+    serviceUnitPrice: dec(row.serviceUnitPrice),
     submittedAt: row.submittedAt?.toISOString() ?? null,
     submittedByName: row.submittedByName,
     confirmedAt: row.confirmedAt?.toISOString() ?? null,

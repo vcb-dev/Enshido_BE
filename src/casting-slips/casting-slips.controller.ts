@@ -92,7 +92,7 @@ export class CastingSlipsController {
     return this.slips.create(dto, user);
   }
 
-  /** Bước 7b: chụp ảnh phiếu + vật tư đã cấp, Lưu → đơn Chờ đúc. */
+  /** Bước 7b: chụp ảnh phiếu + vật tư đã cấp, Lưu → Chờ đúc (trong xưởng) hoặc Đang đúc (dịch vụ). */
   @Post(':id/issue')
   @BlockWorker()
   @RequirePermissions(Permission.WAREHOUSE_KEEPER)
@@ -132,7 +132,7 @@ export class CastingSlipsController {
   /** Bước 9: thợ đúc nhập kết quả sau đúc, chờ thủ kho xác nhận. */
   @Post(':id/result')
   @BlockWorker()
-  @RequirePermissions(Permission.PRODUCTION_CAST)
+  @RequirePermissions(Permission.PRODUCTION_CAST, Permission.WAREHOUSE_KEEPER)
   submitResult(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: CastingSlipResultDto,
