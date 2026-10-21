@@ -66,6 +66,7 @@ import {
   skipsStone,
   earlyReturnedOf,
   KEEPER_CONFIRM_STAGES,
+  DEFECT_REPORT_STAGES,
   PHOTO_ONLY_STAGES,
   selfTakeStageAfter,
   LAST_STAGE,
@@ -1818,6 +1819,16 @@ export class ProductionOrdersService {
     if (needsKeeper && (defectQty ?? 0) > 0 && !dto.defectReason?.trim()) {
       throw new BadRequestException('Có hàng lỗi — ghi lý do lỗi');
     }
+    // Khắc / Xi không báo lỗi: QC nhận lại phải có hàng đạt, không chốt Lỗi ở các khâu này.
+    if (
+      !DEFECT_REPORT_STAGES.includes(entry.stage) &&
+      handedQty > 0 &&
+      returnedQty === 0
+    ) {
+      throw new BadRequestException(
+        `Khâu ${STAGE_LABEL[entry.stage]} không báo lỗi — QC nhận lại ít nhất 1 sản phẩm`,
+      );
+    }
     const scrapS999 = needsKeeper ? decimalOrNull(dto.scrapS999Weight) : null;
     // Khắc / Đánh bóng: QC chỉ chụp ảnh xác nhận, không cân — hao hụt cả chặng tính ở Xi.
     const photoOnly = PHOTO_ONLY_STAGES.includes(entry.stage);
@@ -1985,8 +1996,8 @@ export class ProductionOrdersService {
           .map((image) => image.publicId)
           .filter((id) => !images.some((image) => image.publicId === id))
       : [];
-    // Lỗi hết hàng ở khâu không qua thủ kho: đóng phiếu (phiếu con chốt Lỗi, đơn không chia thì
-    // Sản xuất lỗi). Nguội / Vào đá đóng sau khi thủ kho xác nhận hàng đạt 0 sp.
+    // Lỗi hết hàng ở khâu không qua thủ kho (chỉ còn Đánh bóng): đóng phiếu (phiếu con chốt Lỗi,
+    // đơn không chia thì Sản xuất lỗi). Nguội / Vào đá đóng sau khi thủ kho xác nhận hàng đạt 0 sp.
     const closesAsDefect = !revise && !needsKeeper && returnedQty === 0;
     const defectReason = dto.defectReason?.trim() || null;
     // Lý do lỗi chỉ ghi khi có hàng lỗi (tách ở Nguội / Vào đá, hoặc lỗi hết ở khâu khác).

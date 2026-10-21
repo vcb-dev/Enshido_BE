@@ -771,6 +771,47 @@ describe.each(['parent', 'child'] as const)(
         expect(entry.defectReportedAt).toBeNull();
       },
     );
+
+    it('Đánh bóng vẫn báo lỗi được', async () => {
+      const entry = {
+        ...returnedFiling(),
+        stage: ProductionStage.POLISHING,
+        returnedAt: null,
+        subTicketId: scope === 'child' ? 't1' : null,
+      } as OrderDetail['stages'][number];
+      const { service, order } = setup(
+        makeOrder({
+          stages: [entry],
+          subTickets: scope === 'child' ? [makeTicket(1, 10)] : [],
+        }),
+      );
+      const no = scope === 'child' ? 1 : null;
+      await service.reportStageDefect(order.code, no, { note: 'Xước' }, admin);
+      expect(entry.defectReportedAt).toBeInstanceOf(Date);
+    });
+
+    it.each([ProductionStage.ENGRAVING, ProductionStage.PLATING])(
+      '%s không báo lỗi, kể cả admin',
+      async (stage) => {
+        const entry = {
+          ...returnedFiling(),
+          stage,
+          returnedAt: null,
+          subTicketId: scope === 'child' ? 't1' : null,
+        } as OrderDetail['stages'][number];
+        const { service, order, tx } = setup(
+          makeOrder({
+            stages: [entry],
+            subTickets: scope === 'child' ? [makeTicket(1, 10)] : [],
+          }),
+        );
+        const no = scope === 'child' ? 1 : null;
+        await expect(
+          service.reportStageDefect(order.code, no, { note: 'Lỗi' }, admin),
+        ).rejects.toBeInstanceOf(BadRequestException);
+        expect(tx.productionStageEntry.update).not.toHaveBeenCalled();
+      },
+    );
   },
 );
 
