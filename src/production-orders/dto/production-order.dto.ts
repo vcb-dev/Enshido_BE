@@ -53,6 +53,23 @@ export class WorkerPerformanceQuery {
   to!: string;
 }
 
+/** Màn Tổng quan: kỳ xem (mặc định 7 ngày gần nhất) và đơn vị gom số. */
+export class ProductionOverviewQuery {
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Ngày bắt đầu không hợp lệ' })
+  from?: string;
+
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'Ngày kết thúc không hợp lệ' })
+  to?: string;
+
+  @IsOptional()
+  @IsIn(['day', 'week', 'month'], {
+    message: 'Chỉ xem theo ngày, tuần hoặc tháng',
+  })
+  groupBy?: 'day' | 'week' | 'month';
+}
+
 export class ListProductionOrdersQuery {
   @IsOptional()
   @Transform(({ value }) => value === true || value === 'true')

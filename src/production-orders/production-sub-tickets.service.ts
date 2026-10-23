@@ -216,7 +216,7 @@ function carriedHandover(
     previous?.outputMaterialId && weight?.gt(0)
       ? { materialId: previous.outputMaterialId, weight }
       : null;
-  // Khắc / Đánh bóng QC không cân: chuyển nguyên bạc vào khâu trước để Xi có mốc hao hụt.
+  // Khắc (và Bóng cũ) QC không cân: chuyển nguyên bạc vào khâu trước để khâu kế có mốc hao hụt.
   const silver =
     previous?.returnedAt && previous.returnedSilverWeight == null
       ? carriedSilverOf(order, previous)
@@ -1730,7 +1730,7 @@ export class ProductionSubTicketsService {
           }
           const available = subTicketAvailable(ticket, entries);
           handedQty = available.qty;
-          // Khắc / Đánh bóng QC không cân — chuyển nguyên bạc vào khâu đó.
+          // Khắc (và Bóng cũ) QC không cân — chuyển nguyên bạc vào khâu đó.
           const weight = carriedSilverOf(order, previous);
           if (!weight || weight.lte(0)) {
             throw new BadRequestException(
@@ -1955,6 +1955,71 @@ export class ProductionSubTicketsService {
    * thừa S925 / S999 → kho NVL. Cả phiếu lỗi 100% thì phiếu tự chốt Lỗi (M Lỗi nguội…).
    * Cả phiếu mẹ / con đều chờ thủ kho xác nhận, kể cả QC không báo hàng lỗi.
    */
+  /**
+   * Nguyên liệu QC tách ra lúc nhận lại khâu → kho NVL: hàng lỗi (BTP thu hồi) + S925 thừa nhập
+   * chung mã bạc thu hồi, S999 thừa mã riêng. Nguội / Vào đá gọi lúc thủ kho xác nhận, Bóng / Xi gọi
+   * ngay lúc QC lưu. Trả về id các phiếu nhập để gỡ sau này.
+   */
+  async stockRecovered(
+    tx: Prisma.TransactionClient,
+    params: {
+      entry: {
+        btpRecoveredWeight: Prisma.Decimal | null;
+        silverRecoveredWeight: Prisma.Decimal | null;
+        scrapS999Weight: Prisma.Decimal | null;
+      };
+      orderId: string;
+      /** Mã phiếu hiện trong ghi chú phiếu nhập. */
+      label: string;
+      stageName: string;
+      by: string;
+      at: Date;
+    },
+  ) {
+    const { entry, orderId, label, stageName, by, at } = params;
+    const ids: string[] = [];
+    const s925 = (entry.btpRecoveredWeight ?? new Prisma.Decimal(0)).add(
+      entry.silverRecoveredWeight ?? 0,
+    );
+    if (s925.gt(0)) {
+      const materialId = await this.inventory.ensureNamedMaterial(tx, {
+        warehouseCode: NVL_WAREHOUSE,
+        name: REST_S925_NAME,
+        unitCode: 'gram',
+      });
+      ids.push(
+        await this.inventory.createAutoInbound(tx, {
+          materialId,
+          qty: s925,
+          gramQty: s925,
+          receivedAt: at,
+          note: `Hàng lỗi + nguyên liệu S925 thừa khâu ${stageName} phiếu ${label}`,
+          enteredBy: by,
+          productionOrderId: orderId,
+        }),
+      );
+    }
+    if (entry.scrapS999Weight?.gt(0)) {
+      const materialId = await this.inventory.ensureNamedMaterial(tx, {
+        warehouseCode: NVL_WAREHOUSE,
+        name: REST_S999_NAME,
+        unitCode: 'gram',
+      });
+      ids.push(
+        await this.inventory.createAutoInbound(tx, {
+          materialId,
+          qty: entry.scrapS999Weight,
+          gramQty: entry.scrapS999Weight,
+          receivedAt: at,
+          note: `Nguyên liệu S999 thừa khâu ${stageName} phiếu ${label}`,
+          enteredBy: by,
+          productionOrderId: orderId,
+        }),
+      );
+    }
+    return ids;
+  }
+
   async confirmStage(code: string, stageId: string, actor: AuthUserPayload) {
     return this.mutate(code, async (tx, order) => {
       const entry = requireStage(order, stageId);
@@ -2002,46 +2067,16 @@ export class ProductionSubTicketsService {
           }),
         );
       }
-      // Hàng lỗi cân gram + S925 thừa nhập chung một mã NVL bạc; S999 thừa mã riêng.
-      const s925 = (entry.btpRecoveredWeight ?? new Prisma.Decimal(0)).add(
-        entry.silverRecoveredWeight ?? 0,
+      inboundIds.push(
+        ...(await this.stockRecovered(tx, {
+          entry,
+          orderId: order.id,
+          label,
+          stageName,
+          by,
+          at: now,
+        })),
       );
-      if (s925.gt(0)) {
-        const materialId = await this.inventory.ensureNamedMaterial(tx, {
-          warehouseCode: NVL_WAREHOUSE,
-          name: REST_S925_NAME,
-          unitCode: 'gram',
-        });
-        inboundIds.push(
-          await this.inventory.createAutoInbound(tx, {
-            materialId,
-            qty: s925,
-            gramQty: s925,
-            receivedAt: now,
-            note: `Hàng lỗi + nguyên liệu S925 thừa khâu ${stageName} phiếu ${label}`,
-            enteredBy: by,
-            productionOrderId: order.id,
-          }),
-        );
-      }
-      if (entry.scrapS999Weight?.gt(0)) {
-        const materialId = await this.inventory.ensureNamedMaterial(tx, {
-          warehouseCode: NVL_WAREHOUSE,
-          name: REST_S999_NAME,
-          unitCode: 'gram',
-        });
-        inboundIds.push(
-          await this.inventory.createAutoInbound(tx, {
-            materialId,
-            qty: entry.scrapS999Weight,
-            gramQty: entry.scrapS999Weight,
-            receivedAt: now,
-            note: `Nguyên liệu S999 thừa khâu ${stageName} phiếu ${label}`,
-            enteredBy: by,
-            productionOrderId: order.id,
-          }),
-        );
-      }
       if (entry.stage === ProductionStage.STONE_SETTING) {
         await this.consumeStoneHolds(tx, order, entry, by);
       }

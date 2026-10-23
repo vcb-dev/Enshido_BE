@@ -11,9 +11,19 @@ import { PrismaService } from '../prisma/prisma.service';
 import { decStr } from '../util/money';
 import { InflightMap, TtlCache } from '../util/ttl-cache';
 import { KEEPER_CONFIRM_STAGES } from './order-detail';
-import type { WorkerPerformanceQuery } from './dto/production-order.dto';
+import type {
+  ProductionOverviewQuery,
+  WorkerPerformanceQuery,
+} from './dto/production-order.dto';
 import {
+  addDayKey,
+  bucketIndexByDay,
   compareWatch,
+  OVERVIEW_MAX_BUCKETS,
+  OVERVIEW_MAX_DAYS,
+  overviewBuckets,
+  previousPeriod,
+  type OverviewGroup,
   dateKey,
   isFirstPass,
   isOverdue,
@@ -36,8 +46,10 @@ import { ACTIVITY } from './activity-log';
 import { issuedOf, silverInOf } from './stage-math';
 
 const OVERVIEW_TTL_MS = 20_000;
-const TREND_DAYS = 7;
-const WATCH_LIMIT = 50;
+/** Mặc định màn Tổng quan: 7 ngày gần nhất, xem theo ngày. */
+const DEFAULT_DAYS = 7;
+/** Bảng Phiếu cần theo dõi phân trang ở FE — gửi đủ phiếu đang trong xưởng, chặn trên cho an toàn. */
+const WATCH_LIMIT = 1000;
 const PERFORMANCE_MAX_DAYS = 366;
 
 /** Nhật ký thao tác 3D / sáp → khâu trên bảng hiệu suất. */
@@ -66,14 +78,36 @@ export class ProductionOverviewService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Màn Tổng quan sản xuất — một lần gọi đủ số cho cả trang, cache ngắn. */
-  async overview() {
-    const hit =
-      this.cache.get<Awaited<ReturnType<typeof this.build>>>('overview');
+  /**
+   * Màn Tổng quan sản xuất — một lần gọi đủ số cho cả trang, cache ngắn. Thành phẩm, kế hoạch và
+   * QC tính theo kỳ đang xem (kèm kỳ trước để so sánh); trong xưởng, quá hạn, công đoạn, vật tư là
+   * số hiện tại.
+   */
+  async overview(query: ProductionOverviewQuery = {}) {
+    const now = new Date();
+    const today = vnDayKey(now);
+    const group: OverviewGroup = query.groupBy ?? 'day';
+    const to = query.to ?? today;
+    const from = query.from ?? addDayKey(to, 1 - DEFAULT_DAYS);
+    if (from > to) {
+      throw new BadRequestException('Ngày bắt đầu phải trước ngày kết thúc');
+    }
+    if (Date.parse(to) - Date.parse(from) >= OVERVIEW_MAX_DAYS * 86_400_000) {
+      throw new BadRequestException(
+        `Chỉ xem tối đa ${OVERVIEW_MAX_DAYS} ngày một lần`,
+      );
+    }
+    if (overviewBuckets(from, to, group).length > OVERVIEW_MAX_BUCKETS) {
+      throw new BadRequestException(
+        'Kỳ quá dài để xem theo ngày — chọn xem theo tuần hoặc tháng',
+      );
+    }
+    const key = `overview:${from}:${to}:${group}`;
+    const hit = this.cache.get<Awaited<ReturnType<typeof this.build>>>(key);
     if (hit) return hit;
-    return this.inflight.run('overview', async () => {
-      const value = await this.build(new Date());
-      this.cache.set('overview', value, OVERVIEW_TTL_MS);
+    return this.inflight.run(key, async () => {
+      const value = await this.build(now, { from, to, group });
+      this.cache.set(key, value, OVERVIEW_TTL_MS);
       return value;
     });
   }
@@ -364,13 +398,21 @@ export class ProductionOverviewService {
     };
   }
 
-  private async build(now: Date) {
+  private async build(
+    now: Date,
+    period: { from: string; to: string; group: OverviewGroup },
+  ) {
     const todayKey = vnDayKey(now);
-    const todayStart = vnDayStart(todayKey);
-    const trendKeys = Array.from({ length: TREND_DAYS }, (_, i) =>
-      vnDayKey(vnDayStart(todayKey, i - TREND_DAYS + 1)),
+    const buckets = overviewBuckets(period.from, period.to, period.group);
+    const previous = previousPeriod(period.from, period.to, period.group);
+    const previousBuckets = overviewBuckets(
+      previous.from,
+      previous.to,
+      period.group,
     );
-    const trendStart = vnDayStart(trendKeys[0]);
+    // Một lần đọc cho cả kỳ trước lẫn kỳ đang xem.
+    const rangeStart = vnDayStart(previous.from);
+    const rangeEnd = vnDayStart(period.to, 1);
 
     const [
       orders,
@@ -390,29 +432,34 @@ export class ProductionOverviewService {
       () =>
         this.prisma.finishedGoodsReceipt.findMany({
           where: {
-            receivedAt: { gte: trendStart },
+            receivedAt: { gte: rangeStart, lt: rangeEnd },
             stockedQty: { gt: 0 },
             order: ORDER_SCOPE,
           },
           select: { stockedQty: true, receivedAt: true },
         }),
-      // Kế hoạch ngày D = tổng SL các lệnh có hạn giao ngày D (đơn bị từ chối không tính).
+      // Kế hoạch mốc = tổng SL các lệnh có hạn giao trong mốc (đơn bị từ chối không tính).
       () =>
         this.prisma.productionOrder.findMany({
           where: {
             ...ORDER_SCOPE,
             status: { not: ProductionStatus.REJECTED },
             dueDate: {
-              gte: new Date(`${trendKeys[0]}T00:00:00Z`),
-              lte: new Date(`${todayKey}T00:00:00Z`),
+              gte: new Date(`${previous.from}T00:00:00Z`),
+              lte: new Date(`${period.to}T00:00:00Z`),
             },
           },
           select: { qty: true, dueDate: true },
         }),
       () =>
         this.prisma.productionStageEntry.findMany({
-          where: { returnedAt: { gte: todayStart } },
-          select: { attempt: true, defectQty: true, defectReportedAt: true },
+          where: { returnedAt: { gte: rangeStart, lt: rangeEnd } },
+          select: {
+            attempt: true,
+            defectQty: true,
+            defectReportedAt: true,
+            returnedAt: true,
+          },
         }),
       // Bạc đang ở thợ: khâu chưa trả, gồm TL giao lúc nhận + bạc xin xuất thêm.
       () =>
@@ -476,18 +523,66 @@ export class ProductionOverviewService {
       }
     }
 
-    const trend = new Map(
-      trendKeys.map((date) => [date, { date, actual: 0, plan: 0 }]),
-    );
+    // Mỗi mốc kỳ này đi cặp với mốc cùng vị trí của kỳ trước.
+    const trend = buckets.map((bucket) => ({
+      ...bucket,
+      actual: 0,
+      plan: 0,
+      qcPassed: 0,
+      qcTotal: 0,
+      previousActual: 0,
+    }));
+    const current = bucketIndexByDay(buckets);
+    const before = bucketIndexByDay(previousBuckets);
+    const totals = {
+      actual: 0,
+      plan: 0,
+      qcPassed: 0,
+      qcTotal: 0,
+      previousActual: 0,
+      previousPlan: 0,
+      previousQcPassed: 0,
+      previousQcTotal: 0,
+    };
     for (const receipt of receipts) {
-      const day = trend.get(vnDayKey(receipt.receivedAt));
-      if (day) day.actual += receipt.stockedQty;
+      const day = vnDayKey(receipt.receivedAt);
+      const i = current.get(day);
+      if (i != null) {
+        trend[i].actual += receipt.stockedQty;
+        totals.actual += receipt.stockedQty;
+        continue;
+      }
+      const j = before.get(day);
+      if (j != null) {
+        if (trend[j]) trend[j].previousActual += receipt.stockedQty;
+        totals.previousActual += receipt.stockedQty;
+      }
     }
     for (const order of planned) {
-      const day = order.dueDate ? trend.get(dateKey(order.dueDate)) : undefined;
-      if (day) day.plan += order.qty;
+      if (!order.dueDate) continue;
+      const day = dateKey(order.dueDate);
+      const i = current.get(day);
+      if (i != null) {
+        trend[i].plan += order.qty;
+        totals.plan += order.qty;
+      } else if (before.has(day)) {
+        totals.previousPlan += order.qty;
+      }
     }
-    const today = trend.get(todayKey)!;
+    for (const entry of qcEntries) {
+      const day = vnDayKey(entry.returnedAt!);
+      const passed = isFirstPass(entry) ? 1 : 0;
+      const i = current.get(day);
+      if (i != null) {
+        trend[i].qcTotal += 1;
+        trend[i].qcPassed += passed;
+        totals.qcTotal += 1;
+        totals.qcPassed += passed;
+      } else if (before.has(day)) {
+        totals.previousQcTotal += 1;
+        totals.previousQcPassed += passed;
+      }
+    }
 
     let silver = new Prisma.Decimal(0);
     for (const entry of openEntries) {
@@ -504,9 +599,21 @@ export class ProductionOverviewService {
     return {
       generatedAt: now.toISOString(),
       today: todayKey,
+      period: {
+        from: period.from,
+        to: period.to,
+        groupBy: period.group,
+        previousFrom: previous.from,
+        previousTo: previous.to,
+      },
       kpis: {
         inShop: { qty: inShopQty, openTickets },
-        finishedToday: { qty: today.actual, planQty: today.plan },
+        finished: {
+          qty: totals.actual,
+          planQty: totals.plan,
+          previousQty: totals.previousActual,
+          previousPlanQty: totals.previousPlan,
+        },
         overdue: {
           count: overdue.length,
           byStage: OVERVIEW_STAGES.filter(({ key }) =>
@@ -517,13 +624,15 @@ export class ProductionOverviewService {
             count: overdueByStage.get(key)!,
           })),
         },
-        qcFirstPassToday: {
-          passed: qcEntries.filter(isFirstPass).length,
-          total: qcEntries.length,
+        qcFirstPass: {
+          passed: totals.qcPassed,
+          total: totals.qcTotal,
+          previousPassed: totals.previousQcPassed,
+          previousTotal: totals.previousQcTotal,
         },
       },
       stages,
-      finishedTrend: [...trend.values()],
+      trend,
       materials: {
         silverAtWorkersG: decStr(silver),
         stonesHeldG: decStr(stones._sum.weight ?? new Prisma.Decimal(0)),

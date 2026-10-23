@@ -66,6 +66,7 @@ import {
   skipsStone,
   earlyReturnedOf,
   KEEPER_CONFIRM_STAGES,
+  QC_STOCK_RECOVERY_STAGES,
   DEFECT_REPORT_STAGES,
   PHOTO_ONLY_STAGES,
   selfTakeStageAfter,
@@ -1790,13 +1791,17 @@ export class ProductionOrdersService {
     }
     // Nguội / Vào đá: phiếu mẹ và phiếu con cùng tách hàng đạt / lỗi, xác nhận kho sau QC.
     const needsKeeper = KEEPER_CONFIRM_STAGES.includes(entry.stage);
+    // Đánh bóng / Xi: không qua thủ kho nhưng thu hồi (hàng lỗi, S925, S999) nhập kho NVL ngay lúc QC lưu.
+    const stockAtQc = QC_STOCK_RECOVERY_STAGES.includes(entry.stage);
     const defectQty = needsKeeper ? (dto.defectQty ?? 0) : null;
-    if (
-      !needsKeeper &&
-      (dto.defectQty != null || dto.scrapS999Weight != null)
-    ) {
+    if (!needsKeeper && dto.defectQty != null) {
       throw new BadRequestException(
-        `Khâu ${STAGE_LABEL[entry.stage]} không tách hàng lỗi / S999 thừa ở bước QC`,
+        `Khâu ${STAGE_LABEL[entry.stage]} không tách số lượng hàng lỗi ở bước QC`,
+      );
+    }
+    if (!needsKeeper && !stockAtQc && dto.scrapS999Weight != null) {
+      throw new BadRequestException(
+        `Khâu ${STAGE_LABEL[entry.stage]} không ghi nguyên liệu S999 thừa ở bước QC`,
       );
     }
     if (needsKeeper && returnedQty + (defectQty ?? 0) > handedQty) {
@@ -1829,8 +1834,9 @@ export class ProductionOrdersService {
         `Khâu ${STAGE_LABEL[entry.stage]} không báo lỗi — QC nhận lại ít nhất 1 sản phẩm`,
       );
     }
-    const scrapS999 = needsKeeper ? decimalOrNull(dto.scrapS999Weight) : null;
-    // Khắc / Đánh bóng: QC chỉ chụp ảnh xác nhận, không cân — hao hụt cả chặng tính ở Xi.
+    const scrapS999 =
+      needsKeeper || stockAtQc ? decimalOrNull(dto.scrapS999Weight) : null;
+    // Khắc: QC chỉ chụp ảnh xác nhận, không cân — hao hụt Khắc tính gộp ở Đánh bóng.
     const photoOnly = PHOTO_ONLY_STAGES.includes(entry.stage);
     if (
       photoOnly &&
@@ -1839,7 +1845,7 @@ export class ProductionOrdersService {
         dto.silverRecoveredWeight != null)
     ) {
       throw new BadRequestException(
-        `Khâu ${STAGE_LABEL[entry.stage]} QC chỉ chụp ảnh, không cân lại — hao hụt tính ở khâu ${STAGE_LABEL[ProductionStage.PLATING]}`,
+        `Khâu ${STAGE_LABEL[entry.stage]} QC chỉ chụp ảnh, không cân lại — hao hụt tính ở khâu ${STAGE_LABEL[ProductionStage.POLISHING]}`,
       );
     }
     if (!photoOnly && dto.returnedSilverWeight == null) {
@@ -2011,6 +2017,7 @@ export class ProductionOrdersService {
     const ticket = entry.subTicketId
       ? order.subTickets.find((item) => item.id === entry.subTicketId)
       : undefined;
+    let stockedNvl = false;
 
     const updated = await this.prisma.runTx(async (tx) => {
       // Cùng khoá đơn với bước thủ kho xác nhận. Không lưu kết quả tính từ bản cũ
@@ -2111,6 +2118,7 @@ export class ProductionOrdersService {
                   : undefined,
                 btpRecoveredWeight: btpRecovered,
                 silverRecoveredWeight: silverRecovered,
+                scrapS999Weight: scrapS999,
                 laborCost: decimalOrNull(dto.laborCost),
                 imageCount: images.length,
               },
@@ -2122,6 +2130,29 @@ export class ProductionOrdersService {
         },
         select: { id: true },
       });
+      if (stockAtQc) {
+        const inboundIds = await this.subTickets.stockRecovered(tx, {
+          entry: {
+            btpRecoveredWeight: btpRecovered,
+            silverRecoveredWeight: silverRecovered,
+            scrapS999Weight: scrapS999,
+          },
+          orderId: order.id,
+          label: ticket
+            ? subTicketCode(order.code, ticket.no, order.subTickets.length)
+            : order.code,
+          stageName: STAGE_LABEL[entry.stage],
+          by: kcsName,
+          at: returnedAt,
+        });
+        if (inboundIds.length) {
+          stockedNvl = true;
+          await tx.productionStageEntry.update({
+            where: { id: entry.id },
+            data: { stockInboundIds: inboundIds },
+          });
+        }
+      }
       // Khắc / Đánh bóng: phiếu tự mở khâu kế cho thợ tự nhận; Xi: tự chốt đạt + sinh phiếu nhập
       // kho thành phẩm (mô tả luồng bước 20–22).
       if (!needsKeeper && !closesAsDefect) {
@@ -2147,6 +2178,7 @@ export class ProductionOrdersService {
       });
     });
     this.cloudinary.destroy(replacedImages);
+    if (stockedNvl) this.inventory.bustNvlStock();
     // Nguội / Vào đá luôn chờ thủ kho xác nhận, kể cả không có hàng lỗi. Chưa xác nhận thì
     // giữ phiếu ở khâu hiện tại; chỉ nhập kho và chuyển khâu ở confirmStage.
     // Khâu không qua thủ kho thì QC nhận lại xong, phiếu sang "Chờ" khâu kế; đơn theo phiếu xa nhất.
@@ -2388,56 +2420,66 @@ export class ProductionOrdersService {
       );
     }
 
-    const updated = await this.prisma.productionOrder.update({
-      where: { id: order.id },
-      data: {
-        dataChangedAt: new Date(),
-        ...(autoOpened && !ticket ? clearPending : {}),
-        ...(autoOpened && ticket
-          ? {
-              subTickets: {
-                update: { where: { id: ticket.id }, data: clearPending },
+    // Đánh bóng / Xi đã nhập kho NVL phần thu hồi lúc QC lưu — gỡ phiếu nhập cùng giao dịch (chặn nếu đã dùng).
+    const revokeIds = entry.stockInboundIds;
+    const updated = await this.prisma.runTx(async (tx) => {
+      if (revokeIds.length) {
+        await this.inventory.revokeAutoInbounds(tx, revokeIds);
+      }
+      return tx.productionOrder.update({
+        where: { id: order.id },
+        data: {
+          dataChangedAt: new Date(),
+          ...(autoOpened && !ticket ? clearPending : {}),
+          ...(autoOpened && ticket
+            ? {
+                subTickets: {
+                  update: { where: { id: ticket.id }, data: clearPending },
+                },
+              }
+            : {}),
+          stages: {
+            update: {
+              where: { id: entry.id },
+              data: {
+                returnedByUserId: null,
+                returnedByName: null,
+                returnedAt: null,
+                returnedQty: null,
+                returnedSilverWeight: null,
+                stoneCount: null,
+                stoneWeight: null,
+                returnedStoneCount: null,
+                btpRecoveredWeight: null,
+                silverRecoveredWeight: null,
+                scrapS999Weight: null,
+                stockInboundIds: [],
+                laborCost: null,
+                images: { deleteMany: {} },
               },
-            }
-          : {}),
-        stages: {
-          update: {
-            where: { id: entry.id },
-            data: {
-              returnedByUserId: null,
-              returnedByName: null,
-              returnedAt: null,
-              returnedQty: null,
-              returnedSilverWeight: null,
-              stoneCount: null,
-              stoneWeight: null,
-              returnedStoneCount: null,
-              btpRecoveredWeight: null,
-              silverRecoveredWeight: null,
-              laborCost: null,
-              images: { deleteMany: {} },
             },
           },
-        },
-        statusLogs: {
-          create: {
-            fromStatus: order.status,
-            toStatus: order.status,
-            note: `Gỡ nhận lại khâu ${STAGE_LABEL[entry.stage]} (QC: ${entry.returnedByName ?? '—'})`,
-            changedBy: actorName(actor),
+          statusLogs: {
+            create: {
+              fromStatus: order.status,
+              toStatus: order.status,
+              note: `Gỡ nhận lại khâu ${STAGE_LABEL[entry.stage]} (QC: ${entry.returnedByName ?? '—'})`,
+              changedBy: actorName(actor),
+            },
+          },
+          activityLogs: {
+            create: activity(actor, ACTIVITY.STAGE_UNDO_RETURN, {
+              orderCode: order.code,
+              subTicketNo: ticketNoOf(order, entry.subTicketId),
+              stage: entry.stage,
+              before: entrySnapshot(entry),
+            }),
           },
         },
-        activityLogs: {
-          create: activity(actor, ACTIVITY.STAGE_UNDO_RETURN, {
-            orderCode: order.code,
-            subTicketNo: ticketNoOf(order, entry.subTicketId),
-            stage: entry.stage,
-            before: entrySnapshot(entry),
-          }),
-        },
-      },
-      include: workInclude,
+        include: workInclude,
+      });
     });
+    if (revokeIds.length) this.inventory.bustNvlStock();
     this.cloudinary.destroy(entry.images.map((image) => image.publicId));
     // Gỡ nhận lại thì phiếu về "Đang" làm khâu đó — tính lại trạng thái đơn.
     const nextStatus = deriveOrderStatus(updated);

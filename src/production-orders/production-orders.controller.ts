@@ -30,6 +30,7 @@ import {
   StageDefectDto,
   ListProductionOrdersQuery,
   OpenOrderStageDto,
+  ProductionOverviewQuery,
   WorkerPerformanceQuery,
   AssignOrderDto,
   OrderCostDto,
@@ -146,8 +147,8 @@ export class ProductionOrdersController {
   @Get('overview')
   @BlockWorker()
   @RequirePermissions(Permission.SCREEN_DASHBOARD)
-  overview() {
-    return this.overviewService.overview();
+  overview(@Query() query: ProductionOverviewQuery) {
+    return this.overviewService.overview(query);
   }
 
   /** Màn Tổng quan, tab Hiệu suất thợ: số đơn / sản phẩm mỗi thợ làm xong ở từng khâu. */

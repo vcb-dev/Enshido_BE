@@ -115,7 +115,7 @@ describe('QC cân lại Nguội / Vào đá — chặn kết quả lỗi thiếu
       serviceFor(ProductionStage.POLISHING).returnStage(
         'A002',
         'stage-1',
-        dto({ returnedQty: 0, returnedSilverWeight: undefined, note: 'Xước' }),
+        dto({ returnedQty: 0, returnedSilverWeight: '0', note: 'Xước' }),
         actor,
       ),
     ).rejects.not.toThrow(/không báo lỗi/);
@@ -216,4 +216,63 @@ describe('QC lưu kết quả khi phiếu bị thay đổi đồng thời', () =
       expect(tx.productionOrder.update).not.toHaveBeenCalled();
     },
   );
+});
+
+describe('QC nhận lại Xi — thu hồi như Nguội / Vào đá, không tách số lượng hàng lỗi', () => {
+  it('Xi không nhận số lượng hàng lỗi', async () => {
+    await expect(
+      serviceFor(ProductionStage.PLATING).returnStage(
+        'A002',
+        'stage-1',
+        dto({ defectQty: 2 }),
+        actor,
+      ),
+    ).rejects.toThrow('không tách số lượng hàng lỗi');
+  });
+
+  it('khâu khác ngoài Nguội / Vào đá / Đánh bóng / Xi không ghi S999 thừa', async () => {
+    await expect(
+      serviceFor(ProductionStage.ENGRAVING).returnStage(
+        'A002',
+        'stage-1',
+        dto({ scrapS999Weight: '1' }),
+        actor,
+      ),
+    ).rejects.toThrow('không ghi nguyên liệu S999 thừa');
+  });
+});
+
+describe('QC nhận lại Đánh bóng — cân lại để tính hao hụt (gộp cả Khắc)', () => {
+  it('Đánh bóng phải nhập TL sản phẩm đạt', async () => {
+    await expect(
+      serviceFor(ProductionStage.POLISHING).returnStage(
+        'A002',
+        'stage-1',
+        dto({ returnedSilverWeight: undefined }),
+        actor,
+      ),
+    ).rejects.toThrow('Nhập trọng lượng sản phẩm đạt');
+  });
+
+  it('Đánh bóng ghi được S999 thừa (thu hồi như Xi)', async () => {
+    await expect(
+      serviceFor(ProductionStage.POLISHING).returnStage(
+        'A002',
+        'stage-1',
+        dto({ scrapS999Weight: '1' }),
+        actor,
+      ),
+    ).rejects.not.toThrow(/không ghi nguyên liệu S999 thừa|chỉ chụp ảnh/);
+  });
+
+  it('Khắc vẫn chỉ chụp ảnh — gửi TL thì chặn, hao hụt tính ở Đánh bóng', async () => {
+    await expect(
+      serviceFor(ProductionStage.ENGRAVING).returnStage(
+        'A002',
+        'stage-1',
+        dto({}),
+        actor,
+      ),
+    ).rejects.toThrow('hao hụt tính ở khâu Đánh bóng');
+  });
 });
