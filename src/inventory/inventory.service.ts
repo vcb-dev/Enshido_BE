@@ -1155,7 +1155,9 @@ export class InventoryService {
 
     if (!existing) {
       throw new BadRequestException(
-        'Chọn NVL đã có ở Tồn. Không tạo tên hàng mới từ Xuất.',
+        warehouse.code === 'btp-cho-vao-da'
+          ? 'Chọn BTP đã có ở Tồn. Không tạo tên hàng mới từ Xuất.'
+          : 'Chọn NVL đã có ở Tồn. Không tạo tên hàng mới từ Xuất.',
       );
     }
 
