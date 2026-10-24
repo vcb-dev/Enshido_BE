@@ -11,6 +11,7 @@ import { recordEditLog } from '../edit-logs/edit-log';
 import { actorName } from '../production-orders/order-detail';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateUserDto, UpdateUserDto } from './dto/user.dto';
+import { skillLevelFor } from './staff-positions';
 import { AuthService, BCRYPT_COST } from '../auth/auth.service';
 import {
   isProductionStageWorker,
@@ -30,6 +31,8 @@ const userSelect = {
   extraRoles: true,
   allowedScreens: true,
   department: true,
+  position: true,
+  skillLevel: true,
   workerStages: true,
   isActive: true,
   createdAt: true,
@@ -106,6 +109,8 @@ export class UsersService {
         extraRoles: dto.extraRoles ?? [],
         allowedScreens,
         department: dto.department?.trim() || null,
+        position: dto.position || null,
+        skillLevel: skillLevelFor(dto.position, dto.skillLevel),
         workerStages,
         isActive: true,
       },
@@ -126,6 +131,8 @@ export class UsersService {
       extraRoles?: RoleCode[];
       allowedScreens?: string[];
       department?: string | null;
+      position?: string | null;
+      skillLevel?: number | null;
       email?: string | null;
       isActive?: boolean;
       passwordHash?: string;
@@ -144,6 +151,16 @@ export class UsersService {
     }
     if (dto.department !== undefined) {
       data.department = dto.department.trim() || null;
+    }
+    // Vị trí / bậc tay nghề: bậc chỉ giữ khi vị trí (mới hoặc đang có) là thợ.
+    if (dto.position !== undefined || dto.skillLevel !== undefined) {
+      const position =
+        dto.position !== undefined ? dto.position || null : user.position;
+      data.position = position;
+      data.skillLevel = skillLevelFor(
+        position,
+        dto.skillLevel !== undefined ? dto.skillLevel : user.skillLevel,
+      );
     }
     if (dto.email !== undefined)
       data.email = dto.email.toLowerCase().trim() || null;

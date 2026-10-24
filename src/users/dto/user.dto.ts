@@ -8,9 +8,17 @@ import {
   MinLength,
   IsArray,
   IsIn,
+  IsInt,
+  Max,
+  Min,
 } from 'class-validator';
 import { ProductionStage, RoleCode } from '@prisma/client';
 import { ALL_PERMISSIONS } from '../../auth/permissions';
+import {
+  SKILL_LEVEL_MAX,
+  SKILL_LEVEL_MIN,
+  STAFF_POSITIONS,
+} from '../staff-positions';
 
 export class CreateUserDto {
   @IsString()
@@ -49,6 +57,18 @@ export class CreateUserDto {
   @IsString()
   department?: string;
 
+  /** Vị trí công việc (mã trong STAFF_POSITIONS). Chuỗi rỗng = bỏ vị trí. */
+  @IsOptional()
+  @IsIn([...STAFF_POSITIONS, ''])
+  position?: string;
+
+  /** Bậc tay nghề 1–5, chỉ nhận khi vị trí là thợ. */
+  @IsOptional()
+  @IsInt()
+  @Min(SKILL_LEVEL_MIN)
+  @Max(SKILL_LEVEL_MAX)
+  skillLevel?: number;
+
   /** Khâu thợ được nhận trên phiếu. */
   @IsOptional()
   @IsArray()
@@ -83,6 +103,18 @@ export class UpdateUserDto {
   @IsOptional()
   @IsString()
   department?: string;
+
+  /** Vị trí công việc (mã trong STAFF_POSITIONS). Chuỗi rỗng = bỏ vị trí. */
+  @IsOptional()
+  @IsIn([...STAFF_POSITIONS, ''])
+  position?: string;
+
+  /** Bậc tay nghề 1–5, chỉ nhận khi vị trí là thợ. */
+  @IsOptional()
+  @IsInt()
+  @Min(SKILL_LEVEL_MIN)
+  @Max(SKILL_LEVEL_MAX)
+  skillLevel?: number;
 
   /** Khâu thợ được nhận trên phiếu. */
   @IsOptional()
