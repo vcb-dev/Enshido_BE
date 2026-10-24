@@ -31,6 +31,10 @@ model User {
   /// Các màn hình USER được xem. ADMIN bỏ qua cột này (luôn xem hết).
   allowedScreens String[]          @default([]) @map("allowed_screens")
   department     String?
+  /// Vị trí công việc (mã trong `staff-positions.ts`) — chỉ để hiển thị, không quyết định quyền (quyền theo vai trò).
+  position       String?
+  /// Bậc tay nghề 1–5, chỉ có khi vị trí là thợ.
+  skillLevel     Int?              @map("skill_level")
   /// Khâu thợ được tự nhận trên phiếu (Nguội, Vào đá…). Thợ chỉ thấy và nhận phiếu đang mở khâu của mình.
   workerStages   ProductionStage[] @default([]) @map("worker_stages")
   isActive       Boolean           @default(true) @map("is_active")
