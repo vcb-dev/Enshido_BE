@@ -402,7 +402,7 @@ describe('carriedSilverOf — TL chuyển sang khâu kế', () => {
     ).toEqual(dec('122.5'));
   });
 
-  it('Đánh bóng chỉ chụp ảnh: chuyển TL giao (đã mang từ Khắc)', () => {
+  it('Đánh bóng cũ chưa cân (trước 2026-10-23): chuyển TL giao (đã mang từ Khắc)', () => {
     expect(
       carriedSilverOf(
         { materialRequests: [] },
@@ -414,6 +414,20 @@ describe('carriedSilverOf — TL chuyển sang khâu kế', () => {
         },
       ),
     ).toEqual(dec('122.5'));
+  });
+
+  it('Đánh bóng QC đã cân: chuyển TL cân lại sang Xi', () => {
+    expect(
+      carriedSilverOf(
+        { materialRequests: [] },
+        {
+          id: 'bong',
+          stage: 'POLISHING',
+          handedSilverWeight: dec('122.5'),
+          returnedSilverWeight: dec('121.3'),
+        },
+      ),
+    ).toEqual(dec('121.3'));
   });
 
   it('khâu phải cân mà chưa có TL thì không có mốc', () => {

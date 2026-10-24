@@ -1,5 +1,9 @@
 import { ProductionStatus } from '@prisma/client';
 import {
+  addMonthKey,
+  bucketIndexByDay,
+  overviewBuckets,
+  previousPeriod,
   compareWatch,
   isFirstPass,
   isOverdue,
@@ -339,5 +343,68 @@ describe('batchCodes / khâu 3D, Sáp, Đúc', () => {
     expect(rows[0].workerStages).toEqual(['MODEL3D', 'WAX']);
     expect(rows[0].cells.MODEL3D?.DONE).toEqual({ orders: 1, qty: 2 });
     expect(totals.CASTING.WORKING).toEqual({ orders: 1, qty: 4 });
+  });
+});
+
+describe('kỳ xem trên màn Tổng quan', () => {
+  it('theo ngày: mỗi ngày một mốc', () => {
+    expect(overviewBuckets('2026-10-20', '2026-10-22', 'day')).toEqual([
+      { key: '2026-10-20', start: '2026-10-20', end: '2026-10-20' },
+      { key: '2026-10-21', start: '2026-10-21', end: '2026-10-21' },
+      { key: '2026-10-22', start: '2026-10-22', end: '2026-10-22' },
+    ]);
+  });
+
+  it('theo tuần: mốc từ thứ Hai, mốc đầu / cuối cắt theo kỳ', () => {
+    expect(overviewBuckets('2026-10-08', '2026-10-22', 'week')).toEqual([
+      { key: '2026-10-05', start: '2026-10-08', end: '2026-10-11' },
+      { key: '2026-10-12', start: '2026-10-12', end: '2026-10-18' },
+      { key: '2026-10-19', start: '2026-10-19', end: '2026-10-22' },
+    ]);
+  });
+
+  it('theo tháng: mốc là tháng dương lịch', () => {
+    expect(overviewBuckets('2026-08-15', '2026-10-22', 'month')).toEqual([
+      { key: '2026-08-01', start: '2026-08-15', end: '2026-08-31' },
+      { key: '2026-09-01', start: '2026-09-01', end: '2026-09-30' },
+      { key: '2026-10-01', start: '2026-10-01', end: '2026-10-22' },
+    ]);
+  });
+
+  it('lùi tháng giữ ngày, quá cuối tháng thì về ngày cuối', () => {
+    expect(addMonthKey('2026-10-31', -1)).toBe('2026-09-30');
+    expect(addMonthKey('2026-03-31', -1)).toBe('2026-02-28');
+    expect(addMonthKey('2026-01-15', -2)).toBe('2025-11-15');
+  });
+
+  it('kỳ trước lùi đúng số mốc đang xem', () => {
+    expect(previousPeriod('2026-10-16', '2026-10-22', 'day')).toEqual({
+      from: '2026-10-09',
+      to: '2026-10-15',
+    });
+    expect(previousPeriod('2026-10-19', '2026-10-22', 'week')).toEqual({
+      from: '2026-10-12',
+      to: '2026-10-15',
+    });
+    // Tháng này tới hôm nay so với cùng kỳ tháng trước.
+    expect(previousPeriod('2026-10-01', '2026-10-22', 'month')).toEqual({
+      from: '2026-09-01',
+      to: '2026-09-22',
+    });
+  });
+
+  it('kỳ trước có cùng số mốc để so từng cặp', () => {
+    const prev = previousPeriod('2026-08-15', '2026-10-22', 'month');
+    expect(overviewBuckets(prev.from, prev.to, 'month')).toHaveLength(3);
+  });
+
+  it('tra mốc theo ngày', () => {
+    const index = bucketIndexByDay(
+      overviewBuckets('2026-10-08', '2026-10-22', 'week'),
+    );
+    expect(index.get('2026-10-08')).toBe(0);
+    expect(index.get('2026-10-18')).toBe(1);
+    expect(index.get('2026-10-22')).toBe(2);
+    expect(index.get('2026-10-07')).toBeUndefined();
   });
 });

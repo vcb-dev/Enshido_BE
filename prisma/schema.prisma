@@ -1541,3 +1541,57 @@ model InventoryDraft {
   @@index([sapoProductId])
   @@map("inventory_draft")
 }
+
+/// Khâu tính hao hụt trên báo cáo tuần: Đúc (phiếu đúc) + 5 khâu thợ.
+enum LossStage {
+  CASTING
+  FILING
+  STONE_SETTING
+  ENGRAVING
+  POLISHING
+  PLATING
+}
+
+/// Kim loại tính hao hụt — mức cho phép của vàng thấp hơn bạc.
+enum LossMetal {
+  SILVER
+  GOLD
+}
+
+/// Mức hao hụt cho phép (%) theo khâu và kim loại (tab BÁO CÁO — "Cấu hình hao hụt").
+/// Không có dòng = khâu chưa đặt mức, báo cáo không so vượt.
+model LossLimit {
+  id            String    @id @default(uuid()) @db.Uuid
+  stage         LossStage
+  metal         LossMetal
+  percent       Decimal   @db.Decimal(6, 2)
+  updatedByName String?   @map("updated_by_name")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  @@unique([stage, metal])
+  @@map("loss_limits")
+}
+
+/// Mạt vụn thợ gom cả tuần, cô lại rồi cân trả thủ kho. Thủ kho nhập — tự nhập kho NVL bạc thu
+/// hồi và trừ vào hao hụt tuần đó của thợ.
+model ScrapReturn {
+  id               String   @id @default(uuid()) @db.Uuid
+  /// Thứ Hai của tuần mạt được tính vào.
+  weekStart        DateTime @map("week_start") @db.Date
+  craftsmanUserId  String   @map("craftsman_user_id") @db.Uuid
+  craftsmanName    String   @map("craftsman_name")
+  weightGram       Decimal  @map("weight_gram") @db.Decimal(18, 4)
+  /// Mã NVL nhận mạt (mặc định "Bạc thu hồi / đầu cây S925").
+  materialId       String   @map("material_id") @db.Uuid
+  /// Phiếu nhập kho tự tạo — xoá phiếu mạt thì gỡ phiếu nhập này.
+  inboundId        String?  @unique @map("inbound_id") @db.Uuid
+  note             String?
+  receivedAt       DateTime @map("received_at")
+  receivedByUserId String?  @map("received_by_user_id") @db.Uuid
+  receivedByName   String   @map("received_by_name")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@index([weekStart])
+  @@index([craftsmanUserId, weekStart])
+  @@map("scrap_returns")
+}

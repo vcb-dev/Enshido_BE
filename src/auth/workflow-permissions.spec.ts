@@ -5,6 +5,7 @@ import { CastingOrdersController } from '../casting-orders/casting-orders.contro
 import { CastingSlipsController } from '../casting-slips/casting-slips.controller';
 import { FinishedGoodsController } from '../finished-goods/finished-goods.controller';
 import { IntakeOrdersController } from '../intake-orders/intake-orders.controller';
+import { LossReportsController } from '../loss-reports/loss-reports.controller';
 import { ProductionOrdersController } from '../production-orders/production-orders.controller';
 import { PermissionsGuard } from './guards/permissions.guard';
 import { WorkerRestrictedGuard } from './guards/worker-restricted.guard';
@@ -334,6 +335,42 @@ const MATRIX: [string, object, string, PermissionCode[]][] = [
     FinishedGoodsController.prototype,
     'approve',
     [P.ACCOUNTING_APPROVE],
+  ],
+  [
+    'xem báo cáo hao hụt tuần',
+    LossReportsController.prototype,
+    'weekly',
+    [P.WAREHOUSE_KEEPER, P.ACCOUNTING_APPROVE],
+  ],
+  [
+    'xem mức hao hụt cho phép',
+    LossReportsController.prototype,
+    'limits',
+    [P.WAREHOUSE_KEEPER, P.ACCOUNTING_APPROVE],
+  ],
+  [
+    'sửa mức hao hụt cho phép',
+    LossReportsController.prototype,
+    'updateLimits',
+    [P.WAREHOUSE_KEEPER],
+  ],
+  [
+    'danh sách thợ nộp mạt',
+    LossReportsController.prototype,
+    'workers',
+    [P.WAREHOUSE_KEEPER],
+  ],
+  [
+    'nhận mạt vụn cuối tuần',
+    LossReportsController.prototype,
+    'createScrapReturn',
+    [P.WAREHOUSE_KEEPER],
+  ],
+  [
+    'xoá phiếu mạt',
+    LossReportsController.prototype,
+    'removeScrapReturn',
+    [P.WAREHOUSE_KEEPER],
   ],
 ];
 

@@ -476,14 +476,29 @@ export function selfTakeStageAfter(
 }
 
 /**
- * Khâu QC chỉ chụp ảnh xác nhận, không cân lại (Khắc → khâu trước Xi): không tính hao hụt riêng.
- * Hao tổn cả chặng dồn về Xi — QC cân lại ở Xi, mốc là bạc vào khâu Khắc.
+ * Khâu QC chỉ chụp ảnh xác nhận, không cân lại: không tính hao hụt riêng. Khắc dồn hao về Đánh
+ * bóng — QC cân lại ở Bóng, mốc là bạc vào khâu Khắc (tab BÁO CÁO chỉ có mức cho phép của Bóng).
  */
-export const PHOTO_ONLY_STAGES: ProductionStage[] = [G.ENGRAVING, G.POLISHING];
+export const PHOTO_ONLY_STAGES: ProductionStage[] = [G.ENGRAVING];
 
 /**
- * TL hàng chuyển sang khâu kế từ một khâu QC đã nhận lại: TL QC cân lại. Khâu chỉ chụp ảnh không
- * cân thì chuyển nguyên bạc vào khâu đó (giao + xuất thêm) — Xi tính hao hụt từ mốc này.
+ * Khâu chuyển nguyên bạc vào khâu sang khâu kế khi QC không cân. Đánh bóng trước 2026-10-23 cũng
+ * chỉ chụp ảnh — lượt Bóng cũ chưa có TL cân lại vẫn chuyển mốc như Khắc để Xi tính từ đó.
+ */
+const UNWEIGHED_CARRY_STAGES: ProductionStage[] = [G.ENGRAVING, G.POLISHING];
+
+/**
+ * Khâu không qua thủ kho xác nhận nhưng QC vẫn tách nguyên liệu thu hồi (hàng lỗi / BTP thu hồi,
+ * S925 thừa, S999 thừa) như Nguội / Vào đá — phần thu hồi nhập kho NVL ngay lúc QC lưu.
+ */
+export const QC_STOCK_RECOVERY_STAGES: ProductionStage[] = [
+  G.POLISHING,
+  G.PLATING,
+];
+
+/**
+ * TL hàng chuyển sang khâu kế từ một khâu QC đã nhận lại: TL QC cân lại. Khâu không cân (Khắc,
+ * Bóng cũ) thì chuyển nguyên bạc vào khâu đó (giao + xuất thêm) — khâu kế tính hao hụt từ mốc này.
  */
 export function carriedSilverOf(
   order: Pick<OrderDetail, 'materialRequests'>,
@@ -493,7 +508,7 @@ export function carriedSilverOf(
   >,
 ): Prisma.Decimal | null {
   if (entry.returnedSilverWeight != null) return entry.returnedSilverWeight;
-  if (!PHOTO_ONLY_STAGES.includes(entry.stage)) return null;
+  if (!UNWEIGHED_CARRY_STAGES.includes(entry.stage)) return null;
   return silverInOf(entry, issuedOf(requestsOf(order, entry.id)).metal);
 }
 

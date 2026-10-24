@@ -429,3 +429,97 @@ export function workerPerformance(
   result.sort((a, b) => a.workerName.localeCompare(b.workerName, 'vi'));
   return { rows: result, totals };
 }
+
+/** Màn Tổng quan xem số theo ngày / tuần (thứ Hai → Chủ nhật) / tháng dương lịch. */
+export const OVERVIEW_GROUPS = ['day', 'week', 'month'] as const;
+export type OverviewGroup = (typeof OVERVIEW_GROUPS)[number];
+
+/** Tối đa số mốc trên biểu đồ và độ dài kỳ (ngày) một lần xem. */
+export const OVERVIEW_MAX_BUCKETS = 92;
+export const OVERVIEW_MAX_DAYS = 731;
+
+export function addDayKey(key: string, days: number) {
+  return new Date(Date.parse(`${key}T00:00:00Z`) + days * DAY_MS)
+    .toISOString()
+    .slice(0, 10);
+}
+
+/** Lùi / tiến `months` tháng; ngày vượt cuối tháng thì về ngày cuối (31/10 − 1 tháng → 30/09). */
+export function addMonthKey(key: string, months: number) {
+  const [y, m, d] = key.split('-').map(Number);
+  const first = new Date(Date.UTC(y, m - 1 + months, 1));
+  const lastDay = new Date(
+    Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0),
+  ).getUTCDate();
+  first.setUTCDate(Math.min(d, lastDay));
+  return first.toISOString().slice(0, 10);
+}
+
+/** Đầu mốc chứa ngày `key`: chính nó / thứ Hai / mùng 1. */
+function bucketStart(key: string, group: OverviewGroup) {
+  if (group === 'day') return key;
+  if (group === 'month') return `${key.slice(0, 8)}01`;
+  const back = (new Date(`${key}T00:00:00Z`).getUTCDay() + 6) % 7;
+  return addDayKey(key, -back);
+}
+
+function nextBucket(start: string, group: OverviewGroup) {
+  if (group === 'day') return addDayKey(start, 1);
+  if (group === 'week') return addDayKey(start, 7);
+  return addMonthKey(start, 1);
+}
+
+export type OverviewBucket = {
+  /** Đầu mốc đầy đủ (thứ Hai / mùng 1) — làm khoá và nhãn. */
+  key: string;
+  /** Phần mốc nằm trong kỳ (mốc đầu / cuối có thể bị cắt). */
+  start: string;
+  end: string;
+};
+
+/** Chia kỳ [from, to] (tính cả hai đầu) thành các mốc theo ngày / tuần / tháng. */
+export function overviewBuckets(
+  from: string,
+  to: string,
+  group: OverviewGroup,
+): OverviewBucket[] {
+  const buckets: OverviewBucket[] = [];
+  for (
+    let key = bucketStart(from, group);
+    key <= to;
+    key = nextBucket(key, group)
+  ) {
+    const end = addDayKey(nextBucket(key, group), -1);
+    buckets.push({
+      key,
+      start: key < from ? from : key,
+      end: end > to ? to : end,
+    });
+  }
+  return buckets;
+}
+
+/**
+ * Kỳ trước để so sánh: lùi đúng số mốc đang xem theo đơn vị đang chọn — 7 ngày gần nhất so
+ * với 7 ngày trước đó, tuần này so với tuần trước, 1/10 → 22/10 xem theo tháng so với
+ * 1/9 → 22/9 (cùng kỳ tháng trước).
+ */
+export function previousPeriod(from: string, to: string, group: OverviewGroup) {
+  const count = overviewBuckets(from, to, group).length;
+  if (group === 'month') {
+    return { from: addMonthKey(from, -count), to: addMonthKey(to, -count) };
+  }
+  const days = group === 'week' ? 7 * count : count;
+  return { from: addDayKey(from, -days), to: addDayKey(to, -days) };
+}
+
+/** Ngày → vị trí mốc, cho mọi ngày trong kỳ. */
+export function bucketIndexByDay(buckets: readonly OverviewBucket[]) {
+  const index = new Map<string, number>();
+  buckets.forEach((bucket, i) => {
+    for (let day = bucket.start; day <= bucket.end; day = addDayKey(day, 1)) {
+      index.set(day, i);
+    }
+  });
+  return index;
+}
